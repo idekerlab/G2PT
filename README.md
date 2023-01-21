@@ -14,7 +14,16 @@ When used to analyze a high-throughput cell screen of 436 drugs exposed to 1,097
 Attention analysis of the model identifies both known and novel molecular systems involved in drug responses, revealing for example that the response to decitabine is influenced by mutations in adherens junctions and the SUMOylation pathway. 
 G2PT provides a robust and interpretable model with potential application to many challenges in genotype-phenotype translation.
 
-![](./Figures/Figure_1.png)
+![Figure_1](./Figures/Figure_1.png)
+
+## Environmental Set-Up
+
+conda environment file environment.yml is provided
+```
+conda env create python==3.6 --name envname --file=environment.yml
+```
+
+
 
 ## Usage
 
