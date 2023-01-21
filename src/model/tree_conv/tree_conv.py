@@ -24,7 +24,7 @@ class TreeConvolutionUpdate(nn.Module):
     Transformer = MultiHead_Attention + Feed_Forward with sublayer connection
     """
 
-    def __init__(self, hidden, attn_heads, feed_forward_hidden, norm, dropout=0.2, norm_channel_first=False):
+    def __init__(self, hidden, attn_heads, feed_forward_hidden, norm, dropout=0.2, norm_channel_first=False, transform=True):
         """
         :param hidden: hidden size of transformer
         :param attn_heads: head sizes of multi-head attention
@@ -35,7 +35,7 @@ class TreeConvolutionUpdate(nn.Module):
 
         super(TreeConvolutionUpdate, self).__init__()
         self.attn_heads = attn_heads
-        self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout)
+        self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, transform=True)
         #self.layer_norm = nn.LayerNorm(hidden)
         self.norm = norm
         self.feed_forward = PositionWiseFeedForward(d_model=hidden, d_ff=feed_forward_hidden, dropout=dropout)
@@ -61,7 +61,8 @@ class TreeConvolutionUpdate(nn.Module):
 
 
 class TreeConvolution(nn.Module):
-    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, conv_type='system', norm_channel_first=False):
+    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, conv_type='system',
+                 norm_channel_first=False, transform=True):
         """
         :param hidden: hidden size of transformer
         :param attn_heads: head sizes of multi-head attention
@@ -72,7 +73,7 @@ class TreeConvolution(nn.Module):
 
         super(TreeConvolution, self).__init__()
         self.tree_convolution_update = TreeConvolutionUpdate(hidden, attn_heads, feed_forward_hidden, inner_norm,
-                                                             dropout, norm_channel_first=norm_channel_first)
+                                                             dropout, norm_channel_first=norm_channel_first, transform=transform)
         self.norm = outer_norm
         self.conv_type = conv_type
         self.dropout = nn.Dropout(dropout)

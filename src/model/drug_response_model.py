@@ -30,13 +30,18 @@ class DrugResponseModel(nn.Module):
         self.gene_embedding = nn.Embedding(self.n_genes, hidden_dims)
 
         self.mut_update_norm_inner = nn.LayerNorm(hidden_dims)
-        self.mut_update_norm_outer = LayerNormNormedScaleOnly(hidden_dims)
+        self.mut_update_norm_outer = nn.LayerNorm(hidden_dims)#LayerNormNormedScaleOnly(hidden_dims)
 
         self.sys_update_norm_inner = nn.LayerNorm(hidden_dims)
-        self.sys_update_norm_outer = LayerNormNormedScaleOnly(hidden_dims)
+        self.sys_update_norm_outer = nn.LayerNorm(hidden_dims)#LayerNormNormedScaleOnly(hidden_dims)
+
+        self.gene_update_norm_inner = nn.LayerNorm(hidden_dims)
+        self.gene_update_norm_outer = nn.LayerNorm(hidden_dims)
 
         self.prediction_norm_inner = nn.LayerNorm(hidden_dims)
         self.prediction_norm_outer = nn.LayerNorm(hidden_dims)
+
+
 
         self.sys_norm = nn.LayerNorm(hidden_dims)
         self.norm_channel_first = False
@@ -53,6 +58,10 @@ class DrugResponseModel(nn.Module):
                                                      dropout, norm_channel_first=self.norm_channel_first,
                                                      conv_type='system')
 
+        self.system2gene = TreeConvolution(hidden_dims, 4, hidden_dims * 4,
+                                                      self.gene_update_norm_inner, self.gene_update_norm_outer,
+                                                      dropout, norm_channel_first=self.norm_channel_first,
+                                                      conv_type='system')
 
         self.compound_encoder = compound_encoder
         self.compound_mapper_1 = nn.Linear(compound_encoder.hidden_layers[-1], hidden_dims)
@@ -66,13 +75,14 @@ class DrugResponseModel(nn.Module):
         self.activation = nn.GELU()
 
         self.comp2system = CompoundToSystems(hidden_dims, 1, hidden_dims*4, inner_norm=self.prediction_norm_inner,
-                                             outer_norm=self.prediction_norm_outer,  dropout=dropout)
-        #self.comp2gene = CompoundToSystems(hidden_dims, 1, hidden_dims*4, norm=self.prediction_norm, dropout=dropout)
+                                             outer_norm=self.prediction_norm_outer,  dropout=dropout, transform=True)
+        self.comp2gene = CompoundToSystems(hidden_dims, 1, hidden_dims*4, inner_norm=self.prediction_norm_inner,
+                                             outer_norm=self.prediction_norm_outer, dropout=dropout, transform=True)
 
-        self.drug_response_predictor = nn.Linear(hidden_dims, 1)
+        self.drug_response_predictor = nn.Linear(hidden_dims*2, 1)
 
 
-    def forward(self, genotype_dict, compound, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, comp2sys_masks=None):
+    def forward(self, genotype_dict, compound, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, sys2gene_mask, comp2sys_masks=None):
         batch_size = compound.size(0)
 
         system_embedding = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)
@@ -81,17 +91,19 @@ class DrugResponseModel(nn.Module):
         system_embedding, mutation_effect = self.get_mut2system(system_embedding, gene_embedding, genotype_dict, )
         system_embedding, system_updates_forward = self.get_system2system(system_embedding, nested_hierarchical_masks_forward, direction='forward')
         system_embedding, system_updates_forward = self.get_system2system(system_embedding[-1][-1], nested_hierarchical_masks_backward, direction='backward')
+
+        gene_embedding, system_effect = self.get_system2gene(system_embedding[-1][-1], gene_embedding, sys2gene_mask)
         compound_embedding = self.get_compound_embedding(compound, unsqueeze=True)
 
+        system_embedding = system_embedding[-1][-1]
+
         compound_prediction = self.compound_encoder.predict(compound)
-        compound_weighted_by_system = self.get_comp2system(compound_embedding, system_embedding[-1][-1], system_maks=comp2sys_masks)
-        #compound_weighted_by_system = self.get_comp2system(compound_embedding, system_embedding, system_maks=comp2sys_masks)
-        #gene_mask = sum([genotype_dict[genotype] for genotype in self.genotypes])
-        #gene_mask = torch.sum(gene_mask, dim=1).unsqueeze(1).unsqueeze(1)
-        #compound_weighted_by_gene = self.get_comp2gene(compound_embedding, gene_embedding, gene_mask=gene_mask)
-        #system_mean = torch.mean(system_embedding[-1][-1], dim=1, keepdim=False)
-        #system_max = torch.max(system_embedding[-1][-1], dim=1, keepdim=False).values
-        compound_attended = compound_weighted_by_system#torch.cat([compound_weighted_by_system, compound_weighted_by_genes], dim=-1)
+        compound_weighted_by_system = self.get_comp2system(compound_embedding, system_embedding, system_maks=comp2sys_masks)
+
+        compound_weighted_by_genes = self.get_comp2gene(compound_embedding, gene_embedding, gene_mask=None)
+
+        compound_attended = torch.cat([compound_weighted_by_system, compound_weighted_by_genes], dim=-1)
+        #compound_attended = compound_weighted_by_system
         '''
         drug_response_prediction = self.dropout(
             self.activation(self.drug_response_batch_norm_1(self.drug_response_predictor_1(system_changed))))
@@ -103,17 +115,6 @@ class DrugResponseModel(nn.Module):
 
         return compound_prediction, drug_response_prediction
 
-    '''
-    def prediction_ff(self, compound_attended):
-        drug_response_prediction_1 = self.drug_response_predictor_1(compound_attended)
-        drug_response_prediction_1 = self.activation(drug_response_prediction_1)
-        drug_response_prediction_1 = self.drug_response_predictor_norm_1(drug_response_prediction_1)
-        drug_response_prediction_2 = self.drug_response_predictor_2(drug_response_prediction_1)
-        drug_response_prediction_2 = self.activation(drug_response_prediction_2)
-        drug_response_prediction_2 = self.drug_response_predictor_norm_2(drug_response_prediction_2)
-        drug_response_prediction = self.drug_response_predictor(drug_response_prediction_2)
-        return drug_response_prediction
-    '''
     def get_mut2system(self, system_embedding, mut_embedding, genotype_dict):
         #system_embedding = self.dropout(system_embedding/torch.norm(system_embedding, p=2, dim=-1, keepdim=True))
         #mut_embedding = self.dropout(mut_embedding/torch.norm(mut_embedding, p=2, dim=-1, keepdim=True))
@@ -124,6 +125,10 @@ class DrugResponseModel(nn.Module):
         for genotype in self.genotypes:
             system_embedding = system_embedding + mutation_effects[genotype]
         return system_embedding, mutation_effects
+
+    def get_system2gene(self, system_embedding, gene_embedding, sys2gene_mask):
+        system_effect = self.system2gene.forward(gene_embedding, system_embedding, sys2gene_mask)
+        return gene_embedding + system_effect, system_effect
 
     def get_system2system(self, system_embedding, nested_hierarchical_masks, direction='forward'):
         #system_embedding = system_embedding
@@ -178,18 +183,18 @@ class DrugResponseModel(nn.Module):
             return comp2sys_result, comp2sys_attention
         else:
             return comp2sys_result
-'''
+
     def get_comp2gene(self, compound_embedding, gene_embedding, attention=False, gene_mask=None):
-        compound_embedding = self.comp_norm_2(compound_embedding)
-        gene_embedding = self.comp2sys_norm_1(self.activation(self.system_mapper_1(gene_embedding)))
-        gene_embedding = self.comp2sys_norm_2(self.system_mapper_2(gene_embedding))
-        comp2gene_result = self.comp2system(compound_embedding, gene_embedding, gene_embedding, mask=gene_mask)
+        #compound_embedding = self.comp_norm_2(compound_embedding)
+        #gene_embedding = self.comp2sys_norm_1(self.activation(self.system_mapper_1(gene_embedding)))
+        #gene_embedding = self.comp2sys_norm_2(self.system_mapper_2(gene_embedding))
+        comp2gene_result = self.comp2gene(compound_embedding, gene_embedding, gene_embedding, mask=gene_mask)
         if attention:
-            comp2sys_attention = self.comp2system.get_attention(compound_embedding, gene_embedding, gene_embedding)
-            return comp2gene_result, comp2sys_attention
+            comp2gene_attention = self.comp2gene.get_attention(compound_embedding, gene_embedding, gene_embedding)
+            return comp2gene_result, comp2gene_attention
         else:
             return comp2gene_result
-'''
+
 
 
 

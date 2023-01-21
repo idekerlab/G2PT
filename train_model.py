@@ -35,7 +35,7 @@ if __name__ == '__main__':
     parser.add_argument('--train', help='Training dataset', type=str)
     parser.add_argument('--val', help='Validation dataset', type=str, default=None)
     parser.add_argument('--test', help='Test dataset', type=str, default=None)
-    parser.add_argument('--nest_embedding', default=None)
+    parser.add_argument('--system_embedding', default=None)
     parser.add_argument('--gene_embedding', default=None)
 
     parser.add_argument('--epochs', help='Training epochs for training', type=int, default=300)
@@ -110,16 +110,16 @@ if __name__ == '__main__':
         drug_response_model = DrugResponseModel(tree_parser, list(args.genotypes.keys()),
                                                 compound_model, args.hidden_dims, dropout=args.dropout)
 
-    if args.nest_embedding:
-        NeST_embedding_dict = np.load(args.nest_embedding, allow_pickle=True).item()
+    if args.system_embedding:
+        system_embedding_dict = np.load(args.system_embedding, allow_pickle=True).item()
         print("Loading System Embeddings :", args.nest_embedding)
-        if "NEST" not in NeST_embedding_dict.keys():
-            print("NEST root term does not exist!")
-            NeST_embedding_dict["NEST"] = np.mean(
-                np.stack([NeST_embedding_dict["NEST:1"], NeST_embedding_dict["NEST:2"], NeST_embedding_dict["NEST:3"]],
-                         axis=0), axis=0, keepdims=False)
+        #if "NEST" not in NeST_embedding_dict.keys():
+        #    print("NEST root term does not exist!")
+        #    system_embedding_dict["NEST"] = np.mean(
+        #        np.stack([system_embedding_dict["NEST:1"], NeST_embedding_dict["NEST:2"], NeST_embedding_dict["NEST:3"]],
+        #                 axis=0), axis=0, keepdims=False)
         system_embeddings = np.stack(
-            [NeST_embedding_dict[key] for key, value in sorted(tree_parser.system2ind.items(), key=lambda a: a[1])])
+            [system_embedding_dict[key] for key, value in sorted(tree_parser.system2ind.items(), key=lambda a: a[1])])
         drug_response_model.system_embedding.weight = nn.Parameter(torch.tensor(system_embeddings))
         print(drug_response_model.system_embedding.weight)
         drug_response_model.system_embedding.weight.requires_grad = False
@@ -162,9 +162,9 @@ if __name__ == '__main__':
                                                       batch_size=args.batch_size, group_index=0, drug_index=1,
                                                       response_index=2, z_weights=args.z_weight)
         drug_response_dataloader_drug = DataLoader(drug_response_dataset,
-                                              #batch_size=args.batch_size,
+                                              batch_size=args.batch_size,
                                               #sampler=drug_response_sampler,
-                                              batch_sampler= drug_batch_sampler,
+        #                                      batch_sampler= drug_batch_sampler,
                                               collate_fn=drug_response_collator,
                                               num_workers=args.jobs)
         drug_response_dataloader_cellline = DataLoader(drug_response_dataset,

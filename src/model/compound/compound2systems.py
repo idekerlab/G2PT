@@ -7,10 +7,11 @@ from src.model.tree_conv import PositionWiseFeedForward, MultiHeadedAttention
 
 class CompoundToSystems(nn.Module):
 
-    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2):
+    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, transform=True):
         super().__init__()
         self.attn_heads = attn_heads
-        self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, activation='softmax')
+        self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, activation='softmax',
+                                              transform=True)
         self.feed_forward = PositionWiseFeedForward(d_model=hidden, d_ff=feed_forward_hidden, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
         self.inner_norm = inner_norm

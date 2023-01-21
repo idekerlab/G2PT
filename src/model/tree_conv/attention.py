@@ -9,7 +9,7 @@ class MultiHeadedAttention(nn.Module):
     Take in model size and number of heads.
     """
 
-    def __init__(self, h, d_model, dropout=0.1, activation='softmax', top_k=0):
+    def __init__(self, h, d_model, dropout=0.1, activation='softmax', top_k=0, transform=True):
         super().__init__()
         assert d_model % h == 0
 
@@ -20,6 +20,7 @@ class MultiHeadedAttention(nn.Module):
         self.linear_layers = nn.ModuleList([nn.Linear(d_model, d_model, bias=False) for _ in range(3)])
         self.output_linear = nn.Linear(d_model, d_model, bias=False)
         self.attention = Attention(activation=activation, top_k=top_k)
+        self.transform = transform
 
         self.dropout = nn.Dropout(p=dropout)
 
@@ -27,8 +28,9 @@ class MultiHeadedAttention(nn.Module):
         batch_size = query.size(0)
 
         # 1) Do all the linear projections in batch from d_model => h x d_k
-        query, key, value = [l(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
-                             for l, x in zip(self.linear_layers, (query, key, value))]
+        if self.transform:
+            query, key, value = [l(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
+                                 for l, x in zip(self.linear_layers, (query, key, value))]
 
         # 2) Apply attention on all the projected vectors in batch.
         x, attn = self.attention(query, key, value, mask=mask, dropout=self.dropout)
