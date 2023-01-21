@@ -72,9 +72,9 @@ There are several optional parameters that you can provide in addition to the in
 1. _--out_: a name of directory where you want to store the trained models. The default
 is set to "MODEL" in the current working directory.
 
-2. _--hiddens_: a embedding dimension size
+2. _--hiddens_: a embedding and hierarchical transformer dimension size
 
-3. _--compound_hiddns_: a number of neurons to assign each subsystem in the hierarchy.
+3. _--compound_hiddens_: a number of neurons for compound embedding.
 
 4. _--epochs_: the number of epoch to run during the training phase. The default is set to 300.
 
