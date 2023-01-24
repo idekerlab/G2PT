@@ -27,6 +27,8 @@ conda env create python==3.6 --name envname --file=environment.yml
 
 ## Usage
 
+The usage of G2TP is very similar to [DrugCell](https://github.com/idekerlab/DrugCell) and [NeST-VNN](https://github.com/idekerlab/nest_vnn)
+
 To train a new model using a custom data set, first make sure that you have
 a proper virtual environment set up. Also make sure that you have all the required files
 to run the training scripts:
