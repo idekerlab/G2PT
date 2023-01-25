@@ -105,7 +105,7 @@ is to use GPU 0.
                   
 usage: train_model.py 
                       --onto ONTO
-                      --subtree_order
+                      --subtree_order default
                       --train TRAIN --val VAL --test TEST
                       
                       --nest_embedding NEST_EMBEDDING
