@@ -112,7 +112,7 @@ if __name__ == '__main__':
 
     if args.system_embedding:
         system_embedding_dict = np.load(args.system_embedding, allow_pickle=True).item()
-        print("Loading System Embeddings :", args.nest_embedding)
+        #print("Loading System Embeddings :", args.system_embedding)
         #if "NEST" not in NeST_embedding_dict.keys():
         #    print("NEST root term does not exist!")
         #    system_embedding_dict["NEST"] = np.mean(
