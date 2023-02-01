@@ -137,3 +137,5 @@ usage: train_model.py
                       --model MODEL 
                       --out OUT
 ```
+
+you can train model with sample data by using [train_model.sh](train_model.sh)
