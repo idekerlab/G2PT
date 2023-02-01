@@ -91,7 +91,10 @@ if __name__ == '__main__':
     train_dataset = pd.read_csv(args.train, header=None, sep='\t')
 
     if args.cuda is not None:
-        device = torch.device("cuda:%d" % args.cuda)
+        if torch.cuda.is_available():
+            device = torch.device("cuda:%d" % args.cuda)
+        else:
+            device = torch.device("cpu")
     else:
         device = torch.device("cpu")
 
