@@ -37,14 +37,16 @@ to run the training scripts:
     * _gene2ind.txt_: make sure you are using _gene2ind.txt_ file provided in this repository.
     * _cell2ind.txt_: a tab-delimited file where the 1st column is index of cells 
         and the 2nd column is the name of cells (genotypes).
-    * _cell2mutation.txt_: a comma-delimited file where each row has 718 binary values
-         indicating each gene is mutated (1) or not (0).
-    The column index of each gene should match with those in _gene2ind.txt_ file. 
-    The line number should match with the indices of cells in _cell2ind.txt_ file.
-    * _cell2cndeletion.txt_: a comma-delimited file where each row has 718 binary values
-         indicating copy number deletion (1) (0 for not).
-    * _cell2amplification.txt_: a comma-delimited file where each row has 718 binary values
-         indicating copy number amplification (1) (0 for not).
+    * _--genotypes_: you can input genotype with this arguments
+      * _cell2mutation.txt_: a comma-delimited file where each row has 718 binary values
+            indicating each gene is mutated (1) or not (0).
+   The column index of each gene should match with those in _gene2ind.txt_ file. 
+   The line number should match with the indices of cells in _cell2ind.txt_ file.
+      * _cell2cndeletion.txt_: a comma-delimited file where each row has 718 binary values
+           indicating copy number deletion (1) (0 for not).
+      * _cell2amplification.txt_: a comma-delimited file where each row has 718 binary values
+           indicating copy number amplification (1) (0 for not).
+      * example: _--genotype mutation:./sample/cell2mutation.txt,cna:./sample/cell2cnamplification.txt,cnd:./sample/cell2cndeletion.txt_
 
 2. Training data file: _training_data.txt_
     * A tab-delimited file containing all data points that you want to use to train the model.
@@ -106,6 +108,7 @@ is to use GPU 0.
 usage: train_model.py 
                       --onto ONTO
                       --subtree_order default
+                      --genotype featurename:file_dir
                       --train TRAIN --val VAL --test TEST
                       
                       --nest_embedding NEST_EMBEDDING
