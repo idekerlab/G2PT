@@ -35,7 +35,7 @@ class EmbeddingVisualizer(object):
         return updated_loc, not_updated_loc
 
     def draw_change_embedding(self, axe, prev, update, updated_loc, not_updated_loc, name=None, draw_unhchanged=True,
-                              xaxis=None, yaxis=None, x=0, y=1):
+                              xaxis=None, yaxis=None, x=0, y=1, arrow_color='blue'):
         if (sum(not_updated_loc)!=0)&draw_unhchanged:
             unchanged_transformed = self.pca.transform(prev[not_updated_loc])
             axe.scatter(unchanged_transformed[:, x], unchanged_transformed[:, y], alpha=0.1, c='grey')
@@ -49,13 +49,14 @@ class EmbeddingVisualizer(object):
         axe.scatter(transformed_previous[:, x], transformed_previous[:, y], c='yellow', edgecolors='black')
         axe.scatter(transformed_after[:, x], transformed_after[:, y], c='red', edgecolors='black', marker="^")
         for m, n in zip(transformed_previous, transformed_after):
-            axe.arrow(m[x], m[y], n[x] - m[x], n[y] - m[y], head_width=0.03, linestyle='--', linewidth=0.5, color='blue')
+            arrow = axe.arrow(m[x], m[y], n[x] - m[x], n[y] - m[y], head_width=0.03, linestyle='--', linewidth=0.5, color=arrow_color)
         if name is not None:
             axe.set_title(name)
         if xaxis is not None:
             axe.set_xlim(xaxis)
         if yaxis is not None:
             axe.set_ylim(yaxis)
+        return arrow
 
     def draw_mutation_effect(self, genotypes, system=None, gene=None, ax=None,  fig_size=7, output_path=None, x=0, y=1):
         mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
@@ -113,14 +114,14 @@ class EmbeddingVisualizer(object):
         mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
         mutation_updated, mutation_updates_dict = self.drug_response_model.get_mut2system(self.system_embedding_tensor,
                                                                                                 mut_embedding, genotypes)
-        tree_updated, tree_updates = self.drug_response_model.get_system2system(mutation_updated,
+        tree_updated_forward, tree_updates_forward = self.drug_response_model.get_system2system(mutation_updated,
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='forward')
-        tree_updated, tree_updates = self.drug_response_model.get_system2system(tree_updated[-1][-1],
+        tree_updated_backward, tree_updates_backward = self.drug_response_model.get_system2system(tree_updated_forward[-1][-1],
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='backward')
 
-        fig, axes = plt.subplots(1, 3, figsize=(figsize * 3, figsize), sharex=True, sharey=True)
+        fig, axes = plt.subplots(1, 4, figsize=(figsize * 4, figsize), sharex=True, sharey=True)
         axes = axes.ravel()
         system_embedding_transformed = self.pca.transform(self.system_embedding)
         axes[0].scatter(system_embedding_transformed[:, x], system_embedding_transformed[:, y], c='yellow', edgecolors='black')
@@ -131,11 +132,54 @@ class EmbeddingVisualizer(object):
         axes[1].scatter(mutation_updated_transformed[:, x], mutation_updated_transformed[:, y], c='red', edgecolors='black', marker="^")
         axes[1].set_title("Mut2Systems")
 
-        tree_updated_transformed = self.pca.transform(tree_updated[-1][-1][0].detach().cpu().numpy())
-        axes[2].scatter(tree_updated_transformed[:, x], tree_updated_transformed[:, y], c='blue', edgecolors='black', marker="^")
-        axes[2].set_title("Hierarchical convolution")
+        tree_updated_forward_transformed = self.pca.transform(tree_updated_forward[-1][-1][0].detach().cpu().numpy())
+        axes[2].scatter(tree_updated_forward_transformed[:, x], tree_updated_forward_transformed[:, y], c='blue', edgecolors='black',
+                        marker="^")
+        axes[2].set_title("Sys2Env")
+
+        tree_updated_backward_transformed = self.pca.transform(tree_updated_backward[-1][-1][0].detach().cpu().numpy())
+        axes[3].scatter(tree_updated_backward_transformed[:, x], tree_updated_backward_transformed[:, y], c='blue', edgecolors='black', marker="^")
+        axes[3].set_title("Env2Sys")
 
         plt.show()
+
+    def draw_system_change_decompose(self, genotypes, system, figsize=7, xaxis=None, yaxis=None, x=0, y=1):
+        mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
+        mutation_updated, mutation_updates_dict = self.drug_response_model.get_mut2system(self.system_embedding_tensor,
+                                                                                                mut_embedding, genotypes)
+        tree_updated_forward, tree_updates_forward = self.drug_response_model.get_system2system(mutation_updated,
+                                                                                self.nested_subtrees_forward,
+                                                                                direction='forward')
+        tree_updated_backward, tree_updates_backward = self.drug_response_model.get_system2system(tree_updated_forward[-1][-1],
+                                                                                self.nested_subtrees_backward,
+                                                                                direction='backward')
+
+
+        system_indices = np.zeros(shape=len(self.tree_parser.system2ind))
+        system_ind = self.tree_parser.system2ind[system]
+        system_indices[system_ind] = 1
+        updated_loc = system_indices == 1
+        # print((prev+update)[parent_ind]==tree_updated[m][n][0].detach().cpu().numpy()[parent_ind])
+        not_updated_loc = system_indices == 0
+
+        fig, axes = plt.subplots(1, 1, figsize=(figsize, figsize), sharex=True, sharey=True)
+
+        mut2sys_arrow = self.draw_change_embedding(axes, self.system_embedding, mutation_updated[0].detach().cpu().numpy() - self.system_embedding,
+                                                   updated_loc, not_updated_loc,
+                                   name="Mut2Sys", draw_unhchanged=False, xaxis=xaxis, yaxis=yaxis,
+                                   x=x, y=y, arrow_color='red')
+        sys2env_arrow = self.draw_change_embedding(axes, mutation_updated[0].detach().cpu().numpy(),
+                                                   tree_updated_forward[-1][-1][0].detach().cpu().numpy() - mutation_updated[0].detach().cpu().numpy(),
+                                   updated_loc, not_updated_loc,
+                                   name="Sys2Env", draw_unhchanged=False, xaxis=xaxis, yaxis=yaxis,
+                                   x=x, y=y, arrow_color='blue')
+        env2sys_arrow = self.draw_change_embedding(axes, tree_updated_forward[-1][-1][0].detach().cpu().numpy(),
+                                                   tree_updated_backward[-1][-1][0].detach().cpu().numpy() - tree_updated_forward[-1][-1][0].detach().cpu().numpy(),
+                                   updated_loc, not_updated_loc, name="Env2Sys", draw_unhchanged=True, xaxis=xaxis, yaxis=yaxis,
+                                   x=x, y=y, arrow_color='yellow')
+
+        plt.legend([mut2sys_arrow, sys2env_arrow, env2sys_arrow], ["Mut2Sys", "Sys2Env", "Env2Sys"])
+
 
     def draw_embedding_changes(self, genotypes, figsize=7, n_cols=1, n_rows=1, xaxis=None, yaxis=None, names=None, x=0, y=1):
         mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
@@ -145,7 +189,7 @@ class EmbeddingVisualizer(object):
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='forward')
         tree_updated, tree_updates = self.drug_response_model.get_system2system(tree_updated[-1][-1],
-                                                                                self.nested_subtrees_forward,
+                                                                                self.nested_subtrees_backward,
                                                                                 direction='backward')
         tree_updated = tree_updated[-1][-1].detach().numpy()
         fig, axes = plt.subplots(n_cols, n_rows, figsize=(figsize * n_cols, figsize * n_rows), sharex=True, sharey=True)
@@ -162,13 +206,13 @@ class EmbeddingVisualizer(object):
         mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
         mutation_updated, mutation_updates_dict = self.drug_response_model.get_mut2system(self.system_embedding_tensor,
                                                                                                 mut_embedding, genotypes)
-        tree_updated, tree_updates = self.drug_response_model.get_system2system(mutation_updated,
+        tree_updated_forward, tree_updates_forward = self.drug_response_model.get_system2system(mutation_updated,
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='forward')
-        tree_updated, tree_updates = self.drug_response_model.get_system2system(tree_updated[-1][-1],
-                                                                                self.nested_subtrees_forward,
+        tree_updated_backward, tree_updates_backward = self.drug_response_model.get_system2system(tree_updated_forward[-1][-1],
+                                                                                self.nested_subtrees_backward,
                                                                                 direction='backward')
-        tree_updated.reverse()
+        tree_updated_backward.reverse()
         parent_systems = self.tree_parser.get_parent_system_of_gene(gene)
         print("Gene:", gene)
         print("Interaction type:", interaction_type)
@@ -226,12 +270,12 @@ class EmbeddingVisualizer(object):
                                     if m==0:
                                         prev = mutation_updated
                                     else:
-                                        prev = tree_updated[m-1][-1]
+                                        prev = tree_updated_backward[m-1][-1]
                                 else:
-                                    prev = tree_updated[m][n-1]
+                                    prev = tree_updated_backward[m][n-1]
 
                                 prev = prev[0].detach().cpu().numpy()
-                                update = tree_updates[m][n][0].detach().cpu().numpy()
+                                update = tree_updated_backward[m][n][0].detach().cpu().numpy()
                                 system_indices = np.zeros(shape=len(self.tree_parser.system2ind))
                                 system_indices[parent_ind] = 1
                                 updated_loc = system_indices==1
@@ -285,7 +329,7 @@ class EmbeddingVisualizer(object):
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='forward')
         tree_updated, tree_updates = self.drug_response_model.get_system2system(tree_updated[-1][-1],
-                                                                                self.nested_subtrees_forward,
+                                                                                self.nested_subtrees_backward,
                                                                                 direction='backward')
         result, compound_attention2system = self.drug_response_model.get_comp2system(compound_embedding,
                                                                                               tree_updated[-1][-1],
@@ -318,7 +362,7 @@ class EmbeddingVisualizer(object):
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='forward')
         tree_updated, tree_updates = self.drug_response_model.get_system2system(tree_updated[-1][-1],
-                                                                                self.nested_subtrees_forward,
+                                                                                self.nested_subtrees_backward,
                                                                                 direction='backward')
         tree_updated.reverse()
         parent_systems = self.tree_parser.get_parent_system_of_gene(gene)

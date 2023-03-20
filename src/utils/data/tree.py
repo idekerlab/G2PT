@@ -15,12 +15,17 @@ class TreeParser(object):
         systems = np.unique(self.system_df[['parent', 'child']].values)
         self.system2ind = {system: i for i, system in enumerate(systems)}
         self.ind2system = {i:system for system, i in self.system2ind.items()}
-        print(self.system2ind)
-        print(self.gene2ind)
-        self.gene2system_mask = np.zeros((len(self.system2ind), len(self.gene2ind)))
-
         self.n_systems = len(self.system2ind)
         self.n_genes = len(self.gene2ind)
+        print("%d Systems are queried"%self.n_systems)
+        print(self.system2ind)
+        print("%d Genes are queried"%self.n_genes)
+        print(self.gene2ind)
+        self.system2system_mask = np.zeros((len(self.system2ind), len(self.system2ind)))
+        for parent_system, child_system in zip(self.system_df['parent'], self.system_df['child']):
+            self.system2system_mask[self.system2ind[parent_system], self.system2ind[child_system]] = 1
+
+        self.gene2system_mask = np.zeros((len(self.system2ind), len(self.gene2ind)))
 
         for system, gene in zip(self.gene2system_df['parent'], self.gene2system_df['child']):
             self.gene2system_mask[self.system2ind[system], self.gene2ind[gene]] = 1

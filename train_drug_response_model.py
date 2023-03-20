@@ -75,11 +75,12 @@ if __name__ == '__main__':
         compound_bert =  AutoModelForSequenceClassification.from_pretrained(args.bert)
         for name, param in compound_bert.named_parameters():
             param.requires_grad = False
-            if len(name.split("."))>=5:
-                if name.split(".")[1]=='encoder':
-                    if int(name.split(".")[3])>=10 :
-                        param.requires_grad = True
-                        #print(name, param.requires_grad)
+            #
+            #if len(name.split("."))>=5:
+            #    if name.split(".")[1]=='encoder':
+            #        if int(name.split(".")[3])>=10 :
+            #            param.requires_grad = True
+            #            #print(name, param.requires_grad)
         compound_model = ChemBERTaCompoundModel(compound_bert, args.dropout)
     else:
         print("ECFP with radius %d, and %d bits used for compound encoding"%(args.radius, args.n_bits))
@@ -111,7 +112,7 @@ if __name__ == '__main__':
     else:
         compound_model = compound_trainer.train(args.compound_epochs)
         drug_response_model = DrugResponseModel(tree_parser, list(args.genotypes.keys()),
-                                                compound_model, args.hidden_dims, dropout=args.dropout)
+                                                args.hidden_dims, compound_model, dropout=args.dropout)
 
     if args.system_embedding:
         system_embedding_dict = np.load(args.system_embedding, allow_pickle=True).item()
@@ -136,11 +137,11 @@ if __name__ == '__main__':
     print("Summary of trainable parameters")
     count_parameters(drug_response_model)
     drug_response_dataset = DrugResponseDataset(train_dataset, args.cell2id, args.genotypes, compound_encoder,
-                                                tree_parser, args.subtree_order)
+                                                tree_parser)
     if args.val is not None:
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
         val_drug_response_dataset = DrugResponseDataset(val_dataset, args.cell2id, args.genotypes, compound_encoder,
-                                                    tree_parser, args.subtree_order)
+                                                    tree_parser)
         drug_response_collator = DrugResponseCollator(list(args.genotypes.keys()), compound_encoder)
 
         val_drug_response_dataloader = DataLoader(val_drug_response_dataset, shuffle=False, batch_size=args.batch_size,

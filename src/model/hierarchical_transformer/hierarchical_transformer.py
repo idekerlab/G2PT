@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
-from src.model.tree_conv import MultiHeadedAttention
+from src.model.hierarchical_transformer import MultiHeadedAttention
 
 
 class PositionWiseFeedForward(nn.Module):
@@ -18,7 +18,7 @@ class PositionWiseFeedForward(nn.Module):
         return self.w_2(self.dropout(self.activation(self.w_1(x))))
 
 
-class TreeConvolutionUpdate(nn.Module):
+class HierarchicalTransformerUpdate(nn.Module):
     """
     Bidirectional Encoder = Transformer (self-attention)
     Transformer = MultiHead_Attention + Feed_Forward with sublayer connection
@@ -33,7 +33,7 @@ class TreeConvolutionUpdate(nn.Module):
         :param dropout: dropout rate
         """
 
-        super(TreeConvolutionUpdate, self).__init__()
+        super(HierarchicalTransformerUpdate, self).__init__()
         self.attn_heads = attn_heads
         self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, transform=True)
         #self.layer_norm = nn.LayerNorm(hidden)
@@ -60,7 +60,7 @@ class TreeConvolutionUpdate(nn.Module):
         return self.dropout(result)
 
 
-class TreeConvolution(nn.Module):
+class HierarchicalTransformer(nn.Module):
     def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, conv_type='system',
                  norm_channel_first=False, transform=True):
         """
@@ -71,9 +71,9 @@ class TreeConvolution(nn.Module):
         :param dropout: dropout rate
         """
 
-        super(TreeConvolution, self).__init__()
-        self.tree_convolution_update = TreeConvolutionUpdate(hidden, attn_heads, feed_forward_hidden, inner_norm,
-                                                             dropout, norm_channel_first=norm_channel_first, transform=transform)
+        super(HierarchicalTransformer, self).__init__()
+        self.hierarchical_transformer_update = HierarchicalTransformerUpdate(hidden, attn_heads, feed_forward_hidden, inner_norm,
+                                                                     dropout, norm_channel_first=norm_channel_first, transform=transform)
         self.norm = outer_norm
         self.conv_type = conv_type
         self.dropout = nn.Dropout(dropout)
@@ -84,7 +84,8 @@ class TreeConvolution(nn.Module):
         batch_size = q.size(0)
         if self.conv_type=='system':
             mask = mask.unsqueeze(0).expand(batch_size, -1, -1,)
-        result = self.tree_convolution_update(q, k, k, mask)
+        result = self.hierarchical_transformer_update(q, k, k, mask)
+
         #result_layer_norm = self.layer_norm(result)
         if self.norm is not None:
             if self.norm_channel_first:
@@ -98,7 +99,7 @@ class TreeConvolution(nn.Module):
         #updated_value = updated_value.permute(0, 2, 1)
         node_mask = torch.sum(mask, dim=-1) == 0
         node_mask = node_mask.unsqueeze(-1).expand(-1, -1, q.size(-1))
-
-        return result.masked_fill(node_mask, 0)
+        result = result.masked_fill(node_mask, 0)
+        return result
 
 
