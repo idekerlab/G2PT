@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch
 
 from src.model.utils import GlobalUpdateNorm
-from src.model.tree_conv import TreeConvolution
+from src.model.hierarchical_transformer import HierarchicalTransformer
 
 class DrugResponseModel(nn.Module):
 
@@ -17,13 +17,13 @@ class DrugResponseModel(nn.Module):
         print("Model will consider mutation types;", self.mut_types)
 
         self.norm = GlobalUpdateNorm(hidden_dims)
-        self.system_tree_conv = TreeConvolution(hidden_dims, int(hidden_dims/32), hidden_dims*4, self.norm. dropout)
+        self.system_tree_conv = HierarchicalTransformer(hidden_dims, int(hidden_dims / 32), hidden_dims * 4, self.norm. dropout)
 
         self.system_embedding = nn.Embedding(n_systems, hidden_dims)
         self.mut_embedding = nn.ModuleDict({mut_type:nn.Embedding(n_genes, hidden_dims, padding_idx=n_genes)
                                             for mut_type in mut_types})
-        self.mut_tree_convs = nn.ModuleDict({mut_type+"_TreeConv": TreeConvolution(hidden_dims, int(hidden_dims/32),
-                                                                                   hidden_dims*4, self.norm. dropout)
+        self.mut_tree_convs = nn.ModuleDict({mut_type+"_TreeConv": HierarchicalTransformer(hidden_dims, int(hidden_dims / 32),
+                                                                                           hidden_dims * 4, self.norm. dropout)
                                              for mut_type in mut_types})
         self.compound_encoder = compound_encoder
         self.compound_mapper = nn.Linear(compound_encoder.hidden_layers[-1], hidden_dims)

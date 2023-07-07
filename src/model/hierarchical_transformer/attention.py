@@ -33,7 +33,7 @@ class MultiHeadedAttention(nn.Module):
                                  for l, x in zip(self.linear_layers, (query, key, value))]
 
         # 2) Apply attention on all the projected vectors in batch.
-        x, attn = self.attention(query, key, value, mask=mask, dropout=self.dropout)
+        x, attn, score = self.attention(query, key, value, mask=mask, dropout=self.dropout)
 
         # 3) "Concat" using a view and apply a final linear.
         x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.h * self.d_k)
@@ -44,9 +44,15 @@ class MultiHeadedAttention(nn.Module):
         batch_size = query.size(0)
         query, key, value = [l(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
                              for l, x in zip(self.linear_layers, (query, key, value))]
-        x, attn = self.attention(query, key, value, mask=mask, dropout=self.dropout)
+        x, attn, score = self.attention(query, key, value, mask=mask, dropout=self.dropout)
         return attn
 
+    def get_score(self, query, key, value, mask=None):
+        batch_size = query.size(0)
+        query, key, value = [l(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
+                             for l, x in zip(self.linear_layers, (query, key, value))]
+        x, attn, score = self.attention(query, key, value, mask=mask, dropout=self.dropout)
+        return score
 
 class Attention(nn.Module):
     """
@@ -91,4 +97,4 @@ class Attention(nn.Module):
         if dropout is not None:
             p_attn = dropout(p_attn)
         #print(p_attn.shape, value.shape)
-        return torch.matmul(p_attn, value), p_attn
+        return torch.matmul(p_attn, value), p_attn, scores

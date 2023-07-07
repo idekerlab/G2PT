@@ -5,7 +5,7 @@ from src.model.hierarchical_transformer import PositionWiseFeedForward, MultiHea
 
 
 
-class System2Target(nn.Module):
+class System2Phenotype(nn.Module):
 
     def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, transform=True):
         super().__init__()
@@ -20,10 +20,10 @@ class System2Target(nn.Module):
         self.target_norm = nn.LayerNorm(hidden)
         self.sys_norm = nn.LayerNorm(hidden)
 
-    def forward(self, q, k, v, mask=None):
-
-        q = self.target_norm(q)
-        k, v = self.sys_norm(k), self.sys_norm(v)
+    def forward(self, q, k, v, mask=None, norm=True):
+        if norm:
+            q = self.target_norm(q)
+            k = self.sys_norm(k)
         result = self.attention.forward(q, k, v, mask=mask)
         result = result.squeeze(1)
         result = self.inner_norm(result)
@@ -32,7 +32,14 @@ class System2Target(nn.Module):
         result = self.dropout(result)
         return result
 
-    def get_attention(self, q, k, v):
-        q = self.target_norm(q)
-        k, v = self.sys_norm(k), self.sys_norm(v)
+    def get_attention(self, q, k, v, norm=True):
+        if norm:
+            q = self.target_norm(q)
+            k = self.sys_norm(k)
         return self.attention.get_attention(q, k, v, mask=None)
+
+    def get_score(self, q, k, v, norm=True):
+        if norm:
+            q = self.target_norm(q)
+            k = self.sys_norm(k)
+        return self.attention.get_score(q, k, v, mask=None)

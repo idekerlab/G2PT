@@ -1,2 +1,1 @@
 from .compound_encoder import ECFPCompoundModel, ChemBERTaCompoundModel
-from .compound2systems import CompoundToSystems
