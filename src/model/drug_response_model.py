@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch
 
 from src.model.model import Genotype2PhenotypeTransformer
-from src.model.hierarchical_transformer import System2Phenotype
+from src.model.hierarchical_transformer import Genotype2Phenotype
 
 class DrugResponseModel(Genotype2PhenotypeTransformer):
 
@@ -23,10 +23,10 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
         self.gene2comp_norm_inner = nn.LayerNorm(hidden_dims)
         self.gene2comp_norm_outer = nn.LayerNorm(hidden_dims)
 
-        self.sys2comp = System2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.sys2comp_norm_inner,
-                                         outer_norm=self.sys2comp_norm_outer, dropout=dropout, transform=True)
-        self.gene2comp = System2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.gene2comp_norm_inner,
-                                             outer_norm=self.gene2comp_norm_outer, dropout=dropout, transform=True)
+        self.sys2comp = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.sys2comp_norm_inner,
+                                           outer_norm=self.sys2comp_norm_outer, dropout=dropout, transform=True)
+        self.gene2comp = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.gene2comp_norm_inner,
+                                            outer_norm=self.gene2comp_norm_outer, dropout=dropout, transform=True)
         self.drug_response_predictors = nn.ModuleList([nn.Linear(hidden_dims*2, 1) for i in range(3)])
 
 

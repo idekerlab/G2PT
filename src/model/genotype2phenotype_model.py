@@ -2,13 +2,13 @@ import torch
 import torch.nn as nn
 
 from src.model.model import Genotype2PhenotypeTransformer
-from src.model.hierarchical_transformer import System2Phenotype
+from src.model.hierarchical_transformer import Genotype2Phenotype
 
 
-class G2PModel(Genotype2PhenotypeTransformer):
+class Genotype2PhenotypeModel(Genotype2PhenotypeTransformer):
 
     def __init__(self, tree_parser, genotypes, hidden_dims, dropout=0.2):
-        super(G2PModel, self).__init__(tree_parser, genotypes, hidden_dims, dropout=dropout)
+        super(Genotype2PhenotypeModel, self).__init__(tree_parser, genotypes, hidden_dims, dropout=dropout)
 
         #phenotype_vector = torch.empty(1, hidden_dims)
         #nn.init.xavier_normal(phenotype_vector)
@@ -22,23 +22,23 @@ class G2PModel(Genotype2PhenotypeTransformer):
         self.gene2pheno_norm_inner = nn.LayerNorm(hidden_dims)
         self.gene2pheno_norm_outer = nn.LayerNorm(hidden_dims)
 
-        self.system2phenotype = System2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.sys2pheno_norm_inner,
-                                                 outer_norm=self.sys2pheno_norm_outer, dropout=dropout, transform=True)
-        self.gene2phenotype = System2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.gene2pheno_norm_inner,
-                                               outer_norm=self.gene2pheno_norm_outer, dropout=dropout, transform=True)
+        self.system2phenotype = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.sys2pheno_norm_inner,
+                                                   outer_norm=self.sys2pheno_norm_outer, dropout=dropout, transform=True)
+        self.gene2phenotype = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.gene2pheno_norm_inner,
+                                                 outer_norm=self.gene2pheno_norm_outer, dropout=dropout, transform=True)
 
         self.phenotype_predictors = nn.ModuleList([nn.Linear(hidden_dims*2, 1) for i in range(3)])
 
     def forward(self, genotype_dict, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward,
                 sys2gene_mask, gene_weight=None, sys2cell=True, cell2sys=True, sys2gene=True):
-        system_embedding_result, gene_embedding_result = super(G2PModel, self).forward(genotype_dict,
-                                                                                       nested_hierarchical_masks_forward,
-                                                                                       nested_hierarchical_masks_backward,
-                                                                                       sys2gene_mask=sys2gene_mask,
-                                                                                       gene_weight=gene_weight,
-                                                                                       sys2cell=sys2cell,
-                                                                                       cell2sys=cell2sys,
-                                                                                       sys2gene=sys2gene)
+        system_embedding_result, gene_embedding_result = super(Genotype2PhenotypeModel, self).forward(genotype_dict,
+                                                                                                      nested_hierarchical_masks_forward,
+                                                                                                      nested_hierarchical_masks_backward,
+                                                                                                      sys2gene_mask=sys2gene_mask,
+                                                                                                      gene_weight=gene_weight,
+                                                                                                      sys2cell=sys2cell,
+                                                                                                      cell2sys=cell2sys,
+                                                                                                      sys2gene=sys2gene)
         batch_size = system_embedding_result[0].size(0)
         phenotype_vector = self.get_phenotype_vector(batch_size)
 

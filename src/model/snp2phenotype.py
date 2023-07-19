@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from src.model.model import Genotype2PhenotypeTransformer
-from src.model.hierarchical_transformer import System2Phenotype
+from src.model.hierarchical_transformer import Genotype2Phenotype
 from src.model.hierarchical_transformer import HierarchicalTransformer
 
 class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
@@ -49,14 +49,14 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.gene2pheno_update_norm_inner = nn.LayerNorm(hidden_dims, eps=0.1)
         self.gene2pheno_update_norm_outer = nn.LayerNorm(hidden_dims, eps=0.1)
 
-        self.system2phenotype = System2Phenotype(hidden_dims, 1, hidden_dims * 4,
-                                                 inner_norm=self.sys2pheno_update_norm_inner,
-                                                 outer_norm=self.sys2pheno_update_norm_outer, dropout=dropout,
+        self.system2phenotype = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4,
+                                                   inner_norm=self.sys2pheno_update_norm_inner,
+                                                   outer_norm=self.sys2pheno_update_norm_outer, dropout=dropout,
+                                                   transform=False)
+        self.gene2phenotype = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4,
+                                                 inner_norm=self.gene2pheno_update_norm_inner,
+                                                 outer_norm=self.gene2pheno_update_norm_outer, dropout=dropout,
                                                  transform=False)
-        self.gene2phenotype = System2Phenotype(hidden_dims, 1, hidden_dims * 4,
-                                               inner_norm=self.gene2pheno_update_norm_inner,
-                                               outer_norm=self.gene2pheno_update_norm_outer, dropout=dropout,
-                                               transform=False)
         self.phenotype_norm = nn.LayerNorm(hidden_dims*2)
         self.phenotype_predictor = nn.Linear(hidden_dims*2, 1)
 

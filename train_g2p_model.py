@@ -18,7 +18,7 @@ import torch.utils.data.distributed
 
 from prettytable import PrettyTable
 
-from src.model.genotype2phenotype_model import G2PModel
+from src.model.genotype2phenotype_model import Genotype2PhenotypeModel
 
 from src.utils.data import TreeParser
 from src.utils.data.dataset import G2PDataset, G2PCollator
@@ -154,7 +154,7 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.model is not None:
         g2p_model = torch.load(args.model, map_location=device)
     else:
-        g2p_model = G2PModel(tree_parser, list(args.genotypes.keys()), args.hidden_dims, dropout=args.dropout)
+        g2p_model = Genotype2PhenotypeModel(tree_parser, list(args.genotypes.keys()), args.hidden_dims, dropout=args.dropout)
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')

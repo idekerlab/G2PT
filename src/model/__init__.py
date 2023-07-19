@@ -1,3 +1,3 @@
 from .drug_response_model import DrugResponseModel
-from .genotype2phenotype_model import G2PModel
+from .genotype2phenotype_model import Genotype2PhenotypeModel
 from .snp2phenotype import SNP2PhenotypeModel
