@@ -4,7 +4,7 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import Sampler, BatchSampler
 from scipy.stats import zscore, skewnorm
 import torch
-from . import TreeParser
+from .. import TreeParser
 from random import shuffle
 
 def skew_normal_mode(data):
@@ -17,58 +17,25 @@ def skew_normal_mode(data):
     mode = loc + scale*m_z
     return mode, v, s, k
 
-class G2PDataset(Dataset):
-
-    def __init__(self, genotype_phenotype, cell2genotypes, tree_parser:TreeParser):
-        self.g2p_df = genotype_phenotype
-        self.tree_parser = TreeParser
-        self.cell2genotype_dict = {genotype: pd.read_csv(mut_data, header=None) for genotype, mut_data in
-                                   cell2genotypes.items()}
-        self.tree_parser = tree_parser
-
-    def __len__(self):
-        return self.g2p_df.shape[0]
-
-    def __getitem__(self, index):
-        cell_ind, phenotype = self.g2p_df.iloc[index].values
-        cell_mut_dict = {mut_type:self.tree_parser.get_system2genotype_mask(torch.tensor(mut_value.iloc[int(cell_ind)].values, dtype=torch.float32))
-                         for mut_type, mut_value in self.cell2genotype_dict.items()}
-        result_dict = dict()
-        result_dict['genotype'] = cell_mut_dict
-        result_dict['phenotype'] = phenotype
-        return result_dict
-
-class G2PCollator(object):
-
-    def __init__(self, genotypes):
-        self.genotypes = genotypes
-
-    def __call__(self, data):
-        result_dict = dict()
-        mutation_dict = dict()
-        #result_nested_mask = list()
-        for genotype in self.genotypes:
-            mutation_dict[genotype] = torch.stack([dr['genotype'][genotype] for dr in data])
-        result_dict['genotype'] = mutation_dict
-        result_dict['phenotype'] = torch.tensor([dr['phenotype'] for dr in data], dtype=torch.float32)
-        return result_dict
-
 class DrugResponseDataset(Dataset):
 
     def __init__(self, drug_response, cell2ind, cell2genotypes, compound_encoder, tree_parser:TreeParser):
 
+        self.compound_encoder = compound_encoder
         self.drug_response_df = drug_response #this is dataframe because dataset is split to train and val
         self.compound_grouped = self.drug_response_df.groupby(1)
+        self.drug_dict = {drug:self.compound_encoder(drug) for drug in self.drug_response_df[1].unique()}
 
         #self.drug_response_mean_dict = {drug: skew_normal_mode(self.compound_grouped.get_group(drug)[2])[0] for drug in self.drug_response_df[1].unique()}
-        self.drug_response_mean_dict = {drug: self.compound_grouped.get_group(drug)[2].mean() for drug in
+        if self.drug_response_df.shape[1]>2:
+            self.drug_response_mean_dict = {drug: self.compound_grouped.get_group(drug)[2].mean() for drug in
                                         self.drug_response_df[1].unique()}
         # the other will be read from csv
         self.cell2ind_df = pd.read_csv(cell2ind, sep='\t', header=None)
         self.cell2ind = {j:i for i, j in self.cell2ind_df.itertuples(0, None)}
 
-        self.cell2genotype_dict = {genotype: pd.read_csv(mut_data, header=None) for genotype, mut_data in cell2genotypes.items()}
-        self.compound_encoder = compound_encoder
+        self.cell2genotype_dict = {genotype: pd.read_csv(mut_data, header=None).astype('int32') for genotype, mut_data in cell2genotypes.items()}
+
         self.tree_parser = tree_parser
 
         '''
@@ -82,9 +49,13 @@ class DrugResponseDataset(Dataset):
         return self.drug_response_df.shape[0]
 
     def __getitem__(self, index):
-        cell, drug, response, source = self.drug_response_df.iloc[index].values
-        drug_mean = self.drug_response_mean_dict[drug]
-        drug_residual = response - drug_mean
+        if self.drug_response_df.shape[1]==4:
+            cell, drug, response, source = self.drug_response_df.iloc[index].values
+        if self.drug_response_df.shape[1]==3:
+            cell, drug, response = self.drug_response_df.iloc[index].values
+        if self.drug_response_df.shape[1]==2:
+            cell, drug = self.drug_response_df.iloc[index].values
+
         cell_ind = self.cell2ind[cell]
         cell_mut_dict = {mut_type:self.tree_parser.get_system2genotype_mask(torch.tensor(mut_value.iloc[cell_ind].values, dtype=torch.float32))
                          for mut_type, mut_value in self.cell2genotype_dict.items()}
@@ -92,10 +63,13 @@ class DrugResponseDataset(Dataset):
 
         result_dict = dict()
         result_dict['genotype'] = cell_mut_dict
-        result_dict['drug'] = self.compound_encoder.encode(drug)
-        #result_dict['nested_system_mask'] = cell_tree_mask
-        result_dict["response_mean"] = drug_mean
-        result_dict['response_residual'] = drug_residual
+        result_dict['drug'] = self.drug_dict(drug)
+        if self.drug_response_df.shape[1]>2:
+            #result_dict['nested_system_mask'] = cell_tree_mask
+            drug_mean = self.drug_response_mean_dict[drug]
+            drug_residual = response - drug_mean
+            result_dict["response_mean"] = drug_mean
+            result_dict['response_residual'] = drug_residual
         return result_dict
 
 class DrugResponseCollator(object):
@@ -122,8 +96,9 @@ class DrugResponseCollator(object):
         result_dict['genotype'] = mutation_dict
         result_dict['drug'] = self.compound_encoder.collate([dr['drug'] for dr in data])
         #result_dict['nested_system_mask'] = result_nested_mask
-        result_dict['response_mean'] = torch.tensor([dr['response_mean'] for dr in data])
-        result_dict['response_residual'] = torch.tensor([dr['response_residual'] for dr in data])
+        if 'response_mean' in data[0].keys():
+            result_dict['response_mean'] = torch.tensor([dr['response_mean'] for dr in data])
+            result_dict['response_residual'] = torch.tensor([dr['response_residual'] for dr in data])
         return result_dict
 
 
@@ -230,9 +205,9 @@ class CellLineBatchSampler(BatchSampler):
         self.celllines = list(self.cellline_grouped.groups.keys())
         self.n_celllines = len(self.celllines)
         self.result_dfs = []
-        for celline in self.cellline_grouped.groups.keys():
-            celline_df = self.cellline_grouped.get_group(celline)
-            self.result_dfs.append(celline_df)
+        for cellline in self.cellline_grouped.groups.keys():
+            cellline_df = self.cellline_grouped.get_group(cellline)
+            self.result_dfs.append(cellline_df)
 
     def __iter__(self):
         count = 0
@@ -246,20 +221,3 @@ class CellLineBatchSampler(BatchSampler):
 
     def __len__(self):
         return self.n_celllines
-'''
-    def __iter__(self):
-        count = 0
-        shuffle(self.celllines)
-        while count < self.n_celllines:
-            celline_df = self.cellline_grouped.get_group(self.celllines[count])
-            index = np.random.random_integers(0, celline_df.shape[0] - 1, size=self.batch_size)
-            yield celline_df.iloc[index].index.tolist()
-            count += 1
-
-    def __len__(self):
-        return self.n_celllines
-'''
-
-
-
-

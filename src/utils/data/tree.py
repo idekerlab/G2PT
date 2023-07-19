@@ -22,13 +22,15 @@ class TreeParser(object):
         print("%d Genes are queried"%self.n_genes)
         print(self.gene2ind)
         self.system2system_mask = np.zeros((len(self.system2ind), len(self.system2ind)))
+
         for parent_system, child_system in zip(self.system_df['parent'], self.system_df['child']):
             self.system2system_mask[self.system2ind[parent_system], self.system2ind[child_system]] = 1
 
         self.gene2system_mask = np.zeros((len(self.system2ind), len(self.gene2ind)))
-
+        self.system2gene_dict = {self.system2ind[system]: [] for system in systems}
         for system, gene in zip(self.gene2system_df['parent'], self.gene2system_df['child']):
             self.gene2system_mask[self.system2ind[system], self.gene2ind[gene]] = 1
+            self.system2gene_dict[self.system2ind[system]].append(self.gene2ind[gene])
         self.system2gene_mask = self.gene2system_mask.T
         self.subtree_types = self.system_df['interaction'].unique()
         self.system_graph = nx.from_pandas_edgelist(self.system_df, create_using=nx.DiGraph(), source='parent',
@@ -142,3 +144,96 @@ class TreeParser(object):
             if np.any([mut_system in self.descendant_dict_ind[y] for mut_system in mut_systems]):
                 result_mask[x, y] =1
         return torch.tensor(result_mask, dtype=torch.float32)
+
+
+class SNPTreeParser(TreeParser):
+
+    def __init__(self, ontology, snp2gene, gene2ind, snp2id, by_chr=False):
+        super(SNPTreeParser, self).__init__(ontology, gene2ind)
+        snp2ind = pd.read_csv(snp2id, sep='\t', names=['index', 'snp'])
+        self.snp2ind = {snp: index for index, snp in zip(snp2ind['index'], snp2ind['snp'])}
+        self.ind2snp = {index: snp for index, snp in zip(snp2ind['index'], snp2ind['snp'])}
+        self.n_snps = len(self.snp2ind)
+        self.snp_pad_index = self.n_snps
+        self.snp2gene_df = pd.read_csv(snp2gene, sep='\t', names=['snp', 'gene', 'chr'])
+        self.chromosomes = sorted(self.snp2gene_df.chr.unique())
+        self.gene2chr = {gene:CHR for gene, CHR in zip(self.snp2gene_df['gene'], self.snp2gene_df['chr'])}
+        self.snp2chr = {snp: CHR for snp, CHR in zip(self.snp2gene_df['snp'], self.snp2gene_df['chr'])}
+        self.chr2gene = {CHR: [self.gene2ind[gene] for gene in
+                               self.snp2gene_df.loc[self.snp2gene_df['chr'] == CHR]['gene'].values.tolist()] for CHR in
+                         self.chromosomes}
+        self.chr2snp = {CHR: [self.snp2ind[snp] for snp in
+                              self.snp2gene_df.loc[self.snp2gene_df['chr'] == CHR]['snp'].values.tolist()] for CHR in
+                        self.chromosomes}
+
+        print("%d SNPs are queried" % self.n_snps)
+        print(self.snp2ind)
+        if by_chr:
+            print("Embedding will feed by chromosome")
+        self.by_chr = by_chr
+        self.snp2gene_mask = np.zeros((self.n_genes, self.n_snps))
+        self.gene2snp_dict = {ind:[] for gene, ind in self.gene2ind.items()}
+        self.snp2gene_dict = {ind:[] for ind in range(self.n_snps)}
+        for snp, gene in zip(self.snp2gene_df['snp'], self.snp2gene_df['gene']):
+            self.snp2gene_mask[self.gene2ind[gene], self.snp2ind[snp]] = 1
+            self.gene2snp_dict[self.gene2ind[gene]].append(self.snp2ind[snp])
+            self.snp2gene_dict[self.snp2ind[snp]].append(self.gene2ind[gene])
+        self.gene2snp_mask = self.snp2gene_mask.T
+
+    def get_system2genotype_mask(self):
+        return self.gene2system_mask
+
+    def get_snp2gene_mask(self, CHR, gene_indices, snp_indices, type_indices=None):
+
+        if len(gene_indices)==0:
+            return torch.zeros((len(self.chr2gene[CHR]), len(self.chr2snp[CHR])))
+        else:
+            if type_indices is not None:
+                snp2gene_mask = self.snp2gene_mask
+                for key, value in type_indices.items():
+                    type_mask = np.zeros_like(self.snp2gene_mask)
+                    type_mask[:, value] = key
+                    snp2gene_mask *= type_mask
+            else:
+                snp2gene_mask = self.snp2gene_mask
+            snp2gene_mask =  torch.tensor(snp2gene_mask)[gene_indices, :]
+            snp2gene_mask = snp2gene_mask[:, snp_indices]
+            if self.by_chr:
+                result_mask = torch.zeros((len(self.chr2gene[CHR]), len(self.chr2snp[CHR])))
+            else:
+                result_mask = torch.zeros((self.n_genes, self.n_snps))
+            result_mask[:snp2gene_mask.size(0), :snp2gene_mask.size(1)] = snp2gene_mask
+            return result_mask
+
+    def get_snps_indices_from_genes(self, gene_indices):
+        return list(set(sum([self.gene2snp_dict[gene] for gene in gene_indices], [])))
+
+    def get_gene_snps_indices_from_genes_grouped_by_chromosome(self, gene_indices):
+        return list(set(sum([self.gene2snp_dict[gene] for gene in gene_indices], [])))
+
+    def get_snp2gene_embeddings(self, snp_indices):
+        snp_embedding_indices = sorted(list(set(sum([[snp]*len(self.snp2gene_dict[snp]) for snp in snp_indices], []))))
+        gene_embedding_indices = sorted(list(set(sum([self.snp2gene_dict[snp] for snp in snp_indices], []))))
+        return {"snp":torch.tensor(snp_embedding_indices), "gene":torch.tensor(gene_embedding_indices)}
+
+    def get_snp2gene_indices(self, snp_indices):
+        return sorted(list(set(sum([self.snp2gene_dict[snp] for snp in snp_indices], []))))
+
+    def get_snp2gene(self, snp_indices, type_indices=None):
+        if self.by_chr:
+            return self.get_snp2gene_by_chromosome(snp_indices, type_indices=type_indices)
+        else:
+            embeddings = self.get_snp2gene_embeddings(snp_indices)
+            mask = self.get_snp2gene_mask(0, embeddings['gene'], embeddings['snp'], type_indices=type_indices)
+            return {"snp":embeddings['snp'], 'gene':embeddings['gene'], 'mask':mask}
+
+    def get_snp2gene_by_chromosome(self, snp_indices, type_indices=None):
+        embeddings = {CHR: self.get_snp2gene_embeddings([snp for snp in snp_indices if snp in self.chr2snp[CHR]])  for CHR in self.chromosomes}
+        #print(snp_indices, embeddings)
+        mask = {CHR: self.get_snp2gene_mask(CHR, embeddings[CHR]['gene'], embeddings[CHR]['snp'], type_indices=type_indices) for CHR in self.chromosomes}
+        return {CHR: {"snp":embeddings[CHR]['snp'], "gene":embeddings[CHR]['gene'], 'mask':mask[CHR] } for CHR in self.chromosomes}
+
+
+
+
+

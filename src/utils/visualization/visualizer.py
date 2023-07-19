@@ -9,14 +9,14 @@ class EmbeddingVisualizer(object):
 
     def __init__(self, drug_response_model, tree_parser, auto_fit=True, n_components=2, subtree_order=['default']):
 
-        self.drug_response_model = drug_response_model.to("cpu")
+        self.model = drug_response_model.to("cpu")
         self.tree_parser = tree_parser
         self.gene2gene_mask = torch.tensor(self.tree_parser.gene2gene_mask, dtype=torch.float32)
 
         self.nested_subtrees_forward = self.tree_parser.get_nested_subtree_mask(subtree_order, direction='forward')
         self.nested_subtrees_backward = self.tree_parser.get_nested_subtree_mask(subtree_order, direction='backward')
-        self.system_embedding_tensor = self.drug_response_model.system_embedding.weight.unsqueeze(0)
-        self.system_embedding = self.drug_response_model.system_embedding.weight.detach().cpu().numpy()
+        self.system_embedding_tensor = self.model.system_embedding.weight.unsqueeze(0)
+        self.system_embedding = self.model.system_embedding.weight.detach().cpu().numpy()
         self.pca = None
         if auto_fit:
             self.fit(self.system_embedding)
@@ -59,8 +59,8 @@ class EmbeddingVisualizer(object):
         return arrow
 
     def draw_mutation_effect(self, genotypes, system=None, gene=None, ax=None,  fig_size=7, output_path=None, x=0, y=1):
-        mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
-        mutation_updated, mutation_updates_dict = self.drug_response_model.get_mut2system(self.system_embedding_tensor,
+        mut_embedding = self.model.gene_embedding.weight.unsqueeze(0)
+        mutation_updated, mutation_updates_dict = self.model.get_mut2system(self.system_embedding_tensor,
                                                                                                 mut_embedding, genotypes)
         if ax is not None:
             mutation_total = \
@@ -111,13 +111,13 @@ class EmbeddingVisualizer(object):
 
 
     def draw_total_embedding_change(self, genotypes, figsize=7, xaxis=None, yaxis=None, x=0, y=1):
-        mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
-        mutation_updated, mutation_updates_dict = self.drug_response_model.get_mut2system(self.system_embedding_tensor,
+        mut_embedding = self.model.gene_embedding.weight.unsqueeze(0)
+        mutation_updated, mutation_updates_dict = self.model.get_mut2system(self.system_embedding_tensor,
                                                                                                 mut_embedding, genotypes)
-        tree_updated_forward, tree_updates_forward = self.drug_response_model.get_system2system(mutation_updated,
+        tree_updated_forward, tree_updates_forward = self.model.get_system2system(mutation_updated,
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='forward')
-        tree_updated_backward, tree_updates_backward = self.drug_response_model.get_system2system(tree_updated_forward[-1][-1],
+        tree_updated_backward, tree_updates_backward = self.model.get_system2system(tree_updated_forward[-1][-1],
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='backward')
 
@@ -144,13 +144,13 @@ class EmbeddingVisualizer(object):
         plt.show()
 
     def draw_system_change_decompose(self, genotypes, system, figsize=7, xaxis=None, yaxis=None, x=0, y=1):
-        mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
-        mutation_updated, mutation_updates_dict = self.drug_response_model.get_mut2system(self.system_embedding_tensor,
+        mut_embedding = self.model.gene_embedding.weight.unsqueeze(0)
+        mutation_updated, mutation_updates_dict = self.model.get_mut2system(self.system_embedding_tensor,
                                                                                                 mut_embedding, genotypes)
-        tree_updated_forward, tree_updates_forward = self.drug_response_model.get_system2system(mutation_updated,
+        tree_updated_forward, tree_updates_forward = self.model.get_system2system(mutation_updated,
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='forward')
-        tree_updated_backward, tree_updates_backward = self.drug_response_model.get_system2system(tree_updated_forward[-1][-1],
+        tree_updated_backward, tree_updates_backward = self.model.get_system2system(tree_updated_forward[-1][-1],
                                                                                 self.nested_subtrees_backward,
                                                                                 direction='backward')
 
@@ -182,13 +182,13 @@ class EmbeddingVisualizer(object):
 
 
     def draw_embedding_changes(self, genotypes, figsize=7, n_cols=1, n_rows=1, xaxis=None, yaxis=None, names=None, x=0, y=1):
-        mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
-        mutation_updated, mutation_updates_dict = self.drug_response_model.get_mut2system(self.system_embedding_tensor,
+        mut_embedding = self.model.gene_embedding.weight.unsqueeze(0)
+        mutation_updated, mutation_updates_dict = self.model.get_mut2system(self.system_embedding_tensor,
                                                                                                 mut_embedding, genotypes)
-        tree_updated, tree_updates = self.drug_response_model.get_system2system(mutation_updated,
+        tree_updated, tree_updates = self.model.get_system2system(mutation_updated,
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='forward')
-        tree_updated, tree_updates = self.drug_response_model.get_system2system(tree_updated[-1][-1],
+        tree_updated, tree_updates = self.model.get_system2system(tree_updated[-1][-1],
                                                                                 self.nested_subtrees_backward,
                                                                                 direction='backward')
         tree_updated = tree_updated[-1][-1].detach().numpy()
@@ -203,13 +203,13 @@ class EmbeddingVisualizer(object):
 
     def draw_hierarchical_convolution_for_gene(self, genotypes, gene, interaction_type, system=None, figsize=7, xaxis=None,
                                                yaxis=None, by_level=False, output_path=None, x=0, y=1):
-        mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
-        mutation_updated, mutation_updates_dict = self.drug_response_model.get_mut2system(self.system_embedding_tensor,
+        mut_embedding = self.model.gene_embedding.weight.unsqueeze(0)
+        mutation_updated, mutation_updates_dict = self.model.get_mut2system(self.system_embedding_tensor,
                                                                                                 mut_embedding, genotypes)
-        tree_updated_forward, tree_updates_forward = self.drug_response_model.get_system2system(mutation_updated,
+        tree_updated_forward, tree_updates_forward = self.model.get_system2system(mutation_updated,
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='forward')
-        tree_updated_backward, tree_updates_backward = self.drug_response_model.get_system2system(tree_updated_forward[-1][-1],
+        tree_updated_backward, tree_updates_backward = self.model.get_system2system(tree_updated_forward[-1][-1],
                                                                                 self.nested_subtrees_backward,
                                                                                 direction='backward')
         tree_updated_backward.reverse()
@@ -319,19 +319,19 @@ class EmbeddingVisualizer(object):
                   head_width=0.03, linewidth=0.5)
 
     def draw_attention(self, genotypes, compound, figsize=7, top_k=10):
-        compound_embedding = self.drug_response_model.get_compound_embedding(compound, unsqueeze=True)
-        mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
-        #mut_embedding = self.drug_response_model.get_gene2gene(mut_embedding, self.gene2gene_mask)
+        compound_embedding = self.model.get_compound_embedding(compound, unsqueeze=True)
+        mut_embedding = self.model.gene_embedding.weight.unsqueeze(0)
+        #mut_embedding = self.model.get_gene2gene(mut_embedding, self.gene2gene_mask)
         #print(self.system_embedding_tensor.shape, mut_embedding.shape)
-        mutation_updated, mutation_updates_dict = self.drug_response_model.get_mut2system(self.system_embedding_tensor,
+        mutation_updated, mutation_updates_dict = self.model.get_mut2system(self.system_embedding_tensor,
                                                                                                 mut_embedding, genotypes)
-        tree_updated, tree_updates = self.drug_response_model.get_system2system(mutation_updated,
+        tree_updated, tree_updates = self.model.get_system2system(mutation_updated,
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='forward')
-        tree_updated, tree_updates = self.drug_response_model.get_system2system(tree_updated[-1][-1],
+        tree_updated, tree_updates = self.model.get_system2system(tree_updated[-1][-1],
                                                                                 self.nested_subtrees_backward,
                                                                                 direction='backward')
-        result, compound_attention2system = self.drug_response_model.get_comp2system(compound_embedding,
+        result, compound_attention2system = self.model.get_system2comp(compound_embedding,
                                                                                               tree_updated[-1][-1],
                                                                                 attention=True)
         compound_attention2system = compound_attention2system[0, 0, 0, :].detach().cpu().numpy()
@@ -352,16 +352,63 @@ class EmbeddingVisualizer(object):
         plt.show()
         return compound_attention2system[result_indices], result_indices
 
+    def draw_G2P_space(self, genotypes, phenotype, figsize=7, top_k=10, botoom_k=10, xaxis=0, yaxis=1, model='compound', annot_dict=None):
+
+        mut_embedding = self.model.gene_embedding.weight.unsqueeze(0)
+        mutation_updated, mutation_updates_dict = self.model.get_mut2system(self.system_embedding_tensor,
+                                                                                                mut_embedding, genotypes)
+        tree_updated, tree_updates = self.model.get_system2system(mutation_updated,
+                                                                                self.nested_subtrees_forward,
+                                                                                direction='forward')
+        tree_updated, tree_updates = self.model.get_system2system(tree_updated[-1][-1],
+                                                                                self.nested_subtrees_backward,
+                                                                                direction='backward')
+        result, phenotype_attention2system = self.model.get_system2comp(phenotype,
+                                                                                              tree_updated[-1][-1],
+                                                                                score=True)
+        phenotype_attention2system = phenotype_attention2system[0, 0, 0, :].detach().cpu().numpy()
+        #print(compound_attention2system)
+        if model=='compound':
+            phenotype_transformed = self.model.sys2comp.attention.linear_layers[0](phenotype).detach().cpu().numpy()[0]
+            system_transformed = self.model.sys2comp.attention.linear_layers[1](tree_updated[-1][-1][0]).detach().cpu().numpy()
+        else:
+            phenotype_transformed = self.model.system2phenotype.attention.linear_layers[0](phenotype).detach().cpu().numpy()
+            system_transformed = self.model.system2phenotype.attention.linear_layers[1](tree_updated[-1][-1][0]).detach().cpu().numpy()
+        print(system_transformed.shape, phenotype_transformed.shape)
+        pca = PCA()
+        pca = pca.fit(np.concatenate([phenotype_transformed, system_transformed], axis=0))
+
+        phenotype_pca_transformed = pca.transform(phenotype_transformed)
+        system_pca_transformed = pca.transform(system_transformed)
+        plt.figure(figsize=(figsize, figsize))
+        plt.scatter(system_pca_transformed[:, xaxis], system_pca_transformed[:, yaxis], marker="^", s=100, c=phenotype_attention2system,
+                    cmap='inferno')
+        plt.scatter(phenotype_pca_transformed[:, xaxis], phenotype_pca_transformed[:, yaxis], marker='o', s=100, c='green')
+
+        threshold = np.sort(phenotype_attention2system)[top_k-1]#np.flip(np.sort(phenotype_attention2system))[top_k-1]
+        print("Threshold: ", threshold)
+        result_indices = []
+        for system, ind in self.tree_parser.system2ind.items(): # need to get low attended
+            if phenotype_attention2system[ind]<=threshold:
+                if annot_dict is not None:
+                    system = annot_dict[system]
+                plt.text(system_pca_transformed[ind, xaxis], system_pca_transformed[ind, yaxis], system)
+                result_indices.append(ind)
+        result_indices = np.array(result_indices)[np.flip(np.argsort(phenotype_attention2system[result_indices]))].tolist()
+        plt.colorbar()
+        plt.show()
+        return phenotype_attention2system[result_indices], result_indices
+
     def draw_change_hierarchy_for_gene(self, genotypes, gene, interaction_type, system=None, figsize=7, xaxis=None,
                                                yaxis=None, by_level=False, output_path=None, x=0, y=1):
         
-        mut_embedding = self.drug_response_model.gene_embedding.weight.unsqueeze(0)
-        mutation_updated, mutation_updates_dict = self.drug_response_model.get_mut2system(self.system_embedding_tensor,
+        mut_embedding = self.model.gene_embedding.weight.unsqueeze(0)
+        mutation_updated, mutation_updates_dict = self.model.get_mut2system(self.system_embedding_tensor,
                                                                                                 mut_embedding, genotypes)
-        tree_updated, tree_updates = self.drug_response_model.get_system2system(mutation_updated,
+        tree_updated, tree_updates = self.model.get_system2system(mutation_updated,
                                                                                 self.nested_subtrees_forward,
                                                                                 direction='forward')
-        tree_updated, tree_updates = self.drug_response_model.get_system2system(tree_updated[-1][-1],
+        tree_updated, tree_updates = self.model.get_system2system(tree_updated[-1][-1],
                                                                                 self.nested_subtrees_backward,
                                                                                 direction='backward')
         tree_updated.reverse()

@@ -24,7 +24,7 @@ class HierarchicalTransformerUpdate(nn.Module):
     Transformer = MultiHead_Attention + Feed_Forward with sublayer connection
     """
 
-    def __init__(self, hidden, attn_heads, feed_forward_hidden, norm, dropout=0.2, norm_channel_first=False, transform=True):
+    def __init__(self, hidden, attn_heads, feed_forward_hidden, norm, dropout=0.2, norm_channel_first=False, n_type=1, transform=True):
         """
         :param hidden: hidden size of transformer
         :param attn_heads: head sizes of multi-head attention
@@ -35,15 +35,20 @@ class HierarchicalTransformerUpdate(nn.Module):
 
         super(HierarchicalTransformerUpdate, self).__init__()
         self.attn_heads = attn_heads
-        self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, transform=True)
+        self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, transform=transform, n_type=n_type)
         #self.layer_norm = nn.LayerNorm(hidden)
         self.norm = norm
         self.feed_forward = PositionWiseFeedForward(d_model=hidden, d_ff=feed_forward_hidden, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
         self.norm_channel_first = norm_channel_first
+        self.n_type = n_type
 
-    def forward(self, q, k, v, mask):
-        mask = mask.unsqueeze(1).expand(-1, self.attn_heads, -1, -1)
+    def forward(self, q, k, v, mask=None):
+        if mask is not None:
+            if self.n_type>1:
+                mask = [ m.unsqueeze(1).expand(-1, self.attn_heads, -1, -1) for m in mask]
+            else:
+                mask = mask.unsqueeze(1).expand(-1, self.attn_heads, -1, -1)
         result = self.attention.forward(q, k, v, mask=mask)
         result = q + result
         #result_layer_norm = self.layer_norm(result)
@@ -62,7 +67,7 @@ class HierarchicalTransformerUpdate(nn.Module):
 
 class HierarchicalTransformer(nn.Module):
     def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, conv_type='system',
-                 norm_channel_first=False, transform=True):
+                 norm_channel_first=False, transform=True, n_type=1):
         """
         :param hidden: hidden size of transformer
         :param attn_heads: head sizes of multi-head attention
@@ -73,11 +78,13 @@ class HierarchicalTransformer(nn.Module):
 
         super(HierarchicalTransformer, self).__init__()
         self.hierarchical_transformer_update = HierarchicalTransformerUpdate(hidden, attn_heads, feed_forward_hidden, inner_norm,
-                                                                     dropout, norm_channel_first=norm_channel_first, transform=transform)
+                                                                     dropout, norm_channel_first=norm_channel_first, transform=transform
+                                                                             , n_type=n_type)
         self.norm = outer_norm
         self.conv_type = conv_type
         self.dropout = nn.Dropout(dropout)
         self.norm_channel_first = norm_channel_first
+        self.n_type = n_type
 
 
     def forward(self, q, k, mask):
@@ -97,6 +104,8 @@ class HierarchicalTransformer(nn.Module):
                 result = self.norm(result)
                 #result = (result + result_layer_norm)/2
         #updated_value = updated_value.permute(0, 2, 1)
+        if self.n_type > 1:
+            mask = sum(mask)
         node_mask = torch.sum(mask, dim=-1) == 0
         node_mask = node_mask.unsqueeze(-1).expand(-1, -1, q.size(-1))
         result = result.masked_fill(node_mask, 0)

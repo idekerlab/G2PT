@@ -9,15 +9,20 @@ class MultiHeadedAttention(nn.Module):
     Take in model size and number of heads.
     """
 
-    def __init__(self, h, d_model, dropout=0.1, activation='softmax', top_k=0, transform=True):
+    def __init__(self, h, d_model, dropout=0.1, activation='softmax', top_k=0, transform=True, n_type=1):
         super().__init__()
         assert d_model % h == 0
 
         # We assume d_v always equals d_k
         self.d_k = d_model // h
         self.h = h
-
-        self.linear_layers = nn.ModuleList([nn.Linear(d_model, d_model, bias=False) for _ in range(3)])
+        self.n_type = n_type
+        if n_type == 1:
+            self.linear_layers = nn.ModuleList([nn.Linear(d_model, d_model, bias=False) for _ in range(3)])
+        else:
+            self.query_linear = nn.Linear(d_model, d_model, bias=False)
+            self.key_linears = nn.ModuleList([nn.Linear(d_model, d_model, bias=False) for i in range(self.n_type)])
+            self.value_linear = nn.Linear(d_model, d_model, bias=False)
         self.output_linear = nn.Linear(d_model, d_model, bias=False)
         self.attention = Attention(activation=activation, top_k=top_k)
         self.transform = transform
@@ -29,11 +34,16 @@ class MultiHeadedAttention(nn.Module):
 
         # 1) Do all the linear projections in batch from d_model => h x d_k
         if self.transform:
-            query, key, value = [l(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
-                                 for l, x in zip(self.linear_layers, (query, key, value))]
+            if self.n_type==1:
+                query, key, value = [l(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
+                                     for l, x in zip(self.linear_layers, (query, key, value))]
+            else:
+                query = self.query_linear(query).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
+                key = [key_linear(key).view(batch_size, -1, self.h, self.d_k).transpose(1, 2) for key_linear in self.key_linears]
+                value = self.value_linear(value).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
 
         # 2) Apply attention on all the projected vectors in batch.
-        x, attn = self.attention(query, key, value, mask=mask, dropout=self.dropout)
+        x, attn, score = self.attention(query, key, value, mask=mask, dropout=self.dropout)
 
         # 3) "Concat" using a view and apply a final linear.
         x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.h * self.d_k)
@@ -44,9 +54,15 @@ class MultiHeadedAttention(nn.Module):
         batch_size = query.size(0)
         query, key, value = [l(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
                              for l, x in zip(self.linear_layers, (query, key, value))]
-        x, attn = self.attention(query, key, value, mask=mask, dropout=self.dropout)
+        x, attn, score = self.attention(query, key, value, mask=mask, dropout=self.dropout)
         return attn
 
+    def get_score(self, query, key, value, mask=None):
+        batch_size = query.size(0)
+        query, key, value = [l(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
+                             for l, x in zip(self.linear_layers, (query, key, value))]
+        x, attn, score = self.attention(query, key, value, mask=mask, dropout=self.dropout)
+        return score
 
 class Attention(nn.Module):
     """
@@ -64,17 +80,29 @@ class Attention(nn.Module):
         #self.top_k = top_k
 
     def forward(self, query, key, value, mask=None, dropout=None):
-        scores = torch.matmul(query, key.transpose(-2, -1)) \
-                 / torch.sqrt(torch.tensor(query.size(-1)))
-        if mask is not None:
-            mask = mask == 0
-            scores = scores.masked_fill(mask, -1e9)
+        if type(key)==list:
+            scores = [torch.matmul(query, key_i.transpose(-2, -1)) \
+                     / torch.sqrt(torch.tensor(query.size(-1)))
+                      for key_i in key]
+            if mask is not None:
+                score_sum = []
+                for score, mask_i in zip(scores, mask):
+                    score_sum.append(score.masked_fill(mask_i, -1e9))
+                scores = sum(score_sum)
+            else:
+                scores = sum(scores)
         else:
-            mask = torch.ones_like(scores, dtype=torch.float32)
-            if dropout is not None:
-                mask = dropout(mask)
-            mask = mask == 0
-            scores = scores.masked_fill(mask, -1e9)
+            scores = torch.matmul(query, key.transpose(-2, -1)) \
+                     / torch.sqrt(torch.tensor(query.size(-1)))
+            if mask is not None:
+                mask = mask == 0
+                scores = scores.masked_fill(mask, -1e9)
+            else:
+                mask = torch.ones_like(scores, dtype=torch.float32)
+                if dropout is not None:
+                    mask = dropout(mask)
+                mask = mask == 0
+                scores = scores.masked_fill(mask, -1e9)
         #print(mask.shape)
         '''
         if self.top_k!=0:
@@ -86,9 +114,6 @@ class Attention(nn.Module):
             scores = scores.masked_fill(top_k_mask, -1e9)
         '''
         p_attn = self.activation(scores)
-
-
         if dropout is not None:
             p_attn = dropout(p_attn)
-        #print(p_attn.shape, value.shape)
-        return torch.matmul(p_attn, value), p_attn
+        return torch.matmul(p_attn, value), p_attn, scores

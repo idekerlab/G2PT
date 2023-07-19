@@ -18,11 +18,11 @@ import torch.utils.data.distributed
 
 from prettytable import PrettyTable
 
-from src.model.genotype2phenotype_model import G2PModel
+from src.model.snp2phenotype import SNP2PhenotypeModel
 
-from src.utils.data import TreeParser
-from src.utils.data.dataset import G2PDataset, G2PCollator
-from src.utils.trainer import G2PTrainer
+from src.utils.data.dataset import SNP2PDataset, SNP2PCollator
+from src.utils.data import SNPTreeParser
+from src.utils.trainer import SNP2PTrainer
 import numpy as np
 import torch.nn as nn
 
@@ -54,7 +54,7 @@ def main():
     parser.add_argument('--epochs', help='Training epochs for training', type=int, default=300)
     parser.add_argument('--lr', help='Learning rate', type=float, default=0.001)
     parser.add_argument('--wd', help='Weight decay', type=float, default=0.001)
-    parser.add_argument('--z_weight', help='Z weight for sampling', type=float, default=1.)
+
 
     parser.add_argument('--hidden_dims', help='hidden dimension for model', default=256, type=int)
     parser.add_argument('--dropout', help='dropout ratio', type=float, default=0.2)
@@ -63,10 +63,12 @@ def main():
 
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
     parser.add_argument('--gene2id', help='Gene to ID mapping file', type=str)
+    parser.add_argument('--snp2gene', help='Gene to ID mapping file', type=str)
+    parser.add_argument('--snp2id', help='Gene to ID mapping file', type=str)
 
     parser.add_argument('--l2_lambda', help='l1 lambda for l1 loss', type=float, default=0.001)
 
-    parser.add_argument('--genotypes', help='Mutation information for cell lines', type=str)
+    parser.add_argument('--snp', help='Mutation information for cell lines', type=str)
 
     parser.add_argument('--model', help='model trained', default=None)
 
@@ -95,6 +97,7 @@ def main():
     parser.add_argument('--sys2cell', action='store_true', default=False)
     parser.add_argument('--cell2sys', action='store_true', default=False)
     parser.add_argument('--sys2gene', action='store_true', default=False)
+    parser.add_argument('--by-chr', action='store_true', default=False)
 
     args = parser.parse_args()
     if args.cuda is not None:
@@ -106,7 +109,11 @@ def main():
         args.world_size = int(os.environ["WORLD_SIZE"])
 
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
-    
+
+    print("Loading SNP dataset... at %s"%args.snp)
+    args.snp = pd.read_csv(args.snp, header=None, index_col=0).astype('int32')
+    print("Loading done...")
+
     ngpus_per_node = torch.cuda.device_count()
     if args.multiprocessing_distributed:
         # Since we have ngpus_per_node processes per node, the total world_size
@@ -142,19 +149,17 @@ def main_worker(gpu, ngpus_per_node, args):
         torch.cuda.empty_cache()
 
 
-    args.genotypes = {genotype.split(":")[0]: genotype.split(":")[1] for genotype in args.genotypes.split(',')}
-
     if torch.cuda.is_available():
         device = torch.device("cuda:%d" % gpu)
     else:
         device = torch.device("cpu")
 
-    tree_parser = TreeParser(args.onto, args.gene2id)
+    tree_parser = SNPTreeParser(args.onto, args.snp2gene, args.gene2id, args.snp2id, by_chr=args.by_chr)
 
     if args.model is not None:
         g2p_model = torch.load(args.model, map_location=device)
     else:
-        g2p_model = G2PModel(tree_parser, list(args.genotypes.keys()), args.hidden_dims, dropout=args.dropout)
+        g2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, dropout=args.dropout)
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -226,8 +231,9 @@ def main_worker(gpu, ngpus_per_node, args):
 
 
     train_dataset = pd.read_csv(args.train, header=None, sep='\t')
-    g2p_dataset = G2PDataset(train_dataset, args.genotypes, tree_parser)
-    g2p_collator = G2PCollator(list(args.genotypes.keys()))
+
+    g2p_dataset = SNP2PDataset(train_dataset, args.snp, tree_parser)
+    g2p_collator = SNP2PCollator(tree_parser)
 
     if args.distributed:
         #affinity_dataset = affinity_dataset.sample(frac=1).reset_index(drop=True)
@@ -239,13 +245,13 @@ def main_worker(gpu, ngpus_per_node, args):
     g2p_dataloader = DataLoader(g2p_dataset, batch_size=args.batch_size, collate_fn=g2p_collator, num_workers = args.jobs, shuffle = shuffle, sampler = interaction_sampler)
     if args.val is not None:
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
-        val_g2p_dataset = G2PDataset(val_dataset, args.genotypes, tree_parser)
+        val_g2p_dataset = SNP2PDataset(val_dataset, args.snp, tree_parser)
         val_g2p_dataloader = DataLoader(val_g2p_dataset, shuffle=False, batch_size=args.batch_size,
                                               num_workers=args.jobs, collate_fn=g2p_collator)
     else:
         val_g2p_dataloader = None
 
-    drug_response_trainer = G2PTrainer(g2p_model, g2p_dataloader, device, args,
+    drug_response_trainer = SNP2PTrainer(g2p_model, g2p_dataloader, device, args,
                                                 validation_dataloader=val_g2p_dataloader, fix_system=fix_system)
     drug_response_trainer.train(args.epochs, args.out)
 

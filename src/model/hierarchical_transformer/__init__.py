@@ -1,3 +1,3 @@
 from .attention import MultiHeadedAttention, Attention
 from .hierarchical_transformer import HierarchicalTransformerUpdate, HierarchicalTransformer, PositionWiseFeedForward
-from .system2target import System2Target
+from .sys2pheno import System2Phenotype
