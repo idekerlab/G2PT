@@ -4,8 +4,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import  StepLR
 from sklearn import metrics
-
-import GPUtil
 from scipy.stats import spearmanr, pearsonr
 from tqdm import tqdm
 import numpy as np
@@ -34,24 +32,23 @@ class SNP2PTrainer(object):
         #self.gene2gene_mask = self.move_to(self.gene2gene_mask, self.device)
         self.ccc_loss = CCCLoss()
         self.beta = 0.1
-        self.phenotype_loss = nn.L1Loss()
-        self.optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=args.lr, weight_decay=args.wd)
+        self.phenotype_loss = nn.MSELoss()
+        self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=args.lr, weight_decay=args.wd)
         self.validation_dataloader = validation_dataloader
         self.snp2p_dataloader = snp2p_dataloader
         self.l2_lambda = args.l2_lambda
         self.best_model = self.snp2p_model
 
         self.total_train_step = len(self.snp2p_dataloader)*args.epochs# + len(self.drug_response_dataloader_cellline)*args.epochs
-        self.scheduler = get_linear_schedule_with_warmup(self.optimizer, int(0.2 * self.total_train_step),
-                                                          self.total_train_step)
+        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
         self.nested_subtrees_forward = self.snp2p_dataloader.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='forward')
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
         self.nested_subtrees_backward = snp2p_dataloader.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='backward')
         self.nested_subtrees_backward = move_to(self.nested_subtrees_backward, device)
-        self.system2gene_mask = move_to(torch.tensor(self.snp2p_dataloader.dataset.tree_parser.system2gene_mask, dtype=torch.bool), device)
-        self.gene2system_mask = self.system2gene_mask.T
+        self.sys2gene_mask = move_to(torch.tensor(self.snp2p_dataloader.dataset.tree_parser.sys2gene_mask, dtype=torch.bool), device)
+        self.gene2sys_mask = self.sys2gene_mask.T
         self.args = args
         self.fix_system = fix_system
         self.g2p_module_names = ["Mut2Sys","Sys2Cell", "Cell2Sys"]
@@ -110,8 +107,8 @@ class SNP2PTrainer(object):
                 phenotype_predicted = model(batch['genotype'],
                                             self.nested_subtrees_forward,
                                             self.nested_subtrees_backward,
-                                            gene2sys_mask=self.gene2system_mask,
-                                            sys2gene_mask=self.system2gene_mask,
+                                            gene2sys_mask=self.gene2sys_mask,
+                                            sys2gene_mask=self.sys2gene_mask,
                                             sys2cell=self.args.sys2cell,
                                             cell2sys=self.args.cell2sys,
                                             sys2gene=self.args.sys2gene)
@@ -141,7 +138,7 @@ class SNP2PTrainer(object):
 
     def train_epoch(self, epoch):
         self.snp2p_model.train()
-        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", snp_loss=False, ccc=True)
+        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", snp_loss=False, ccc=False)
 
 
     def iter_minibatches(self, dataloader, epoch, name="", snp_loss=True, ccc=True):
@@ -164,8 +161,8 @@ class SNP2PTrainer(object):
             phenotype_predicted = self.snp2p_model(batch['genotype'],
                                                      self.nested_subtrees_forward,
                                                      self.nested_subtrees_backward,
-                                                     gene2sys_mask=self.gene2system_mask,
-                                                     sys2gene_mask=self.system2gene_mask,
+                                                     gene2sys_mask=self.gene2sys_mask,
+                                                     sys2gene_mask=self.sys2gene_mask,
                                                      sys2cell=self.args.sys2cell,
                                                      cell2sys=self.args.cell2sys,
                                                      sys2gene=self.args.sys2gene)

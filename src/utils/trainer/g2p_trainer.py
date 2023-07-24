@@ -48,7 +48,7 @@ class G2PTrainer(object):
         self.nested_subtrees_backward = g2p_dataloader.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='backward')
         self.nested_subtrees_backward = move_to(self.nested_subtrees_backward, device)
-        self.system2gene_mask = move_to(torch.tensor(self.g2p_dataloader.dataset.tree_parser.system2gene_mask, dtype=torch.bool), device)
+        self.sys2gene_mask = move_to(torch.tensor(self.g2p_dataloader.dataset.tree_parser.sys2gene_mask, dtype=torch.bool), device)
         self.args = args
         self.fix_system = fix_system
         self.g2p_module_names = ["Mut2Sys","Sys2Cell", "Cell2Sys"]
@@ -103,7 +103,7 @@ class G2PTrainer(object):
                 phenotype_predicted = model(batch['genotype'],
                                             self.nested_subtrees_forward,
                                             self.nested_subtrees_backward,
-                                            self.system2gene_mask,
+                                            self.sys2gene_mask,
                                             gene_weight=batch['gene_weight'],
                                             sys2cell=self.args.sys2cell,
                                             cell2sys=self.args.cell2sys,
@@ -149,7 +149,7 @@ class G2PTrainer(object):
             phenotype_predicted = self.g2p_model(batch['genotype'],
                                                  self.nested_subtrees_forward,
                                                  self.nested_subtrees_backward,
-                                                 self.system2gene_mask,
+                                                 self.sys2gene_mask,
                                                  gene_weight=batch['gene_weight'],
                                                  sys2cell=self.args.sys2cell,
                                                  cell2sys=self.args.cell2sys,

@@ -31,6 +31,7 @@ class Genotype2PhenotypeModel(Genotype2PhenotypeTransformer):
 
     def forward(self, genotype_dict, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward,
                 sys2gene_mask, gene_weight=None, sys2cell=True, cell2sys=True, sys2gene=True):
+
         system_embedding_result, gene_embedding_result = super(Genotype2PhenotypeModel, self).forward(genotype_dict,
                                                                                                       nested_hierarchical_masks_forward,
                                                                                                       nested_hierarchical_masks_backward,
@@ -63,7 +64,7 @@ class Genotype2PhenotypeModel(Genotype2PhenotypeTransformer):
         return phenotype_prediction
 
     def get_system2phenotype(self, phenotype_vector, system_embedding, system_mask=None, attention=False, score=False):
-        sys2phenotype_result = self.system2phenotype.forward(phenotype_vector, system_embedding, system_embedding, mask=system_mask, norm=True)
+        sys2phenotype_result = self.system2phenotype.forward(phenotype_vector, system_embedding, system_embedding, mask=system_mask)
         if attention:
             sys2phenotype_attention = self.system2phenotype.get_attention(phenotype_vector, system_embedding, system_embedding)
             sys2phenotype_result = [sys2phenotype_result, sys2phenotype_attention]
@@ -80,7 +81,7 @@ class Genotype2PhenotypeModel(Genotype2PhenotypeTransformer):
 
 
     def get_gene2phenotype(self, phenotype_vector, gene_embedding, gene_mask=None, attention=False, score=False):
-        gene2phenotype_result = self.gene2phenotype.forward(phenotype_vector, gene_embedding, gene_embedding, mask=gene_mask, norm=True)
+        gene2phenotype_result = self.gene2phenotype.forward(phenotype_vector, gene_embedding, gene_embedding, mask=gene_mask)
         if attention:
             gene2phenotype_attention = self.gene2phenotype.get_attention(phenotype_vector, gene_embedding, gene_embedding)
             gene2phenotype_result = [gene2phenotype_result, gene2phenotype_attention]

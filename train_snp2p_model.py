@@ -21,7 +21,7 @@ from prettytable import PrettyTable
 from src.model.snp2phenotype import SNP2PhenotypeModel
 
 from src.utils.data.dataset import SNP2PDataset, SNP2PCollator
-from src.utils.data import SNPTreeParser
+from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
 import numpy as np
 import torch.nn as nn
