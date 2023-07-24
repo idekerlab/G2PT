@@ -49,7 +49,8 @@ class DrugResponseTrainer(object):
         self.nested_subtrees_backward = self.drug_response_dataloader_drug.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='backward')
         self.nested_subtrees_backward = move_to(self.nested_subtrees_backward, device)
-        self.system2gene_mask = move_to(torch.tensor(self.drug_response_dataloader_drug.dataset.tree_parser.system2gene_mask, dtype=torch.bool), device)
+        self.system2gene_mask = move_to(torch.tensor(self.drug_response_dataloader_drug.dataset.tree_parser.sys2gene_mask, dtype=torch.bool), device)
+        print("%d sys2gene in Dataloader" % self.drug_response_dataloader_drug.dataset.tree_parser.sys2gene_mask.sum())
         self.args = args
         #self.compound_encoder = copy.deepcopy(self.drug_response_model.compound_encoder)
         self.fix_system = fix_system
@@ -80,7 +81,10 @@ class DrugResponseTrainer(object):
                     if output_path:
                         output_path_epoch = output_path + ".%d"%epoch
                         print("Save to...", output_path_epoch)
-                        torch.save(self.drug_response_model.module, output_path_epoch)
+                        if self.args.multiprocessing_distributed:
+                            torch.save(self.drug_response_model.module, output_path_epoch)
+                        else:
+                            torch.save(self.drug_response_model, output_path_epoch)
             #self.lr_scheduler.step()
 
     def get_best_model(self):
@@ -127,6 +131,8 @@ class DrugResponseTrainer(object):
         for smiles, indice in test_grouped.groups.items():
             if len(indice) <= 1:
                 continue
+            #print(test_df.loc[indice][2])
+            #print(results[indice])
             r2 = metrics.r2_score(test_df.loc[indice][2], results[indice])
             rho = spearmanr(test_df.loc[indice][2], results[indice]).correlation
             pearson = pearsonr(test_df.loc[indice][2], results[indice])[0]

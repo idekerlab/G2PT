@@ -22,7 +22,8 @@ from src.model.compound import ECFPCompoundModel, ChemBERTaCompoundModel
 from src.model.drug_response_model import DrugResponseModel
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline, RobertaModel, RobertaTokenizer
 
-from src.utils.data import CompoundEncoder, TreeParser
+from src.utils.data import CompoundEncoder
+from src.utils.tree import MutTreeParser
 from src.utils.data.dataset import DrugResponseDataset, DrugResponseCollator, DrugResponseSampler, DrugBatchSampler, DrugDataset, CellLineBatchSampler
 from src.utils.trainer import DrugResponseTrainer, DrugTrainer, DrugResponseFineTuner
 import numpy as np
@@ -118,6 +119,7 @@ def main():
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
 
     ngpus_per_node = torch.cuda.device_count()
+    args.gpu = args.cuda
     if args.multiprocessing_distributed:
         # Since we have ngpus_per_node processes per node, the total world_size
         # needs to be adjusted accordingly
@@ -170,7 +172,7 @@ def main_worker(gpu, ngpus_per_node, args):
         compound_encoder = CompoundEncoder('Morgan', args.radius, args.n_bits)
         compound_model = ECFPCompoundModel(args.n_bits, args.compound_layers, args.dropout)
 
-    tree_parser = TreeParser(args.onto, args.gene2id)
+    tree_parser = MutTreeParser(args.onto, args.gene2id)
 
     train_dataset = pd.read_csv(args.train, header=None, sep='\t')
 
@@ -204,7 +206,7 @@ def main_worker(gpu, ngpus_per_node, args):
         #        np.stack([system_embedding_dict["NEST:1"], NeST_embedding_dict["NEST:2"], NeST_embedding_dict["NEST:3"]],
         #                 axis=0), axis=0, keepdims=False)
         system_embeddings = np.stack(
-            [system_embedding_dict[key] for key, value in sorted(tree_parser.system2ind.items(), key=lambda a: a[1])])
+            [system_embedding_dict[key] for key, value in sorted(tree_parser.sys2ind.items(), key=lambda a: a[1])])
         drug_response_model.system_embedding.weight = nn.Parameter(torch.tensor(system_embeddings))
         print(drug_response_model.system_embedding.weight)
         drug_response_model.system_embedding.weight.requires_grad = False
@@ -273,14 +275,14 @@ def main_worker(gpu, ngpus_per_node, args):
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
         val_drug_response_dataset = DrugResponseDataset(val_dataset, args.cell2id, args.genotypes, compound_encoder,
                                                     tree_parser)
-        drug_response_collator = DrugResponseCollator(list(args.genotypes.keys()), compound_encoder)
+        drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder)
 
         val_drug_response_dataloader = DataLoader(val_drug_response_dataset, shuffle=False, batch_size=args.batch_size,
                                               num_workers=args.jobs, collate_fn=drug_response_collator)
     else:
         val_drug_response_dataloader = None
 
-    drug_response_collator = DrugResponseCollator(list(args.genotypes.keys()), compound_encoder)
+    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder)
     '''
     if args.model is not None:
         drug_response_dataloader = DataLoader(drug_response_dataset, batch_size=args.batch_size,

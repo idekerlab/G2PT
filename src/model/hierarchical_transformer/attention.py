@@ -24,7 +24,7 @@ class MultiHeadedAttention(nn.Module):
             self.key_linears = nn.ModuleList([nn.Linear(d_model, d_model, bias=False) for i in range(self.n_type)])
             self.value_linear = nn.Linear(d_model, d_model, bias=False)
         self.output_linear = nn.Linear(d_model, d_model, bias=False)
-        self.attention = Attention(activation=activation, top_k=top_k)
+        self.attention = Attention(n_heads=h, activation=activation, top_k=top_k)
         self.transform = transform
 
         self.dropout = nn.Dropout(p=dropout)
@@ -69,14 +69,18 @@ class Attention(nn.Module):
     Compute 'Scaled Dot Product Attention
     """
 
-    def __init__(self, activation='softmax', top_k=0):
+    def __init__(self, n_heads=1, activation='softmax', top_k=0):
+        self.n_heads = n_heads
         super().__init__()
+        self.activation_type = activation
         if activation=='softmax':
             self.activation = nn.Softmax(dim=-1)
         elif activation=='sigmoid':
             self.activation = nn.Sigmoid()
         elif activation=='tanh':
             self.activation = nn.Tanh()
+        else:
+            self.activation = None
         #self.top_k = top_k
 
     def forward(self, query, key, value, mask=None, dropout=None):
@@ -87,7 +91,13 @@ class Attention(nn.Module):
             if mask is not None:
                 score_sum = []
                 for score, mask_i in zip(scores, mask):
-                    score_sum.append(score.masked_fill(mask_i, -1e9))
+                    weight, mask_to_fill = mask_i
+                    mask_to_fill = mask_to_fill == 0
+                    mask_to_fill = mask_to_fill.unsqueeze(1).expand(-1, self.n_heads, -1, -1)
+                    if (self.activation_type=='softmax') or (self.activation_type=='sigmoid'):
+                        score_sum.append(score.masked_fill(mask_to_fill, -1e9))
+                    else:
+                        score_sum.append(score.masked_fill(mask_to_fill, 0))
                 scores = sum(score_sum)
             else:
                 scores = sum(scores)
@@ -96,6 +106,7 @@ class Attention(nn.Module):
                      / torch.sqrt(torch.tensor(query.size(-1)))
             if mask is not None:
                 mask = mask == 0
+                mask = mask.unsqueeze(1).expand(-1, self.n_heads, - 1, -1)
                 scores = scores.masked_fill(mask, -1e9)
             else:
                 mask = torch.ones_like(scores, dtype=torch.float32)
@@ -113,7 +124,8 @@ class Attention(nn.Module):
 
             scores = scores.masked_fill(top_k_mask, -1e9)
         '''
-        p_attn = self.activation(scores)
+        if self.activation:
+            p_attn = self.activation(scores)
         if dropout is not None:
             p_attn = dropout(p_attn)
         return torch.matmul(p_attn, value), p_attn, scores

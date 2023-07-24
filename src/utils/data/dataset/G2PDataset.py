@@ -4,7 +4,7 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import Sampler, BatchSampler
 from scipy.stats import zscore, skewnorm
 import torch
-from .. import TreeParser
+from src.utils.tree import TreeParser
 from random import shuffle
 
 
