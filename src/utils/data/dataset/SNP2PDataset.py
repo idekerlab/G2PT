@@ -9,15 +9,17 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.nn.functional import one_hot
 import time
 from random import shuffle
+from ast import literal_eval
 
 
 class SNP2PDataset(Dataset):
 
-    def __init__(self, genotype_phenotype, snp_data, tree_parser:SNPTreeParser):
+    def __init__(self, genotype_phenotype, snp_data, tree_parser:SNPTreeParser, effective_allele='heterozygous'):
         self.g2p_df = genotype_phenotype
         self.tree_parser = TreeParser
         self.snp_df = snp_data
         self.tree_parser = tree_parser
+        self.effective_allele = effective_allele
 
 
     def __len__(self):
@@ -27,10 +29,18 @@ class SNP2PDataset(Dataset):
         start = time.time()
         sample_ind, phenotype, sex, *covariates = self.g2p_df.iloc[index].values
         sample2snp_dict = {}
-        heterozygous = np.where(self.snp_df.loc[sample_ind].values == 1.0)[0]
-        homozygous = np.where(self.snp_df.loc[sample_ind].values == 2.0)[0]
-        total_snps = np.concatenate([heterozygous,homozygous])
-        sample2snp_dict['embedding'] = self.tree_parser.get_snp2gene(total_snps, {1.0: heterozygous, 2.0: homozygous})
+
+        homozygous = [int(i) for i in  (self.snp_df.loc[sample_ind, 'homozygous']).split(",")]#np.where(self.snp_df.loc[sample_ind].values == 2.0)[0]
+        type_indices = {1.0:homozygous}
+        if self.effective_allele=='heterozygous':
+            heterozygous = [int(i) for i in (self.snp_df.loc[sample_ind, 'heterozygous']).split(
+                ",")]  # np.where(self.snp_df.loc[sample_ind].values == 1.0)[0]
+            total_snps = np.concatenate([heterozygous,homozygous])
+            type_indices[2.0] = homozygous
+            type_indices[1.0] = heterozygous
+        else:
+            total_snps = homozygous
+        sample2snp_dict['embedding'] = self.tree_parser.get_snp2gene(total_snps, type_indices=type_indices )
         '''
         snp_type_dict = {}
         snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
@@ -40,11 +50,15 @@ class SNP2PDataset(Dataset):
         #homozygous_gene_indices = torch.unique(snp_type_dict['homozygous']['gene']).tolist()#self.tree_parser.get_snp2gene_indices(homozygous)
         '''
 
-        heterozygous_gene_indices = self.tree_parser.get_snp2gene_indices(heterozygous)
+
         homozygous_gene_indices = self.tree_parser.get_snp2gene_indices(homozygous)
         gene2sys_mask_for_gene = torch.zeros((self.tree_parser.n_systems, self.tree_parser.n_genes), dtype=torch.bool)
-        gene2sys_mask_for_gene[:, heterozygous_gene_indices] = 1
+
         gene2sys_mask_for_gene[:, homozygous_gene_indices] = 1
+        if self.effective_allele=='heterozygous':
+            heterozygous_gene_indices = self.tree_parser.get_snp2gene_indices(heterozygous)
+            gene2sys_mask_for_gene[:, heterozygous_gene_indices] = 1
+
         sample2snp_dict["gene2sys_mask"] = torch.tensor(self.tree_parser.gene2sys_mask, dtype=torch.bool) & gene2sys_mask_for_gene
         result_dict = dict()
 

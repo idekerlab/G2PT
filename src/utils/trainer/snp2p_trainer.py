@@ -138,7 +138,7 @@ class SNP2PTrainer(object):
 
     def train_epoch(self, epoch):
         self.snp2p_model.train()
-        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", snp_loss=False, ccc=False)
+        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", snp_loss=False, ccc=True)
 
 
     def iter_minibatches(self, dataloader, epoch, name="", snp_loss=True, ccc=True):

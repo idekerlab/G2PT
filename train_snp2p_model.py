@@ -98,6 +98,7 @@ def main():
     parser.add_argument('--cell2sys', action='store_true', default=False)
     parser.add_argument('--sys2gene', action='store_true', default=False)
     parser.add_argument('--by-chr', action='store_true', default=False)
+    parser.add_argument('--effective-allele', type=str, choices=['homozygous', 'heterozygous'], default='heterozygous')
 
     args = parser.parse_args()
     if args.cuda is not None:
@@ -111,7 +112,7 @@ def main():
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
 
     print("Loading SNP dataset... at %s"%args.snp)
-    args.snp = pd.read_csv(args.snp, header=None, index_col=0).astype('int32')
+    args.snp = pd.read_csv(args.snp, index_col=0, sep='\t')#.astype('int32')
     print("Loading done...")
 
     ngpus_per_node = torch.cuda.device_count()
@@ -159,7 +160,7 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.model is not None:
         g2p_model = torch.load(args.model, map_location=device)
     else:
-        g2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, dropout=args.dropout)
+        g2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, effective_allele=args.effective_allele, dropout=args.dropout)
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -232,7 +233,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     train_dataset = pd.read_csv(args.train, header=None, sep='\t')
 
-    g2p_dataset = SNP2PDataset(train_dataset, args.snp, tree_parser)
+    g2p_dataset = SNP2PDataset(train_dataset, args.snp, tree_parser, args.effective_allele)
     g2p_collator = SNP2PCollator(tree_parser)
 
     if args.distributed:
@@ -245,7 +246,7 @@ def main_worker(gpu, ngpus_per_node, args):
     g2p_dataloader = DataLoader(g2p_dataset, batch_size=args.batch_size, collate_fn=g2p_collator, num_workers = args.jobs, shuffle = shuffle, sampler = interaction_sampler)
     if args.val is not None:
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
-        val_g2p_dataset = SNP2PDataset(val_dataset, args.snp, tree_parser)
+        val_g2p_dataset = SNP2PDataset(val_dataset, args.snp, tree_parser, args.effective_allele)
         val_g2p_dataloader = DataLoader(val_g2p_dataset, shuffle=False, batch_size=args.batch_size,
                                               num_workers=args.jobs, collate_fn=g2p_collator)
     else:
