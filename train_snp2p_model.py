@@ -160,7 +160,7 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.model is not None:
         snp2p_model = torch.load(args.model, map_location=device)
     else:
-        snp2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, effective_allele=args.effective_allele, dropout=args.dropout, n_covariates=14)
+        snp2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, effective_allele=args.effective_allele, dropout=args.dropout, n_covariates=13)
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')

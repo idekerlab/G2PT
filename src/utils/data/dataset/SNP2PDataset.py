@@ -29,7 +29,7 @@ class SNP2PDataset(Dataset):
     def __getitem__(self, index):
         start = time.time()
         sample_ind, phenotype, sex, *covariates = self.g2p_df.iloc[index].values
-        #print(sample_ind, phenotype, sex, covariates)
+        #print(index, sample_ind, phenotype, sex, covariates)
         sample2snp_dict = {}
 
         homozygous = [int(i) for i in  (self.snp_df.loc[sample_ind, 'homozygous']).split(",")]#np.where(self.snp_df.loc[sample_ind].values == 2.0)[0]
@@ -154,9 +154,9 @@ class CohortSampler(Sampler):
         #phenotype_mean = np.mean(phenotype_values)
         #phenotype_std = np.std(phenotype_values)
         #weights = np.array(z_weights*np.abs((phenotype_values-phenotype_mean)/np.std(phenotype_std)), dtype=np.int)
-        dataset["zscore"] = np.abs(zscore(phenotype_values)*z_weights)
+        self.weights = np.abs(zscore(phenotype_values)*z_weights)
         #self.dataset = result_df.reset_index()[["cellline", "drug", "response", "source", "zscore"]]
-        self.weights = torch.tensor(self.dataset.zscore, dtype=torch.double)
+        self.weights = torch.tensor(self.weights, dtype=torch.double)
 
     def __iter__(self):
         count = 0
