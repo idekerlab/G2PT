@@ -20,7 +20,7 @@ from prettytable import PrettyTable
 
 from src.model.snp2phenotype import SNP2PhenotypeModel
 
-from src.utils.data.dataset import SNP2PDataset, SNP2PCollator
+from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
 import numpy as np
@@ -158,9 +158,9 @@ def main_worker(gpu, ngpus_per_node, args):
     tree_parser = SNPTreeParser(args.onto, args.snp2gene, args.gene2id, args.snp2id, by_chr=args.by_chr)
 
     if args.model is not None:
-        g2p_model = torch.load(args.model, map_location=device)
+        snp2p_model = torch.load(args.model, map_location=device)
     else:
-        g2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, effective_allele=args.effective_allele, dropout=args.dropout)
+        snp2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, effective_allele=args.effective_allele, dropout=args.dropout, n_covariates=14)
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -170,33 +170,33 @@ def main_worker(gpu, ngpus_per_node, args):
         # DistributedDataParallel will use all available devices.
         if args.gpu is not None:
             #torch.cuda.set_device(args.gpu)
-            g2p_model.to(device)
+            snp2p_model.to(device)
             # When using a single GPU per process and per
             # DistributedDataParallel, we need to divide the batch size
             # ourselves based on the total number of GPUs we have
             args.batch_size = int(args.batch_size / ngpus_per_node)
             args.jobs = int((args.jobs + ngpus_per_node - 1) / ngpus_per_node)
             print(args.batch_size, args.jobs)
-            g2p_model = torch.nn.parallel.DistributedDataParallel(g2p_model, device_ids=[args.gpu], find_unused_parameters=True)
+            snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[args.gpu], find_unused_parameters=True)
         else:
             print("Distributed training are set up")
-            g2p_model.to(device)
+            snp2p_model.to(device)
             # DistributedDataParallel will divide and allocate batch_size to all
             # available GPUs if device_ids are not set
 
-            g2p_model = torch.nn.parallel.DistributedDataParallel(g2p_model, find_unused_parameters=True)
+            snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, find_unused_parameters=True)
     elif args.gpu is not None:
         #torch.cuda.set_device(args.gpu)
-        g2p_model = g2p_model.to(device)
+        snp2p_model = snp2p_model.to(device)
         print("Model is loaded at GPU(%d)" % args.gpu)
     else:
         # DataParallel will divide and allocate batch_size to all available GPUs
-        g2p_model = torch.nn.DataParallel(g2p_model).to(device)
+        snp2p_model = torch.nn.DataParallel(snp2p_model).to(device)
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                                                      and args.rank % torch.cuda.device_count() == 0):
         print("Summary of trainable parameters")
-        count_parameters(g2p_model)
+        count_parameters(snp2p_model)
 
 
     fix_system = False
@@ -211,15 +211,15 @@ def main_worker(gpu, ngpus_per_node, args):
         #                 axis=0), axis=0, keepdims=False)
         system_embeddings = np.stack(
             [system_embedding_dict[key] for key, value in sorted(tree_parser.system2ind.items(), key=lambda a: a[1])])
-        g2p_model.system_embedding.weight = nn.Parameter(torch.tensor(system_embeddings))
-        print(g2p_model.system_embedding.weight)
-        g2p_model.system_embedding.weight.requires_grad = False
+        snp2p_model.system_embedding.weight = nn.Parameter(torch.tensor(system_embeddings))
+        print(snp2p_model.system_embedding.weight)
+        snp2p_model.system_embedding.weight.requires_grad = False
         fix_system = True
     if args.gene_embedding:
         gene_embedding_dict = np.load(args.gene_embedding, allow_pickle=True).item()
         print("Loading Gene Embeddings :", args.gene_embedding)
         gene_embeddings = np.stack([gene_embedding_dict[key] for key, value in sorted(tree_parser.gene2ind.items(), key=lambda a: a[1])])
-        g2p_model.gene_embedding.weight = nn.Parameter(torch.tensor(gene_embeddings))
+        snp2p_model.gene_embedding.weight = nn.Parameter(torch.tensor(gene_embeddings))
         #drug_response_model.gene_embedding.weight.requires_grad = False
     '''
     print("Summary of trainable parameters")
@@ -233,27 +233,31 @@ def main_worker(gpu, ngpus_per_node, args):
 
     train_dataset = pd.read_csv(args.train, header=None, sep='\t')
 
-    g2p_dataset = SNP2PDataset(train_dataset, args.snp, tree_parser, args.effective_allele)
-    g2p_collator = SNP2PCollator(tree_parser)
+    snp2p_dataset = SNP2PDataset(train_dataset, args.snp, tree_parser, args.effective_allele)
+    snp2p_collator = SNP2PCollator(tree_parser)
 
     if args.distributed:
         #affinity_dataset = affinity_dataset.sample(frac=1).reset_index(drop=True)
-        interaction_sampler = torch.utils.data.distributed.DistributedSampler(g2p_dataset)
+        snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, phenotype_index=1)
+        #interaction_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
         shuffle = False
     else:
         shuffle = True
+        snp2p_sampler = CohortSampler(train_dataset, phenotype_index=1)
         interaction_sampler = None
-    g2p_dataloader = DataLoader(g2p_dataset, batch_size=args.batch_size, collate_fn=g2p_collator, num_workers = args.jobs, shuffle = shuffle, sampler = interaction_sampler)
+
+    snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
+                                  num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler)
     if args.val is not None:
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
-        val_g2p_dataset = SNP2PDataset(val_dataset, args.snp, tree_parser, args.effective_allele)
-        val_g2p_dataloader = DataLoader(val_g2p_dataset, shuffle=False, batch_size=args.batch_size,
-                                              num_workers=args.jobs, collate_fn=g2p_collator)
+        val_snp2p_dataset = SNP2PDataset(val_dataset, args.snp, tree_parser, args.effective_allele)
+        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
+                                              num_workers=args.jobs, collate_fn=snp2p_collator)
     else:
-        val_g2p_dataloader = None
+        val_snp2p_dataloader = None
 
-    drug_response_trainer = SNP2PTrainer(g2p_model, g2p_dataloader, device, args,
-                                                validation_dataloader=val_g2p_dataloader, fix_system=fix_system)
+    drug_response_trainer = SNP2PTrainer(snp2p_model, snp2p_dataloader, device, args,
+                                                validation_dataloader=val_snp2p_dataloader, fix_system=fix_system)
     drug_response_trainer.train(args.epochs, args.out)
 
 

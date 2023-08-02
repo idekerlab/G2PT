@@ -10,6 +10,7 @@ from torch.nn.functional import one_hot
 import time
 from random import shuffle
 from ast import literal_eval
+from torch.utils.data.distributed import DistributedSampler
 
 
 class SNP2PDataset(Dataset):
@@ -28,6 +29,7 @@ class SNP2PDataset(Dataset):
     def __getitem__(self, index):
         start = time.time()
         sample_ind, phenotype, sex, *covariates = self.g2p_df.iloc[index].values
+        #print(sample_ind, phenotype, sex, covariates)
         sample2snp_dict = {}
 
         homozygous = [int(i) for i in  (self.snp_df.loc[sample_ind, 'homozygous']).split(",")]#np.where(self.snp_df.loc[sample_ind].values == 2.0)[0]
@@ -140,3 +142,62 @@ class SNP2PCollator(object):
         result_dict['datatime'] = torch.mean(torch.stack([d['datatime'] for d in data]))
         result_dict["time"] = torch.tensor(end - start)
         return result_dict
+
+class CohortSampler(Sampler):
+
+    def __init__(self, dataset, n_samples=None, phenotype_index='phenotype', z_weights=1):
+        #super(DrugResponseSampler, self).__init__()
+        self.indices = dataset.index
+        self.num_samples = dataset.shape[0]
+
+        phenotype_values = dataset[phenotype_index]
+        #phenotype_mean = np.mean(phenotype_values)
+        #phenotype_std = np.std(phenotype_values)
+        #weights = np.array(z_weights*np.abs((phenotype_values-phenotype_mean)/np.std(phenotype_std)), dtype=np.int)
+        dataset["zscore"] = np.abs(zscore(phenotype_values)*z_weights)
+        #self.dataset = result_df.reset_index()[["cellline", "drug", "response", "source", "zscore"]]
+        self.weights = torch.tensor(self.dataset.zscore, dtype=torch.double)
+
+    def __iter__(self):
+        count = 0
+        index = [i for i in torch.multinomial(self.weights, self.num_samples, replacement=True)]
+        while count < self.num_samples:
+            #print(index[count], type(index[count]))
+            #result = index[count].item()
+            #print(result, type(result))
+            yield index[count].item()
+            count += 1
+
+    def __len__(self):
+        return self.num_samples
+
+
+
+class DistributedCohortSampler(DistributedSampler):
+
+    def __init__(self, dataset, num_replicas=None, rank=None, shuffle=False, seed = 0, phenotype_index='phenotype', z_weights=1):
+        #super(DrugResponseSampler, self).__init__()
+        super().__init__(dataset, num_replicas, rank, shuffle, seed, drop_last=False)
+        self.indices = dataset.index
+        self.num_samples = int(dataset.shape[0]/num_replicas)
+
+        phenotype_values = dataset[phenotype_index]
+        #phenotype_mean = np.mean(phenotype_values)
+        #phenotype_std = np.std(phenotype_values)
+        #weights = np.array(z_weights*np.abs((phenotype_values-phenotype_mean)/np.std(phenotype_std)), dtype=np.int)
+        dataset["zscore"] = np.abs(zscore(phenotype_values)*z_weights)
+        #self.dataset = result_df.reset_index()[["cellline", "drug", "response", "source", "zscore"]]
+        self.weights = torch.tensor(self.dataset.zscore.values, dtype=torch.double)
+
+    def __iter__(self):
+        count = 0
+        index = [i for i in torch.multinomial(self.weights, self.num_samples, replacement=True)]
+        while count < self.num_samples:
+            #print(index[count], type(index[count]))
+            #result = index[count].item()
+            #print(result, type(result))
+            yield index[count].item()
+            count += 1
+
+    def __len__(self):
+        return self.num_samples

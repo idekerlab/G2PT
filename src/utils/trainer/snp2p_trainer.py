@@ -138,6 +138,8 @@ class SNP2PTrainer(object):
 
     def train_epoch(self, epoch):
         self.snp2p_model.train()
+        if self.args.multiprocessing_distributed:
+            self.snp2p_dataloader.sampler.set_epoch(epoch)
         self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", snp_loss=False, ccc=True)
 
 
