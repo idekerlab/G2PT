@@ -185,10 +185,9 @@ class DistributedCohortSampler(DistributedSampler):
         #phenotype_mean = np.mean(phenotype_values)
         #phenotype_std = np.std(phenotype_values)
         #weights = np.array(z_weights*np.abs((phenotype_values-phenotype_mean)/np.std(phenotype_std)), dtype=np.int)
-        dataset["zscore"] = np.abs(zscore(phenotype_values)*z_weights)
+        self.weights = np.abs(zscore(phenotype_values)*z_weights)
         #self.dataset = result_df.reset_index()[["cellline", "drug", "response", "source", "zscore"]]
-        self.weights = torch.tensor(self.dataset.zscore.values, dtype=torch.double)
-
+        self.weights = torch.tensor(self.weights, dtype=torch.double)
     def __iter__(self):
         count = 0
         index = [i for i in torch.multinomial(self.weights, self.num_samples, replacement=True)]
