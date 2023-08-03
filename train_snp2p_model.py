@@ -242,7 +242,7 @@ def main_worker(gpu, ngpus_per_node, args):
         #interaction_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
         shuffle = False
     else:
-        shuffle = True
+        shuffle = False
         snp2p_sampler = CohortSampler(train_dataset, phenotype_index=1)
         interaction_sampler = None
 
