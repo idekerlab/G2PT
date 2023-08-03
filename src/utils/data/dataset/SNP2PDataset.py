@@ -145,7 +145,7 @@ class SNP2PCollator(object):
 
 class CohortSampler(Sampler):
 
-    def __init__(self, dataset, n_samples=None, phenotype_index='phenotype', z_weights=1):
+    def __init__(self, dataset, n_samples=None, phenotype_index='phenotype', z_weight=1):
         #super(DrugResponseSampler, self).__init__()
         self.indices = dataset.index
         self.num_samples = dataset.shape[0]
@@ -154,7 +154,7 @@ class CohortSampler(Sampler):
         #phenotype_mean = np.mean(phenotype_values)
         #phenotype_std = np.std(phenotype_values)
         #weights = np.array(z_weights*np.abs((phenotype_values-phenotype_mean)/np.std(phenotype_std)), dtype=np.int)
-        self.weights = np.abs(zscore(phenotype_values)*z_weights)
+        self.weights = np.abs(zscore(phenotype_values)*z_weight)
         #self.dataset = result_df.reset_index()[["cellline", "drug", "response", "source", "zscore"]]
         self.weights = torch.tensor(self.weights, dtype=torch.double)
 
@@ -175,17 +175,16 @@ class CohortSampler(Sampler):
 
 class DistributedCohortSampler(DistributedSampler):
 
-    def __init__(self, dataset, num_replicas=None, rank=None, shuffle=False, seed = 0, phenotype_index='phenotype', z_weights=1):
+    def __init__(self, dataset, num_replicas=None, rank=None, shuffle=False, seed = 0, phenotype_index='phenotype', z_weight=1):
         #super(DrugResponseSampler, self).__init__()
         super().__init__(dataset, num_replicas, rank, shuffle, seed, drop_last=False)
         self.indices = dataset.index
         self.num_samples = int(dataset.shape[0]/num_replicas)
 
-        phenotype_values = dataset[phenotype_index]
-        #phenotype_mean = np.mean(phenotype_values)
-        #phenotype_std = np.std(phenotype_values)
+        phenotype_values = dataset[phenotype_index].values
+        a, loc, scale = skewnorm.fit(phenotype_values)
         #weights = np.array(z_weights*np.abs((phenotype_values-phenotype_mean)/np.std(phenotype_std)), dtype=np.int)
-        self.weights = np.abs(zscore(phenotype_values)*z_weights)
+        self.weights = skewnorm(a, loc, scale*z_weight).pdf(phenotype_values)
         #self.dataset = result_df.reset_index()[["cellline", "drug", "response", "source", "zscore"]]
         self.weights = torch.tensor(self.weights, dtype=torch.double)
     def __iter__(self):

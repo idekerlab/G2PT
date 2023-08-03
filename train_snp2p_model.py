@@ -54,6 +54,7 @@ def main():
     parser.add_argument('--epochs', help='Training epochs for training', type=int, default=300)
     parser.add_argument('--lr', help='Learning rate', type=float, default=0.001)
     parser.add_argument('--wd', help='Weight decay', type=float, default=0.001)
+    parser.add_argument('--z_weight', type=float, default=1.0)
 
 
     parser.add_argument('--hidden_dims', help='hidden dimension for model', default=256, type=int)
@@ -238,12 +239,12 @@ def main_worker(gpu, ngpus_per_node, args):
 
     if args.distributed:
         #affinity_dataset = affinity_dataset.sample(frac=1).reset_index(drop=True)
-        snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, phenotype_index=1)
+        snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, phenotype_index=1, z_weight=args.z_weight)
         #interaction_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
         shuffle = False
     else:
         shuffle = False
-        snp2p_sampler = CohortSampler(train_dataset, phenotype_index=1)
+        snp2p_sampler = CohortSampler(train_dataset, phenotype_index=1, z_weight=args.z_weight)
         interaction_sampler = None
 
     snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
