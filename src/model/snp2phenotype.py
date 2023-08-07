@@ -7,7 +7,7 @@ from src.model.hierarchical_transformer import HierarchicalTransformer
 
 class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
-    def __init__(self, tree_parser, genotypes, hidden_dims, effective_allele='heterozygous', n_covariates=13, dropout=0.2):
+    def __init__(self, tree_parser, genotypes, hidden_dims, effective_allele='heterozygous', n_covariates=13, dropout=0.2, binary=False):
         super(SNP2PhenotypeModel, self).__init__(tree_parser, genotypes, hidden_dims, dropout=dropout, activation='softmax')
         self.effective_allele = effective_allele
         self.n_snps = self.tree_parser.n_snps
@@ -82,8 +82,14 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.last_activation = nn.Tanh()
 
         #self.prediction_norm = nn.LayerNorm(hidden_dims * 2, elementwise_affine=False)
-        self.phenotype_predictor_1 = nn.Linear(hidden_dims * 3, hidden_dims)
+        self.phenotype_predictor_1 = nn.Linear(hidden_dims * 2, hidden_dims)
         self.phenotype_predictor_2 = nn.Linear(hidden_dims, 1)
+        self.sigmoid = nn.Sigmoid()
+        self.binary = binary
+        if self.binary:
+            print("Model will predict binary")
+        else:
+            print("Model will do regression")
 
     def forward(self, genotype_dict, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward,
                 gene2sys_mask, sys2gene_mask, gene_weight=None, sys2cell=True, cell2sys=True, sys2gene=True):
@@ -182,8 +188,10 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
     def prediction(self, phenotype_vector, system_embedding, gene_embedding):
         phenotype_weighted_by_systems = self.get_sys2pheno(phenotype_vector, system_embedding, system_mask=None)
         phenotype_weighted_by_genes = self.get_gene2pheno(phenotype_vector, gene_embedding, gene_mask=None)
-        phenotype_feature = torch.cat([phenotype_vector.squeeze(1), phenotype_weighted_by_systems, phenotype_weighted_by_genes], dim=-1)
+        phenotype_feature = torch.cat([phenotype_weighted_by_systems, phenotype_weighted_by_genes], dim=-1)
         phenotype_prediction = self.phenotype_predictor_2(self.last_activation(self.phenotype_predictor_1(phenotype_feature)))
+        if self.binary:
+            phenotype_prediction = self.sigmoid(phenotype_prediction)
         return phenotype_prediction
 
     def get_sys2pheno(self, phenotype_vector, system_embedding, system_mask=None, attention=False, score=False):

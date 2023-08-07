@@ -32,7 +32,10 @@ class SNP2PTrainer(object):
         #self.gene2gene_mask = self.move_to(self.gene2gene_mask, self.device)
         self.ccc_loss = CCCLoss()
         self.beta = 0.1
-        self.phenotype_loss = nn.MSELoss()
+        if args.regression:
+            self.phenotype_loss = nn.MSELoss()
+        else:
+            self.phenotype_loss = nn.BCELoss()
         self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=args.lr, weight_decay=args.wd)
         self.validation_dataloader = validation_dataloader
         self.snp2p_dataloader = snp2p_dataloader
@@ -40,7 +43,7 @@ class SNP2PTrainer(object):
         self.best_model = self.snp2p_model
 
         self.total_train_step = len(self.snp2p_dataloader)*args.epochs# + len(self.drug_response_dataloader_cellline)*args.epochs
-        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
+        #self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
         self.nested_subtrees_forward = self.snp2p_dataloader.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='forward')
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
@@ -123,17 +126,22 @@ class SNP2PTrainer(object):
         #for module_name, value in result_dic.items():
         #    if len(value)>0:
         results = np.concatenate(results)[:, 0]
-        print(trues[:100])
-        print(results[:100])
-        r_square = metrics.r2_score(trues, results)
-        pearson = pearsonr(trues, results)
-        spearman = spearmanr(trues, results)
-        #print(module_name)
-        print("R_square: ", r_square)
-        print("Pearson R", pearson)
-        print("Spearman Rho: ", spearman)
+        print(trues[:50])
+        print(results[:50])
+        if self.args.regression:
+            r_square = metrics.r2_score(trues, results)
+            pearson = pearsonr(trues, results)
+            spearman = spearmanr(trues, results)
+            performance = pearson[0]
+            #print(module_name)
+            print("R_square: ", r_square)
+            print("Pearson R", pearson)
+            print("Spearman Rho: ", spearman)
+        else:
+            performance = metrics.average_precision_score(trues, results)
+            print("AUPR: ", performance)
 
-        return pearson[0]
+        return performance
 
 
     def train_epoch(self, epoch):
@@ -205,7 +213,7 @@ class SNP2PTrainer(object):
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-            self.scheduler.step()
+            #self.scheduler.step()
             #if self.fix_system:
             #    self.g2p_model.system_embedding = self.system_embedding
             dataloader_with_tqdm.set_description("%s Train epoch: %3.f, Phenotype loss: %.3f, CCCLoss: %.3f, CosLoss: %.3f, RatioLoss: %.3f, Data time %.3f, %.3f" % (

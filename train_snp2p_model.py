@@ -100,6 +100,7 @@ def main():
     parser.add_argument('--sys2gene', action='store_true', default=False)
     parser.add_argument('--by-chr', action='store_true', default=False)
     parser.add_argument('--effective-allele', type=str, choices=['homozygous', 'heterozygous'], default='heterozygous')
+    parser.add_argument('--regression', action='store_true', default=False)
 
     args = parser.parse_args()
     if args.cuda is not None:
@@ -161,7 +162,7 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.model is not None:
         snp2p_model = torch.load(args.model, map_location=device)
     else:
-        snp2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, effective_allele=args.effective_allele, dropout=args.dropout, n_covariates=13)
+        snp2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, effective_allele=args.effective_allele, dropout=args.dropout, n_covariates=3, binary=(not args.regression))
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')

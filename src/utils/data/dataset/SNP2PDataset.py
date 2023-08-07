@@ -28,7 +28,7 @@ class SNP2PDataset(Dataset):
 
     def __getitem__(self, index):
         start = time.time()
-        sample_ind, phenotype, sex, *covariates = self.g2p_df.iloc[index].values
+        sample_ind, phenotype, sex, age, *covariates = self.g2p_df.iloc[index].values
         #print(index, sample_ind, phenotype, sex, covariates)
         sample2snp_dict = {}
 
@@ -65,10 +65,11 @@ class SNP2PDataset(Dataset):
         result_dict = dict()
 
         result_dict['phenotype'] = phenotype
-        sex_tensor = [0, 0]
-        sex_tensor[int(sex)] = 1
-        sex = torch.tensor(sex_tensor, dtype=torch.float32)
-        covariates = torch.cat([sex, torch.tensor(covariates, dtype=torch.float32)])
+        sex_age_tensor = [0, 0, 0]
+        sex_age_tensor[int(sex)] = 1
+        sex_age_tensor[2] = age
+        sex_age_tensor = torch.tensor(sex_age_tensor, dtype=torch.float32)
+        covariates = sex_age_tensor #torch.cat([sex, torch.tensor(covariates, dtype=torch.float32)])
         sample2snp_dict["covariates"] = covariates
         result_dict['genotype'] = sample2snp_dict
         end = time.time()
