@@ -41,8 +41,9 @@ class DrugResponseTrainer(object):
         self.l2_lambda = args.l2_lambda
         self.best_model = self.drug_response_model
         self.total_train_step = len(self.drug_response_dataloader_drug)*args.epochs# + len(self.drug_response_dataloader_cellline)*args.epochs
-        self.scheduler = get_linear_schedule_with_warmup(self.optimizer, int(0.2 * self.total_train_step),
-                                                          self.total_train_step)
+        #self.scheduler = get_linear_schedule_with_warmup(self.optimizer, int(0.2 * self.total_train_step),
+        #                                                  self.total_train_step)
+        self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, 10)
         self.nested_subtrees_forward = self.drug_response_dataloader_drug.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='forward')
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
@@ -85,7 +86,7 @@ class DrugResponseTrainer(object):
                             torch.save(self.drug_response_model.module, output_path_epoch)
                         else:
                             torch.save(self.drug_response_model, output_path_epoch)
-            #self.lr_scheduler.step()
+            self.scheduler.step()
 
     def get_best_model(self):
         return self.best_model
@@ -189,7 +190,7 @@ class DrugResponseTrainer(object):
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-            self.scheduler.step()
+            #self.scheduler.step()
             #self.drug_response_model.compound_encoder = self.compound_encoder
             #if self.fix_system:
             #    self.drug_response_model.system_embedding = self.system_embedding
