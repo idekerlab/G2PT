@@ -30,10 +30,10 @@ class SNP2PTrainer(object):
         #self.nested_subtrees = self.move_to(self.nested_subtrees, self.device)
         #self.gene2gene_mask = torch.tensor(self.drug_response_dataloader.dataset.tree_parser.gene2gene_mask, dtype=torch.float32)
         #self.gene2gene_mask = self.move_to(self.gene2gene_mask, self.device)
-        self.ccc_loss = CCCLoss()
+        self.ccc_loss = CCCLoss(mean_diff=False)
         self.beta = 0.1
         if args.regression:
-            self.phenotype_loss = nn.MSELoss()
+            self.phenotype_loss = nn.L1Loss()
         else:
             self.phenotype_loss = nn.BCELoss()
         self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=args.lr, weight_decay=args.wd)
@@ -79,7 +79,10 @@ class SNP2PTrainer(object):
                         if output_path:
                             output_path_epoch = output_path + ".%d"%epoch
                             print("Save to...", output_path_epoch)
-                            torch.save(self.snp2p_model, output_path_epoch)
+                            if self.args.multiprocessing_distributed:
+                                torch.save(self.snp2p_model.module, output_path_epoch)
+                            else:
+                                torch.save(self.snp2p_model, output_path_epoch)
                 #if output_path:
                 #    output_path_epoch = output_path + ".%d"%epoch
                 #    print("Save to...", output_path_epoch)

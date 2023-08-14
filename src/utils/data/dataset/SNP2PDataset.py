@@ -161,7 +161,7 @@ class CohortSampler(Sampler):
 
     def __iter__(self):
         count = 0
-        index = [i for i in torch.multinomial(self.weights, self.num_samples, replacement=True)]
+        index = [i for i in torch.multinomial(self.weights*10, self.num_samples, replacement=True)]
         while count < self.num_samples:
             #print(index[count], type(index[count]))
             #result = index[count].item()
@@ -190,7 +190,7 @@ class DistributedCohortSampler(DistributedSampler):
         self.weights = torch.tensor(self.weights, dtype=torch.double)
     def __iter__(self):
         count = 0
-        index = [i for i in torch.multinomial(self.weights, self.num_samples, replacement=True)]
+        index = [i for i in torch.multinomial(self.weights*10, self.num_samples, replacement=True)]
         while count < self.num_samples:
             #print(index[count], type(index[count]))
             #result = index[count].item()
