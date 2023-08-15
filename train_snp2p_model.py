@@ -239,13 +239,19 @@ def main_worker(gpu, ngpus_per_node, args):
     snp2p_collator = SNP2PCollator(tree_parser)
 
     if args.distributed:
+        if args.regression:
         #affinity_dataset = affinity_dataset.sample(frac=1).reset_index(drop=True)
-        snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, phenotype_index=1, z_weight=args.z_weight)
+            snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, phenotype_index=1, z_weight=args.z_weight)
         #interaction_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
+        else:
+            snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)            
         shuffle = False
     else:
         shuffle = False
-        snp2p_sampler = CohortSampler(train_dataset, phenotype_index=1, z_weight=args.z_weight)
+        if args.regression:
+            snp2p_sampler = CohortSampler(train_dataset, phenotype_index=1, z_weight=args.z_weight)
+        else:
+            snp2p_sampler = None
         interaction_sampler = None
 
     snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,

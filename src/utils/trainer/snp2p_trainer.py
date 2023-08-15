@@ -31,6 +31,10 @@ class SNP2PTrainer(object):
         #self.gene2gene_mask = torch.tensor(self.drug_response_dataloader.dataset.tree_parser.gene2gene_mask, dtype=torch.float32)
         #self.gene2gene_mask = self.move_to(self.gene2gene_mask, self.device)
         self.ccc_loss = CCCLoss(mean_diff=False)
+        if args.regression:
+            self.ccc = True
+        else:
+            self.ccc = False
         self.beta = 0.1
         if args.regression:
             self.phenotype_loss = nn.L1Loss()
@@ -151,7 +155,7 @@ class SNP2PTrainer(object):
         self.snp2p_model.train()
         if self.args.multiprocessing_distributed:
             self.snp2p_dataloader.sampler.set_epoch(epoch)
-        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", snp_loss=False, ccc=True)
+        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", snp_loss=False, ccc=self.ccc)
 
 
     def iter_minibatches(self, dataloader, epoch, name="", snp_loss=True, ccc=True):
