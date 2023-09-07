@@ -49,8 +49,8 @@ class SNP2PDataset(Dataset):
         '''
         snp_type_dict = {}
 
-        snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: homozygous_a1})
-        snp_type_dict['homozygous_a2'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: homozygous_a2})
+        snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
+        snp_type_dict['homozygous_a2'] = self.tree_parser.get_snp2gene(homozygous_a2, {1.0: homozygous_a2})
         snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
         sample2snp_dict['embedding'] = snp_type_dict
         heterozygous_gene_indices = torch.unique(snp_type_dict['heterozygous']['gene']).tolist()
@@ -70,9 +70,10 @@ class SNP2PDataset(Dataset):
         result_dict = dict()
 
         result_dict['phenotype'] = phenotype
-        sex_age_tensor = [0, 0, 0]
+        #sex_age_tensor = [0, 0, 0]
+        sex_age_tensor = [0, 0]
         sex_age_tensor[int(sex)] = 1
-        sex_age_tensor[2] = age
+        #sex_age_tensor[2] = age
         sex_age_tensor = torch.tensor(sex_age_tensor, dtype=torch.float32)
         covariates = sex_age_tensor #torch.cat([sex, torch.tensor(covariates, dtype=torch.float32)])
         sample2snp_dict["covariates"] = covariates

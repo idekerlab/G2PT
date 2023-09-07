@@ -10,7 +10,7 @@ import numpy as np
 import copy
 from src.utils.data import move_to
 from transformers import get_linear_schedule_with_warmup
-from src.utils.trainer import CCCLoss
+from src.utils.trainer import CCCLoss, FocalLoss
 import copy
 
 
@@ -39,7 +39,7 @@ class SNP2PTrainer(object):
         if args.regression:
             self.phenotype_loss = nn.L1Loss()
         else:
-            self.phenotype_loss = nn.BCELoss()
+            self.phenotype_loss = nn.BCELoss()#FocalLoss(gamma=2)
         self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=args.lr, weight_decay=args.wd)
         self.validation_dataloader = validation_dataloader
         self.snp2p_dataloader = snp2p_dataloader
@@ -47,7 +47,7 @@ class SNP2PTrainer(object):
         self.best_model = self.snp2p_model
 
         self.total_train_step = len(self.snp2p_dataloader)*args.epochs# + len(self.drug_response_dataloader_cellline)*args.epochs
-        self.lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
+        #self.lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
         self.nested_subtrees_forward = self.snp2p_dataloader.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='forward')
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
@@ -91,7 +91,7 @@ class SNP2PTrainer(object):
                 #    output_path_epoch = output_path + ".%d"%epoch
                 #    print("Save to...", output_path_epoch)
                 #    torch.save(self.g2p_model, output_path_epoch)
-            self.lr_scheduler.step()
+            #self.lr_scheduler.step()
 
     def get_best_model(self):
         return self.best_model

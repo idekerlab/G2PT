@@ -91,13 +91,15 @@ class Attention(nn.Module):
             if mask is not None:
                 score_sum = []
                 for score, mask_i in zip(scores, mask):
-                    weight, mask_to_fill = mask_i
-                    mask_to_fill = mask_to_fill == 0
+                    weight, mask_mat = mask_i
+                    mask_to_fill = mask_mat == 0
+                    mask_to_weight = mask_mat != 0
                     mask_to_fill = mask_to_fill.unsqueeze(1).expand(-1, self.n_heads, -1, -1)
+                    mask_to_weight = mask_to_weight.unsqueeze(1).expand(-1, self.n_heads, -1, -1) * weight
                     if (self.activation_type=='softmax') or (self.activation_type=='sigmoid'):
-                        score_sum.append(score.masked_fill(mask_to_fill, -1e9))
+                        score_sum.append((score*mask_to_weight).masked_fill(mask_to_fill, -1e9))
                     else:
-                        score_sum.append(score.masked_fill(mask_to_fill, 0))
+                        score_sum.append((score*mask_to_weight).masked_fill(mask_to_fill, 0))
                 scores = sum(score_sum)
             else:
                 scores = sum(scores)
