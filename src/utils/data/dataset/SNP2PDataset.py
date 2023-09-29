@@ -28,13 +28,21 @@ class SNP2PDataset(Dataset):
 
     def __getitem__(self, index):
         start = time.time()
-        sample_ind, phenotype, sex, age, *covariates = self.g2p_df.iloc[index].values
+        sample_ind, phenotype, sex, age, age_sq, *covariates = self.g2p_df.iloc[index].values
         #print(index, sample_ind, phenotype, sex, covariates)
         sample2snp_dict = {}
-
-        homozygous_a1 = [int(i) for i in (self.snp_df.loc[sample_ind, 'homozygous_a1']).split(",")]
-        homozygous_a2 = [int(i) for i in (self.snp_df.loc[sample_ind, 'homozygous_a2']).split(",")]
-        heterozygous = [int(i) for i in (self.snp_df.loc[sample_ind, 'heterozygous']).split(",")]
+        homozygous_a1 = self.snp_df.loc[sample_ind, 'homozygous_a1']
+        if type(homozygous_a1)==str:
+            homozygous_a1 = [int(i) for i in homozygous_a1.split(",")]
+        else:
+            homozygous_a1 = []
+        #homozygous_a2 = [int(i) for i in (self.snp_df.loc[sample_ind, 'homozygous_a2']).split(",")]
+        #heterozygous = [int(i) for i in (self.snp_df.loc[sample_ind, 'heterozygous']).split(",")]
+        heterozygous = self.snp_df.loc[sample_ind, 'heterozygous']
+        if type(heterozygous) == str:
+            heterozygous = [int(i) for i in heterozygous.split(",")]
+        else:
+            heterozygous = []
         '''
         type_indices = {1.0:homozygous}
         if self.effective_allele=='heterozygous':
@@ -50,18 +58,18 @@ class SNP2PDataset(Dataset):
         snp_type_dict = {}
 
         snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
-        snp_type_dict['homozygous_a2'] = self.tree_parser.get_snp2gene(homozygous_a2, {1.0: homozygous_a2})
+        #snp_type_dict['homozygous_a0'] = self.tree_parser.get_snp2gene(homozygous_a2, {1.0: homozygous_a2})
         snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
         sample2snp_dict['embedding'] = snp_type_dict
         heterozygous_gene_indices = torch.unique(snp_type_dict['heterozygous']['gene']).tolist()
         homozygous_a1_gene_indices = torch.unique(snp_type_dict['homozygous_a1']['gene']).tolist()
-        homozygous_a2_gene_indices = torch.unique(snp_type_dict['homozygous_a2']['gene']).tolist()
+        #homozygous_a2_gene_indices = torch.unique(snp_type_dict['homozygous_a0']['gene']).tolist()
         #homozygous_a1_gene_indices = self.tree_parser.get_snp2gene_indices(homozygous_a1)
         #homozygous_a2_gene_indices = self.tree_parser.get_snp2gene_indices(homozygous_a2)
         #heterozygous_gene_indices = self.tree_parser.get_snp2gene_indices(heterozygous)
         gene2sys_mask_for_gene = torch.zeros((self.tree_parser.n_systems, self.tree_parser.n_genes), dtype=torch.bool)
         gene2sys_mask_for_gene[:, homozygous_a1_gene_indices] = 1
-        gene2sys_mask_for_gene[:, homozygous_a2_gene_indices] = 1
+        #gene2sys_mask_for_gene[:, homozygous_a2_gene_indices] = 1
         #if self.effective_allele=='heterozygous':
 
         gene2sys_mask_for_gene[:, heterozygous_gene_indices] = 1
@@ -70,12 +78,16 @@ class SNP2PDataset(Dataset):
         result_dict = dict()
 
         result_dict['phenotype'] = phenotype
-        #sex_age_tensor = [0, 0, 0]
-        sex_age_tensor = [0, 0]
-        sex_age_tensor[int(sex)] = 1
-        #sex_age_tensor[2] = age
+        sex_age_tensor = [0, 0, 0, 0]
+        #sex_age_tensor = [0, 0]
+        if int(sex)==-9:
+            pass
+        else:
+            sex_age_tensor[int(sex)] = 1
+        sex_age_tensor[2] = age
+        sex_age_tensor[3] = age_sq
         sex_age_tensor = torch.tensor(sex_age_tensor, dtype=torch.float32)
-        covariates = sex_age_tensor #torch.cat([sex, torch.tensor(covariates, dtype=torch.float32)])
+        covariates = sex_age_tensor#torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
         sample2snp_dict["covariates"] = covariates
         result_dict['genotype'] = sample2snp_dict
         end = time.time()
@@ -114,7 +126,7 @@ class SNP2PCollator(object):
         else:
 
             snp_type_dict = {}
-            for snp_type in ['heterozygous', 'homozygous_a1', 'homozygous_a2']:
+            for snp_type in ['heterozygous', 'homozygous_a1']:
                 embedding_dict = {}
                 for embedding_type in ['snp', 'gene']:
                     embedding_dict[embedding_type] = pad_sequence(
