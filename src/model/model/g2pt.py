@@ -66,30 +66,63 @@ class Genotype2PhenotypeTransformer(nn.Module):
         return gene_embedding + system_effect
 
 
-    def get_sys2sys(self, system_embedding, nested_hierarchical_masks, direction='forward', return_updates = True):
-        system_embedding_input = self.sys_norm(system_embedding)
+    def get_sys2sys(self, system_embedding, nested_hierarchical_masks, direction='forward', return_updates = True, with_indices=False, update_tensor=None):
+        system_embedding_queries = self.sys_norm(system_embedding)
+        system_embedding_keys = self.sys_norm(system_embedding)
+        batch_size = system_embedding_queries.size(0)
+        feature_size = system_embedding_queries.size(2)
         system_embedding_output = system_embedding
         updated_systems = []
         system_updates = []
+        if update_tensor is None:
+            update_tensor = torch.zeros_like(system_embedding_queries)#.unsqueeze(0).expand(batch_size, -1, -1)
+        i = 0
         for hierarchical_masks in nested_hierarchical_masks:
-            updated_systems_i = []
-            system_update_i = []
+            updated_systems_j = []
+            system_update_j = []
+            j = 0
             for hierarchical_mask in hierarchical_masks:
-                if direction=='forward':
-                    hitr_result = self.sys2env.forward(system_embedding_input, system_embedding_input, hierarchical_mask)
+                if with_indices:
+                    system_embedding_queries = self.sys_norm(self.system_embedding(hierarchical_mask['query']).unsqueeze(0).expand(batch_size, -1, -1))
+                    system_embedding_keys = self.sys_norm(self.system_embedding(hierarchical_mask['key']).unsqueeze(0).expand(batch_size, -1, feature_size))
+                    system_effect_queries = torch.gather(update_tensor, 1, hierarchical_mask['query'].unsqueeze(0).unsqueeze(2).expand(batch_size, -1, feature_size).to(torch.int64))
+                    system_embedding_queries = system_embedding_queries + system_effect_queries
+                    system_embedding_queries = self.sys_norm(system_embedding_queries)
+                    system_effect_keys = torch.gather(update_tensor, 1, hierarchical_mask['key'].unsqueeze(0).unsqueeze(2).expand(batch_size, -1, feature_size).to(torch.int64))
+                    system_embedding_keys = system_embedding_keys + system_effect_keys
+                    system_embedding_keys = self.sys_norm(system_embedding_keys)
+                    mask = hierarchical_mask['mask']
                 else:
-                    hitr_result = self.env2sys.forward(system_embedding_input, system_embedding_input, hierarchical_mask)
-                system_embedding_output = system_embedding_output + hitr_result
-                system_embedding_input = self.sys_norm(system_embedding_output)
+                    mask = hierarchical_mask
+                if direction=='forward':
+                    #print(system_embedding_queries.size(), system_embedding_keys.size())
+                    hitr_result = self.sys2env.forward(system_embedding_queries, system_embedding_keys, mask)
+                else:
+                    hitr_result = self.env2sys.forward(system_embedding_queries, system_embedding_keys, mask)
+                if not with_indices:
+                    system_embedding_output = system_embedding_output + hitr_result
+                    system_embedding_queries = self.sys_norm(system_embedding_output)
+                    system_embedding_keys = self.sys_norm(system_embedding_output)
+                else:
+                    results = []
+                    for b, value in enumerate(update_tensor):
+                        results.append(
+                            update_tensor[b].index_add(0, hierarchical_mask['query'], hitr_result[b]))
+                    sysetem_effect = torch.stack(results, dim=0)
+                    update_tensor = update_tensor + sysetem_effect
                 if return_updates:
-                    updated_systems_i.append(system_embedding_output)
-                    system_update_i.append(hitr_result)
-            updated_systems.append(updated_systems_i)
-            system_updates.append(system_update_i)
+                    updated_systems_j.append(system_embedding_output)
+                    updated_systems_j.append(hitr_result)
+            updated_systems.append(updated_systems_j)
+            system_updates.append(updated_systems_j)
+            i += 1
         if return_updates:
-            return updated_systems, system_updates
+            return system_embedding + update_tensor, update_tensor
         else:
-            system_embedding = system_embedding_output
-            return system_embedding
+            if with_indices:
+                return system_embedding + update_tensor
+            else:
+                system_embedding = system_embedding_output
+                return system_embedding
 
 

@@ -78,20 +78,21 @@ class SNP2PDataset(Dataset):
         result_dict = dict()
 
         result_dict['phenotype'] = phenotype
-        sex_age_tensor = [0, 0, 0, 0]
-        #sex_age_tensor = [0, 0]
+        #sex_age_tensor = [0, 0, 0, 0]
+        sex_age_tensor = [0, 0]
         if int(sex)==-9:
             pass
         else:
             sex_age_tensor[int(sex)] = 1
-        sex_age_tensor[2] = age
-        sex_age_tensor[3] = age_sq
+        #sex_age_tensor[2] = age
+        #sex_age_tensor[3] = age_sq
         sex_age_tensor = torch.tensor(sex_age_tensor, dtype=torch.float32)
         covariates = sex_age_tensor#torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
-        sample2snp_dict["covariates"] = covariates
+
         result_dict['genotype'] = sample2snp_dict
         end = time.time()
         result_dict["datatime"] = torch.tensor(end-start)
+        result_dict["covariates"] = covariates
 
         return result_dict
 
@@ -108,7 +109,7 @@ class SNP2PCollator(object):
 
         if self.tree_parser.by_chr:
             snp_type_dict = {}
-            for snp_type in ['heterozygous', 'homozygous_a1', 'homozygous_a2']:
+            for snp_type in ['heterozygous', 'homozygous_a1', 'homozygous_a0']:
                 embedding_dict = {}
                 for CHR in self.tree_parser.chromosomes:
                     indices_dict = dict()
@@ -156,8 +157,8 @@ class SNP2PCollator(object):
         '''
         genotype_dict['embedding'] = snp_type_dict
         genotype_dict['gene2sys_mask'] = torch.stack([d['genotype']['gene2sys_mask'] for d in data])
-        genotype_dict['covariates'] = torch.stack([d['genotype']['covariates'] for d in data])
         result_dict['genotype'] = genotype_dict
+        result_dict['covariates'] = torch.stack([d['covariates'] for d in data])
         result_dict['phenotype'] = torch.tensor([d['phenotype'] for d in data], dtype=torch.float32)
         end = time.time()
         result_dict['datatime'] = torch.mean(torch.stack([d['datatime'] for d in data]))

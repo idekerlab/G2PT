@@ -9,6 +9,7 @@ from random import shuffle
 from torch.nn.utils.rnn import pad_sequence
 
 
+
 def skew_normal_mode(data):
     a, loc, scale = skewnorm.fit(data)
     m, v, s, k = skewnorm.stats(a, loc=loc, scale=scale, moments='mvsk')
@@ -21,12 +22,13 @@ def skew_normal_mode(data):
 
 class DrugResponseDataset(Dataset):
 
-    def __init__(self, drug_response, cell2ind, cell2genotypes, compound_encoder, tree_parser:MutTreeParser):
+    def __init__(self, drug_response, cell2ind, cell2genotypes, compound_encoder, tree_parser:MutTreeParser, with_indices=False):
 
         self.compound_encoder = compound_encoder
         self.drug_response_df = drug_response #this is dataframe because dataset is split to train and val
         self.compound_grouped = self.drug_response_df.groupby(1)
         self.drug_dict = {drug:self.compound_encoder.encode(drug) for drug in self.drug_response_df[1].unique()}
+        self.with_indices = with_indices
 
         #self.drug_response_mean_dict = {drug: skew_normal_mode(self.compound_grouped.get_group(drug)[2])[0] for drug in self.drug_response_df[1].unique()}
         if self.drug_response_df.shape[1]>2:
@@ -59,10 +61,14 @@ class DrugResponseDataset(Dataset):
 
         cell_ind = self.cell2ind[cell]
 
-
-        cell_mut_dict = {mut_type:self.tree_parser.get_mut2sys(np.where(mut_value.iloc[cell_ind].values == 1.0)[0],
-                                                               type_indices={1.0: np.where(mut_value.iloc[cell_ind].values == 1.0)[0]})
-                         for mut_type, mut_value in self.cell2genotype_dict.items()}
+        if self.with_indices:
+            cell_mut_dict = {mut_type:self.tree_parser.get_mut2sys(np.where(mut_value.iloc[cell_ind].values == 1.0)[0],
+                                                                   type_indices={1.0: np.where(mut_value.iloc[cell_ind].values == 1.0)[0]})
+                             for mut_type, mut_value in self.cell2genotype_dict.items()}
+        else:
+            cell_mut_dict = {mut_type: self.tree_parser.get_system2genotype_mask(
+                torch.tensor(mut_value.iloc[cell_ind].values, dtype=torch.float32))
+                             for mut_type, mut_value in self.cell2genotype_dict.items()}
         #cell_tree_mask = self.cell_tree_mask_dict[cell]
 
         result_dict = dict()
@@ -76,27 +82,49 @@ class DrugResponseDataset(Dataset):
             result_dict['response_residual'] = drug_residual
         return result_dict
 
+    def get_normal_cellline(self, drug):
+        cell_mut_dict = {}
+        cell_mut_dict['mutation'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
+        cell_mut_dict['cna'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
+        cell_mut_dict['cnd'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
+
+        result_dict = dict()
+        result_dict['genotype'] = cell_mut_dict
+        result_dict['drug'] = self.drug_dict[drug]
+        return result_dict
+
+    def get_crispr_celline(self, drug, i):
+        result_dict = self.get_normal_cellline(drug)
+        result_dict['genotype']['cnd'] = self.tree_parser.get_mut2sys([i], type_indices={1.0: [i]})
+        return result_dict
+
+
+
 class DrugResponseCollator(object):
 
-    def __init__(self, tree_parser:MutTreeParser, genotypes, compound_encoder):
+    def __init__(self, tree_parser:MutTreeParser, genotypes, compound_encoder, with_indices=False):
         self.tree_parser = tree_parser
         self.genotypes = genotypes
         self.compound_encoder = compound_encoder
         self.compound_type = self.compound_encoder.feature
+        self.with_indices = with_indices
 
     def __call__(self, data):
         result_dict = dict()
         mutation_dict = dict()
         #result_nested_mask = list()
         for genotype in self.genotypes:
-            embedding_dict = {}
-            embedding_dict['gene'] = pad_sequence([dr['genotype'][genotype]['gene'] for dr in data], padding_value=self.tree_parser.n_genes, batch_first=True).to(torch.long)
-            embedding_dict['sys'] = pad_sequence([dr['genotype'][genotype]['sys'] for dr in data], padding_value=self.tree_parser.n_systems, batch_first=True).to(torch.long)
-            gene_max_len = embedding_dict['gene'].size(1)
-            sys_max_len = embedding_dict['sys'].size(1)
-            embedding_dict['mask'] = torch.stack([dr['genotype'][genotype]['mask'] for dr in data])[:, :sys_max_len, :gene_max_len]
+            if self.with_indices:
+                embedding_dict = {}
+                embedding_dict['gene'] = pad_sequence([dr['genotype'][genotype]['gene'] for dr in data], padding_value=self.tree_parser.n_genes, batch_first=True).to(torch.long)
+                embedding_dict['sys'] = pad_sequence([dr['genotype'][genotype]['sys'] for dr in data], padding_value=self.tree_parser.n_systems, batch_first=True).to(torch.long)
+                gene_max_len = embedding_dict['gene'].size(1)
+                sys_max_len = embedding_dict['sys'].size(1)
+                embedding_dict['mask'] = torch.stack([dr['genotype'][genotype]['mask'] for dr in data])[:, :sys_max_len, :gene_max_len]
 
-            mutation_dict[genotype] = embedding_dict
+                mutation_dict[genotype] = embedding_dict
+            else:
+                mutation_dict[genotype] = torch.stack([dr['genotype'][genotype] for dr in data])
         '''
         for i in  range(len(data[0]["nested_system_mask"])):
             result_list = []
