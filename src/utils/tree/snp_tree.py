@@ -43,7 +43,7 @@ class SNPTreeParser(TreeParser):
     def get_snp2gene_mask(self, gene_indices, snp_indices, type_indices=None, CHR=None):
 
         if len(gene_indices)==0:
-            return torch.zeros((len(self.chr2gene[CHR]), len(self.chr2snp[CHR])))
+            return torch.zeros((self.n_genes, self.n_snps))
         else:
             if type_indices is not None:
                 snp2gene_mask = np.copy(self.snp2gene_mask)

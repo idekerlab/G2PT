@@ -43,8 +43,8 @@ class HierarchicalTransformerUpdate(nn.Module):
         self.norm_channel_first = norm_channel_first
         self.n_type = n_type
 
-    def forward(self, q, k, v, mask=None):
-        result = self.attention.forward(q, k, v, mask=mask)
+    def forward(self, q, k, v, mask=None, dropout=True):
+        result = self.attention.forward(q, k, v, mask=mask, dropout=dropout)
         result = q + result
         #result_layer_norm = self.layer_norm(result)
         if self.norm_channel_first:
@@ -82,11 +82,11 @@ class HierarchicalTransformer(nn.Module):
         self.n_type = n_type
 
 
-    def forward(self, q, k, mask):
+    def forward(self, q, k, mask, dropout=True):
         batch_size = q.size(0)
         if self.conv_type=='system':
             mask = mask.unsqueeze(0).expand(batch_size, -1, -1,)
-        result = self.hierarchical_transformer_update(q, k, k, mask)
+        result = self.hierarchical_transformer_update(q, k, k, mask, dropout=dropout)
 
         #result_layer_norm = self.layer_norm(result)
         if self.norm is not None:
@@ -106,4 +106,8 @@ class HierarchicalTransformer(nn.Module):
         result = result.masked_fill(node_mask, 0)
         return result
 
+    def get_attention(self, q, k, v, norm=True):
+        return self.hierarchical_transformer_update.attention.get_attention(q, k, v, mask=None)
 
+    def get_score(self, q, k, v, norm=True):
+        return self.hierarchical_transformer_update.attention.get_score(q, k, v, mask=None)

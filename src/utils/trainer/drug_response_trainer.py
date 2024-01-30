@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import  StepLR
+from torch.nn.utils import prune
 from sklearn import metrics
 from scipy.stats import spearmanr, pearsonr
 from tqdm import tqdm
@@ -12,12 +13,12 @@ from transformers import get_linear_schedule_with_warmup
 from src.utils.trainer import CCCLoss
 from src.utils.data import move_to
 import copy
-
+from torch.nn import functional as F
 
 
 class DrugResponseTrainer(object):
 
-    def __init__(self, drug_response_model, drug_response_dataloader_drug, drug_response_dataloader_cellline, device, args, validation_dataloader=None, fix_system=False):
+    def __init__(self, drug_response_model, drug_response_dataloader_drug, drug_response_dataloader_cellline, device, args, validation_dataloader=None, fix_embedding=False):
         self.device = device
         self.drug_response_model = drug_response_model.to(self.device)
         '''
@@ -28,7 +29,7 @@ class DrugResponseTrainer(object):
         '''
         self.drug_response_dataloader_drug = drug_response_dataloader_drug
         self.drug_response_dataloader_cellline = drug_response_dataloader_cellline
-
+        self.feature_loss = nn.BCELoss()
         #self.nested_subtrees = self.move_to(self.nested_subtrees, self.device)
         #self.gene2gene_mask = torch.tensor(self.drug_response_dataloader.dataset.tree_parser.gene2gene_mask, dtype=torch.float32)
         #self.gene2gene_mask = self.move_to(self.gene2gene_mask, self.device)
@@ -41,8 +42,9 @@ class DrugResponseTrainer(object):
         self.l2_lambda = args.l2_lambda
         self.best_model = self.drug_response_model
         self.total_train_step = len(self.drug_response_dataloader_drug)*args.epochs# + len(self.drug_response_dataloader_cellline)*args.epochs
-        self.scheduler = get_linear_schedule_with_warmup(self.optimizer, int(0.2 * self.total_train_step),
-                                                          self.total_train_step)
+        #self.scheduler = get_linear_schedule_with_warmup(self.optimizer, int(0.2 * self.total_train_step),
+        #                                                  self.total_train_step)
+        self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, 10)
         self.nested_subtrees_forward = self.drug_response_dataloader_drug.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='forward')
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
@@ -53,9 +55,15 @@ class DrugResponseTrainer(object):
         print("%d sys2gene in Dataloader" % self.drug_response_dataloader_drug.dataset.tree_parser.sys2gene_mask.sum())
         self.args = args
         #self.compound_encoder = copy.deepcopy(self.drug_response_model.compound_encoder)
-        self.fix_system = fix_system
+        self.fix_embedding = fix_embedding
         self.g2p_module_names = ["Mut2Sys", "Sys2Cell", "Cell2Sys"]
-        #self.system_embedding = copy.deepcopy(self.drug_response_model.system_embedding)
+        if fix_embedding:
+            if self.args.multiprocessing_distributed:
+                self.system_embedding = copy.deepcopy(self.drug_response_model.module.system_embedding)
+                self.gene_embedding = copy.deepcopy(self.drug_response_model.module.gene_embedding)
+            else:
+                self.system_embedding = copy.deepcopy(self.drug_response_model.system_embedding)
+                self.gene_embedding = copy.deepcopy(self.drug_response_model.gene_embedding)
         #print(self.system2gene_mask)
         #print(self.nested_subtrees_forward)
         #print(self.nested_subtrees_backward)
@@ -82,10 +90,16 @@ class DrugResponseTrainer(object):
                         output_path_epoch = output_path + ".%d"%epoch
                         print("Save to...", output_path_epoch)
                         if self.args.multiprocessing_distributed:
-                            torch.save(self.drug_response_model.module, output_path_epoch)
+                            torch.save({"arguments": self.args, "state_dict":self.drug_response_model.module.state_dict()}, output_path_epoch)
                         else:
-                            torch.save(self.drug_response_model, output_path_epoch)
-            #self.lr_scheduler.step()
+                            torch.save({"arguments": self.args, "state_dict":self.drug_response_model.state_dict()}, output_path_epoch)
+            #if (epoch   % self.args.val_step)==0:
+            #    parameters_to_prune = []
+            #    for name, module in self.drug_response_model.named_modules():
+            #        if type(module) in [nn.Linear]:
+            #            parameters_to_prune.append((module, 'weight'))
+            #        prune.global_unstructured(parameters_to_prune, pruning_method=prune.L1Unstructured, amount=self.args.dropout)
+            self.scheduler.step()
 
     def get_best_model(self):
         return self.best_model
@@ -152,14 +166,15 @@ class DrugResponseTrainer(object):
 
     def train_epoch(self, epoch):
         self.drug_response_model.train()
-        self.iter_minibatches(self.drug_response_dataloader_drug, epoch, name="DrugBatch", ccc=False)
+        self.iter_minibatches(self.drug_response_dataloader_drug, epoch, name="DrugBatch", ccc=False, feature_loss=False)
         #self.iter_minibatches(self.drug_response_dataloader_cellline, epoch, name="CellLineBatch", ccc=False)
 
 
-    def iter_minibatches(self, dataloader, epoch, name="", ccc=True):
+    def iter_minibatches(self, dataloader, epoch, name="", ccc=True, feature_loss=True):
         mean_comp_loss = 0.
         mean_response_loss = 0.
         mean_ccc_loss = 0.
+        mean_feature_loss = 0.
         dataloader_with_tqdm = tqdm(dataloader)
         for i, batch in enumerate(dataloader_with_tqdm):
             batch = move_to(batch, self.device)
@@ -172,6 +187,7 @@ class DrugResponseTrainer(object):
             #compound_loss = self.compound_loss(compound_predicted[:, 0], batch['response_mean'].to(torch.float32))
             #drug_response_loss = self.drug_response_loss(compound_predicted[:, 0]+drug_response_predicted[:, 0], (batch['response_mean']+batch['response_residual']).to(torch.float32))
             drug_response_loss = self.drug_response_loss(drug_response_predicted[:, 0],(batch['response_mean'] + batch['response_residual']).to(torch.float32))
+
             #ccc_loss = self.ccc_loss((batch['response_mean']+batch['response_residual']).to(torch.float32), compound_predicted[:, 0]+drug_response_predicted[:, 0])
             ccc_loss = self.ccc_loss((batch['response_mean'] + batch['response_residual']).to(torch.float32), drug_response_predicted[:, 0])
             #drug_response_loss = self.drug_response_loss((drug_response_predicted[:, 0]), (batch['response_residual']).to(torch.float32))
@@ -186,15 +202,25 @@ class DrugResponseTrainer(object):
             loss =  drug_response_loss
             if ccc:
                 loss = loss + ccc_loss * self.beta
+            if feature_loss:
+                feature_loss = 0.
+                for genotype in self.drug_response_dataloader_drug.dataset.cell2genotype_dict.keys():
+                    target = (batch['genotype'][genotype].sum(1)!=0).to(torch.float32)
+                    feature_loss = feature_loss + self.feature_loss(feature_predicted[genotype], target)
+                loss = loss + feature_loss * self.beta
+                mean_feature_loss += float(feature_loss/3)
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-            self.scheduler.step()
+            #self.scheduler.step()
             #self.drug_response_model.compound_encoder = self.compound_encoder
-            #if self.fix_system:
-            #    self.drug_response_model.system_embedding = self.system_embedding
-            dataloader_with_tqdm.set_description("%s Train epoch: %d, Compound loss %.3f,  Drug Response loss: %.3f, CCCLoss: %.3f" % (
-            name, epoch, mean_comp_loss / (i + 1), mean_response_loss / (i + 1), mean_ccc_loss / (i+1) ))
+            if self.fix_embedding:
+                self.drug_response_model.system_embedding = self.system_embedding
+                self.drug_response_model.gene_embedding = self.gene_embedding
+
+            dataloader_with_tqdm.set_description(
+                    "%s Train epoch: %d, Compound loss %.3f,  Drug Response loss: %.3f, CCCLoss: %.3f, FeatureLoss: %.3f" % (
+                        name, epoch, mean_comp_loss / (i + 1), mean_response_loss / (i + 1), mean_ccc_loss / (i + 1), mean_feature_loss/(i+1)))
             del loss
             del drug_response_loss, ccc_loss
             del drug_response_predicted

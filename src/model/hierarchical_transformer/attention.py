@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
+import math
 
 
 
@@ -29,7 +30,7 @@ class MultiHeadedAttention(nn.Module):
 
         self.dropout = nn.Dropout(p=dropout)
 
-    def forward(self, query, key, value, mask=None):
+    def forward(self, query, key, value, mask=None, dropout=True):
         batch_size = query.size(0)
 
         # 1) Do all the linear projections in batch from d_model => h x d_k
@@ -43,7 +44,11 @@ class MultiHeadedAttention(nn.Module):
                 value = self.value_linear(value).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
 
         # 2) Apply attention on all the projected vectors in batch.
-        x, attn, score = self.attention(query, key, value, mask=mask, dropout=self.dropout)
+        if dropout:
+            dropout = self.dropout
+        else:
+            dropout = None
+        x, attn, score = self.attention(query, key, value, mask=mask, dropout=dropout)
 
         # 3) "Concat" using a view and apply a final linear.
         x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.h * self.d_k)
@@ -91,13 +96,15 @@ class Attention(nn.Module):
             if mask is not None:
                 score_sum = []
                 for score, mask_i in zip(scores, mask):
-                    weight, mask_to_fill = mask_i
-                    mask_to_fill = mask_to_fill == 0
+                    weight, mask_mat = mask_i
+                    mask_to_fill = mask_mat == 0
+                    mask_to_weight = mask_mat != 0
                     mask_to_fill = mask_to_fill.unsqueeze(1).expand(-1, self.n_heads, -1, -1)
+                    mask_to_weight = mask_to_weight.unsqueeze(1).expand(-1, self.n_heads, -1, -1) * weight
                     if (self.activation_type=='softmax') or (self.activation_type=='sigmoid'):
-                        score_sum.append(score.masked_fill(mask_to_fill, -1e9))
+                        score_sum.append((score*mask_to_weight).masked_fill(mask_to_fill, -1e9))
                     else:
-                        score_sum.append(score.masked_fill(mask_to_fill, 0))
+                        score_sum.append((score*mask_to_weight).masked_fill(mask_to_fill, 0))
                 scores = sum(score_sum)
             else:
                 scores = sum(scores)
@@ -129,3 +136,36 @@ class Attention(nn.Module):
         if dropout is not None:
             p_attn = dropout(p_attn)
         return torch.matmul(p_attn, value), p_attn, scores
+
+
+class FewShotAttention(Attention):
+
+    def __init__(self, d_model, n_heads=1, n_train_celllines=1, activation='softmax', dropout=0.2):
+        super(FewShotAttention, self).__init__(n_heads=n_heads, activation=activation)
+        self.d_k = d_model // n_heads
+        self.n_heads = n_heads
+        self.cellline_weights = nn.Parameter(torch.ones(n_train_celllines), requires_grad=True)
+        #self.query_norm = nn.LayerNorm(d_model)
+        #self.key_norm = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, query, key, value, mask=None, dropout=None, transform=True):
+        batch_size = query.size(0)
+        #query = self.query_norm(query)
+        #key = self.key_norm(key)
+        query = query.view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+        key = key.view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+        value = value.view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+
+        scores = torch.matmul(query, key.transpose(-2, -1)) \
+                 / torch.sqrt(torch.tensor(query.size(-1)))
+        if transform:
+            scores = scores * self.cellline_weights.unsqueeze(0).unsqueeze(0).expand(batch_size, -1, -1)
+        mask = torch.ones_like(scores)
+        mask = self.dropout(mask)
+        scores = scores.masked_fill(mask==0, -1e9)
+        p_attn = self.activation(scores)
+
+        x = torch.matmul(p_attn, value)
+        x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.n_heads * self.d_k)
+        return x, p_attn, scores

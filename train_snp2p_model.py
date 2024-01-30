@@ -1,13 +1,11 @@
 import argparse
 import os
-import random
-import shutil
-import time
+import subprocess
+import socket
 import warnings
-from enum import Enum
+
 import pandas as pd
 
-import argparse
 import torch
 import torch.nn.parallel
 import torch.distributed as dist
@@ -23,6 +21,7 @@ from src.model.snp2phenotype import SNP2PhenotypeModel
 from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
+from datetime import timedelta
 import numpy as np
 import torch.nn as nn
 
@@ -40,6 +39,27 @@ def count_parameters(model):
     print(table)
     print(f"Total Trainable Params: {total_params}")
     return total_params
+
+def get_slurm_nodelist():
+    """
+    Returns a list of nodes allocated in the Slurm job.
+    """
+    if 'SLURM_JOB_NODELIST' in os.environ:
+        try:
+            # Extract the node list using scontrol
+            result = subprocess.check_output(
+                ['scontrol', 'show', 'hostnames', os.environ['SLURM_JOB_NODELIST']],
+                universal_newlines=True
+            )
+            # Split the result to get individual node names
+            nodes = result.strip().split('\n')
+            return nodes
+        except subprocess.CalledProcessError as e:
+            print("Error getting node list: ", e)
+            return None
+    else:
+        print("SLURM_JOB_NODELIST environment variable not set")
+        return None
 
 def main():
     parser = argparse.ArgumentParser(description='Some beautiful description')
@@ -108,8 +128,9 @@ def main():
                       'disable data parallelism.')
         args.gpu = args.cuda
 
-    if args.dist_url == "env://" and args.world_size == -1:
-        args.world_size = int(os.environ["WORLD_SIZE"])
+    nodelist = get_slurm_nodelist()
+    if nodelist:
+        print("Nodes allocated:", nodelist)
 
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
 
@@ -119,21 +140,29 @@ def main():
 
     ngpus_per_node = torch.cuda.device_count()
     if args.multiprocessing_distributed:
+        if 'SLURM_PROCID' in os.environ:
+            addr = os.environ["MASTER_ADDR"]
+            port = os.environ["MASTER_PORT"]
+            print("Address: %s:%s" % (addr, port))
         # Since we have ngpus_per_node processes per node, the total world_size
         # needs to be adjusted accordingly
-        args.world_size = ngpus_per_node * args.world_size
+        if args.dist_url == "env://" and args.world_size == -1:
+            args.world_size = int(os.environ["WORLD_SIZE"])
+        else:
+            args.world_size = ngpus_per_node * args.world_size
         # Use torch.multiprocessing.spawn to launch distributed processes: the
         # main_worker process function
         print("The world size is %d"%args.world_size)
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args))
+        mp.spawn(main_worker, nprocs=args.world_size, args=(ngpus_per_node, args))
     else:
         # Simply call main_worker function
         main_worker(args.gpu, ngpus_per_node, args)
 
 
-def main_worker(gpu, ngpus_per_node, args):
+def main_worker(rank, ngpus_per_node, args):
     global best_acc1
-    args.gpu = gpu
+    node_name = socket.gethostname()
+    print(f"Initialize main worker {rank} at node {node_name}")
 
     if args.gpu is not None:
         print("Use GPU: {} for training".format(args.gpu))
@@ -142,15 +171,18 @@ def main_worker(gpu, ngpus_per_node, args):
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
         if args.multiprocessing_distributed:
+
             # For multiprocessing distributed training, rank needs to be the
             # global rank among all the processes
-            args.rank = args.rank * ngpus_per_node + gpu
-        print("GPU %d rank is %d" % (gpu, args.rank))
+            args.rank = rank
+            gpu = rank % ngpus_per_node
+        print("GPU %d rank is %d" % (gpu, rank))
+        timeout = timedelta(hours=5)
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                world_size=args.world_size, rank=args.rank)
+                                world_size=args.world_size, rank=args.rank, timeout=timeout)
         print("GPU %d process initialized" % (gpu))
         torch.cuda.empty_cache()
-
+    print("Finish setup main worker", rank)
 
     if torch.cuda.is_available():
         device = torch.device("cuda:%d" % gpu)
@@ -162,7 +194,7 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.model is not None:
         snp2p_model = torch.load(args.model, map_location=device)
     else:
-        snp2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, effective_allele=args.effective_allele, dropout=args.dropout, n_covariates=3, binary=(not args.regression))
+        snp2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, effective_allele=args.effective_allele, dropout=args.dropout, n_covariates=2, binary=(not args.regression))
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -185,7 +217,6 @@ def main_worker(gpu, ngpus_per_node, args):
             snp2p_model.to(device)
             # DistributedDataParallel will divide and allocate batch_size to all
             # available GPUs if device_ids are not set
-
             snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, find_unused_parameters=True)
     elif args.gpu is not None:
         #torch.cuda.set_device(args.gpu)
@@ -239,13 +270,19 @@ def main_worker(gpu, ngpus_per_node, args):
     snp2p_collator = SNP2PCollator(tree_parser)
 
     if args.distributed:
+        if args.regression:
         #affinity_dataset = affinity_dataset.sample(frac=1).reset_index(drop=True)
-        snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, phenotype_index=1, z_weight=args.z_weight)
-        #interaction_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
+            snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, phenotype_index=1, z_weight=args.z_weight)
+            #snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
+        else:
+            snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
         shuffle = False
     else:
         shuffle = False
-        snp2p_sampler = CohortSampler(train_dataset, phenotype_index=1, z_weight=args.z_weight)
+        if args.regression:
+            snp2p_sampler = CohortSampler(train_dataset, phenotype_index=1, z_weight=args.z_weight)
+        else:
+            snp2p_sampler = None
         interaction_sampler = None
 
     snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
@@ -261,6 +298,8 @@ def main_worker(gpu, ngpus_per_node, args):
     drug_response_trainer = SNP2PTrainer(snp2p_model, snp2p_dataloader, device, args,
                                                 validation_dataloader=val_snp2p_dataloader, fix_system=fix_system)
     drug_response_trainer.train(args.epochs, args.out)
+
+
 
 
 if __name__ == '__main__':
