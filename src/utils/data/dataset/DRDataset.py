@@ -82,20 +82,34 @@ class DrugResponseDataset(Dataset):
             result_dict['response_residual'] = drug_residual
         return result_dict
 
-    def get_normal_cellline(self, drug):
+    def build_cellline_drug_pair(self, cell_feature, drug):
         cell_mut_dict = {}
-        cell_mut_dict['mutation'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
-        cell_mut_dict['cna'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
-        cell_mut_dict['cnd'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
+        for mut_type, indices in cell_feature.items():
+            mut_value = torch.zeros(size=(self.tree_parser.n_genes, ))
+            for i in indices:
+                mut_value[i] = 1
+            cell_mut_dict[mut_type] = self.tree_parser.get_system2genotype_mask(mut_value)
+        #cell_mut_dict['mutation'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
+        #cell_mut_dict['cna'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
+        #cell_mut_dict['cnd'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
 
         result_dict = dict()
         result_dict['genotype'] = cell_mut_dict
         result_dict['drug'] = self.drug_dict[drug]
         return result_dict
 
-    def get_crispr_celline(self, drug, i):
-        result_dict = self.get_normal_cellline(drug)
-        result_dict['genotype']['cnd'] = self.tree_parser.get_mut2sys([i], type_indices={1.0: [i]})
+    def get_crispr_cellline(self, drug, i, inhibition=True, cell_feature={}):
+
+        #for key, value in cell_feature.items():
+        #    for i in value:
+        #        result_dict['genotype'][key][i] = 1
+        if inhibition:
+            cell_feature['cnd'].append(i)
+            #result_dict['genotype']['cnd'] = self.tree_parser.get_mut2sys([i], type_indices={1.0: [i]})
+        else:
+            cell_feature['cna'].append(i)
+            #result_dict['genotype']['cna'] = self.tree_parser.get_mut2sys([i], type_indices={1.0: [i]})
+        result_dict = self.build_cellline_drug_pair(cell_feature, drug)
         return result_dict
 
 
