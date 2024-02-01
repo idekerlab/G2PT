@@ -211,6 +211,7 @@ class DrugResponseTrainer(object):
                 mean_feature_loss += float(feature_loss/3)
             self.optimizer.zero_grad()
             loss.backward()
+            nn.utils.clip_grad_norm_(self.drug_response_model.parameters(), 1)
             self.optimizer.step()
             #self.scheduler.step()
             #self.drug_response_model.compound_encoder = self.compound_encoder
