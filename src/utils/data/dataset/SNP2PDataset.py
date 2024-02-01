@@ -61,12 +61,14 @@ class SNP2PDataset(Dataset):
         #snp_type_dict['homozygous_a0'] = self.tree_parser.get_snp2gene(homozygous_a2, {1.0: homozygous_a2})
         snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
         sample2snp_dict['embedding'] = snp_type_dict
+        '''
         heterozygous_gene_indices = torch.unique(snp_type_dict['heterozygous']['gene']).tolist()
         homozygous_a1_gene_indices = torch.unique(snp_type_dict['homozygous_a1']['gene']).tolist()
         #homozygous_a2_gene_indices = torch.unique(snp_type_dict['homozygous_a0']['gene']).tolist()
         #homozygous_a1_gene_indices = self.tree_parser.get_snp2gene_indices(homozygous_a1)
         #homozygous_a2_gene_indices = self.tree_parser.get_snp2gene_indices(homozygous_a2)
         #heterozygous_gene_indices = self.tree_parser.get_snp2gene_indices(heterozygous)
+        
         gene2sys_mask_for_gene = torch.zeros((self.tree_parser.n_systems, self.tree_parser.n_genes), dtype=torch.bool)
         gene2sys_mask_for_gene[:, homozygous_a1_gene_indices] = 1
         #gene2sys_mask_for_gene[:, homozygous_a2_gene_indices] = 1
@@ -75,6 +77,7 @@ class SNP2PDataset(Dataset):
         gene2sys_mask_for_gene[:, heterozygous_gene_indices] = 1
 
         sample2snp_dict["gene2sys_mask"] = torch.tensor(self.tree_parser.gene2sys_mask, dtype=torch.bool) & gene2sys_mask_for_gene
+        '''
         result_dict = dict()
 
         result_dict['phenotype'] = phenotype
@@ -156,7 +159,7 @@ class SNP2PCollator(object):
         # print(mask.sum())
         '''
         genotype_dict['embedding'] = snp_type_dict
-        genotype_dict['gene2sys_mask'] = torch.stack([d['genotype']['gene2sys_mask'] for d in data])
+        #genotype_dict['gene2sys_mask'] = torch.stack([d['genotype']['gene2sys_mask'] for d in data])
         result_dict['genotype'] = genotype_dict
         result_dict['covariates'] = torch.stack([d['covariates'] for d in data])
         result_dict['phenotype'] = torch.tensor([d['phenotype'] for d in data], dtype=torch.float32)

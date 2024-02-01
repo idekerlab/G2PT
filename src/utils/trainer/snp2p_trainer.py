@@ -177,9 +177,9 @@ class SNP2PTrainer(object):
         self.snp2p_model.train()
         if self.args.multiprocessing_distributed:
             self.snp2p_dataloader.sampler.set_epoch(epoch)
-        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", snp_loss=False, ccc=True)
+        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", ccc=True)
 
-    def iter_minibatches(self, dataloader, epoch, name="", snp_loss=True, ccc=True):
+    def iter_minibatches(self, dataloader, epoch, name="", ccc=True):
         '''
         mean_response_loss_dict = {"Mut2Sys":0.}
         if self.args.sys2cell:
@@ -229,40 +229,23 @@ class SNP2PTrainer(object):
             # loss_format = #" , ".join(["%s:%3f"%(module_name, value/(i + 1)) for module_name, value in mean_response_loss_dict.items()])
             # GPUtil.showUtilization()
             loss = phenotype_loss
-            cosine_loss = 0.
-            ratio_loss = 0.
-            if snp_loss:
-                if self.args.multiprocessing_distributed:
-                    cosine_loss = (1 - cos(self.snp2p_model.module.homozygous_a1_embedding.weight,
-                                           self.snp2p_model.module.heterozygous_embedding.weight)).mean()
-                    ratio_loss = torch.relu(
-                        torch.norm(self.snp2p_model.module.heterozygous_embedding.weight, dim=0) - torch.norm(
-                            self.snp2p_model.module.homozygous_a1_embedding.weight, dim=0)).mean()
-                else:
-                    cosine_loss = (1 - cos(self.snp2p_model.homozygous_a1_embedding.weight,
-                                           self.snp2p_model.heterozygous_embedding.weight)).mean()
-                    ratio_loss = torch.relu(
-                        torch.norm(self.snp2p_model.heterozygous_embedding.weight, dim=0) - torch.norm(
-                            self.snp2p_model.homozygous_a1_embedding.weight, dim=0)).mean()
-                loss = loss + 0.1 * (cosine_loss + ratio_loss)
+
+
             if ccc:
                 loss = loss + 0.1 * ccc_loss
-            # GPUtil.showUtilization()
-            # print("Loss", loss)
             self.optimizer.zero_grad()
             loss.backward()
+            nn.utils.clip_grad_norm_(self.snp2p_model.parameters(), 1)
             self.optimizer.step()
             # self.scheduler.step()
             # if self.fix_system:
             #    self.g2p_model.system_embedding = self.system_embedding
             dataloader_with_tqdm.set_description(
-                "%s Train epoch: %3.f, Phenotype loss: %.3f, CCCLoss: %.3f, CosLoss: %.3f, RatioLoss: %.3f, Data time %.3f, %.3f" % (
-                    name, epoch, mean_response_loss / (i + 1), mean_ccc_loss / (i + 1), cosine_loss, ratio_loss,
+                "%s Train epoch: %3.f, Phenotype loss: %.3f, CCCLoss: %.3f, Data time %.3f, %.3f" % (
+                    name, epoch, mean_response_loss / (i + 1), mean_ccc_loss / (i + 1),
                     batch['datatime'], batch['time']))
             del loss
             del phenotype_loss, ccc_loss
-            if snp_loss:
-                del cosine_loss, ratio_loss
             del phenotype_predicted
             del batch
         del mean_ccc_loss
