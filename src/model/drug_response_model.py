@@ -6,8 +6,8 @@ from src.model.hierarchical_transformer import Genotype2Phenotype
 
 class DrugResponseModel(Genotype2PhenotypeTransformer):
 
-    def __init__(self, tree_parser, genotypes, hidden_dims, compound_encoder, dropout=0.2):
-        super(DrugResponseModel, self).__init__(tree_parser, genotypes, hidden_dims, dropout=dropout)
+    def __init__(self, tree_parser, genotypes, hidden_dims, compound_encoder, dropout=0.2, activation='softmax'):
+        super(DrugResponseModel, self).__init__(tree_parser, genotypes, hidden_dims, dropout=dropout, activation=activation)
 
 
         self.compound_encoder = compound_encoder

@@ -195,7 +195,7 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         compound_model = compound_trainer.train(args.compound_epochs)
         drug_response_model = DrugResponseModel(tree_parser, list(args.genotypes.keys()),
-                                                args.hidden_dims, compound_model, dropout=args.dropout)
+                                                args.hidden_dims, compound_model, dropout=args.dropout, activation='sig')
     fix_embedding = False
     if args.system_embedding:
         system_embedding_dict = np.load(args.system_embedding, allow_pickle=True).item()

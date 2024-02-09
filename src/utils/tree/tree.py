@@ -147,9 +147,9 @@ class TreeParser(object):
                 result_mask = torch.tensor(result_mask, dtype=torch.float32)
                 result_masks.append({"query": torch.tensor(queries), "key": torch.tensor(keys), 'mask': result_mask})
             else:
-                result_mask = mask[sys_inds, :]
-                result_mask = result_mask[:, sys_inds]
-                result_mask = torch.tensor(result_mask, dtype=torch.float32)
+                #result_mask = mask[sys_inds, :]
+                #result_mask = result_mask[:, sys_inds]
+                result_mask = torch.tensor(mask, dtype=torch.float32)
                 result_masks.append(result_mask)
             if cur_subtree_dfs.empty:
                 break

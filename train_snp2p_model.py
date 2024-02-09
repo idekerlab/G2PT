@@ -140,16 +140,16 @@ def main():
 
     ngpus_per_node = torch.cuda.device_count()
     if args.multiprocessing_distributed:
-        if 'SLURM_PROCID' in os.environ:
+        #if 'SLURM_PROCID' in os.environ:
         # Since we have ngpus_per_node processes per node, the total world_size
         # needs to be adjusted accordingly
-            if args.dist_url == "env://" and args.world_size == -1:
-                args.world_size = int(os.environ["WORLD_SIZE"])
-                addr = os.environ["MASTER_ADDR"]
-                port = os.environ["MASTER_PORT"]
-                print("Address: %s:%s" % (addr, port))
-        else:
-            args.world_size = ngpus_per_node * args.world_size
+        #    if args.dist_url == "env://" and args.world_size == -1:
+        #        args.world_size = int(os.environ["WORLD_SIZE"])
+        #        addr = os.environ["MASTER_ADDR"]
+        #        port = os.environ["MASTER_PORT"]
+        #        print("Address: %s:%s" % (addr, port))
+        #else:
+        args.world_size = ngpus_per_node * args.world_size
         # Use torch.multiprocessing.spawn to launch distributed processes: the
         # main_worker process function
         print("The world size is %d"%args.world_size)
@@ -171,7 +171,6 @@ def main_worker(rank, ngpus_per_node, args):
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
         if args.multiprocessing_distributed:
-
             # For multiprocessing distributed training, rank needs to be the
             # global rank among all the processes
             args.rank = rank
@@ -194,7 +193,10 @@ def main_worker(rank, ngpus_per_node, args):
     if args.model is not None:
         snp2p_model = torch.load(args.model, map_location=device)
     else:
-        snp2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims, effective_allele=args.effective_allele, dropout=args.dropout, n_covariates=2, binary=(not args.regression))
+        snp2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims,
+                                         effective_allele=args.effective_allele,
+                                         dropout=args.dropout, n_covariates=4,
+                                         binary=(not args.regression), activation='sigmoid')
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -202,8 +204,9 @@ def main_worker(rank, ngpus_per_node, args):
         # For multiprocessing distributed, DistributedDataParallel constructor
         # should always set the single device scope, otherwise,
         # DistributedDataParallel will use all available devices.
-        if args.gpu is not None:
+        if args.gpu is None:
             #torch.cuda.set_device(args.gpu)
+            print("Distributed training are set up")
             snp2p_model.to(device)
             # When using a single GPU per process and per
             # DistributedDataParallel, we need to divide the batch size
@@ -211,9 +214,9 @@ def main_worker(rank, ngpus_per_node, args):
             args.batch_size = int(args.batch_size / ngpus_per_node)
             args.jobs = int((args.jobs + ngpus_per_node - 1) / ngpus_per_node)
             print(args.batch_size, args.jobs)
-            snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[args.gpu], find_unused_parameters=True)
+            snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[gpu], find_unused_parameters=True)
         else:
-            print("Distributed training are set up")
+
             snp2p_model.to(device)
             # DistributedDataParallel will divide and allocate batch_size to all
             # available GPUs if device_ids are not set
@@ -272,7 +275,8 @@ def main_worker(rank, ngpus_per_node, args):
     if args.distributed:
         if args.regression:
         #affinity_dataset = affinity_dataset.sample(frac=1).reset_index(drop=True)
-            snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, phenotype_index=1, z_weight=args.z_weight)
+            snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank,
+                                                     phenotype_col=1, sex_col=2, z_weight=args.z_weight)
             #snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
         else:
             snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
@@ -280,16 +284,16 @@ def main_worker(rank, ngpus_per_node, args):
     else:
         shuffle = False
         if args.regression:
-            snp2p_sampler = CohortSampler(train_dataset, phenotype_index=1, z_weight=args.z_weight)
+            snp2p_sampler = CohortSampler(train_dataset, phenotype_col=1, sex_col=2, z_weight=args.z_weight)
         else:
             snp2p_sampler = None
-        interaction_sampler = None
 
     snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
                                   num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler)
     if args.val is not None:
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
-        val_snp2p_dataset = SNP2PDataset(val_dataset, args.snp, tree_parser, args.effective_allele)
+        val_snp2p_dataset = SNP2PDataset(val_dataset, args.snp, tree_parser, args.effective_allele, age_mean=snp2p_dataset.age_mean,
+                                         age_std=snp2p_dataset.age_std)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                               num_workers=args.jobs, collate_fn=snp2p_collator)
     else:

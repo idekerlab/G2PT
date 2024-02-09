@@ -7,8 +7,9 @@ from src.model.hierarchical_transformer import HierarchicalTransformer
 
 class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
-    def __init__(self, tree_parser, genotypes, hidden_dims, effective_allele='heterozygous', n_covariates=13, dropout=0.2, binary=False):
-        super(SNP2PhenotypeModel, self).__init__(tree_parser, genotypes, hidden_dims, dropout=dropout, activation='softmax')
+    def __init__(self, tree_parser, genotypes, hidden_dims, effective_allele='heterozygous', n_covariates=13, dropout=0.2, binary=False,
+                 activation='softmax'):
+        super(SNP2PhenotypeModel, self).__init__(tree_parser, genotypes, hidden_dims, dropout=dropout, activation=activation)
         self.effective_allele = effective_allele
         self.n_snps = self.tree_parser.n_snps
         self.by_chr = self.tree_parser.by_chr
@@ -38,11 +39,13 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.snp2gene_heterozygous = HierarchicalTransformer(hidden_dims, 4, hidden_dims * 4,
                                                 self.snp2gene_update_norm_inner,
                                                 self.snp2gene_update_norm_outer,
-                                               dropout, norm_channel_first=self.norm_channel_first, conv_type='genotype', n_type=1)
+                                               dropout, norm_channel_first=self.norm_channel_first, conv_type='genotype',
+                                                             activation=activation, n_type=1)
         self.snp2gene_homozygous = HierarchicalTransformer(hidden_dims, 4, hidden_dims * 4,
                                                 self.snp2gene_update_norm_inner,
                                                 self.snp2gene_update_norm_outer,
-                                               dropout, norm_channel_first=self.norm_channel_first, conv_type='genotype', n_type=1)
+                                               dropout, norm_channel_first=self.norm_channel_first, conv_type='genotype',
+                                                           activation=activation, n_type=1)
 
 
         self.gene2sys_update_norm_inner = nn.LayerNorm(hidden_dims, eps=0.1)
@@ -51,7 +54,8 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                                                 self.gene2sys_update_norm_inner,
                                                 self.gene2sys_update_norm_outer,
                                                 dropout, norm_channel_first=self.norm_channel_first,
-                                                conv_type='genotype', activation='softmax')
+                                                conv_type='genotype',
+                                                activation='softmax')
         self.n_covariates = n_covariates
         #self.phenotype_vector = nn.Embedding(1, hidden_dims)
         self.covariate_linear_1 = nn.Linear(self.n_covariates, hidden_dims)
@@ -73,7 +77,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.system2phenotype = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4,
                                                    inner_norm=self.sys2pheno_update_norm_inner,
                                                    outer_norm=self.sys2pheno_update_norm_outer, dropout=dropout,
-                                                   transform=True, activation='softmax')
+                                                   transform=True, activation='softmax')#'softmax')
         self.gene2phenotype = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4,
                                                  inner_norm=self.gene2pheno_update_norm_inner,
                                                  outer_norm=self.gene2pheno_update_norm_outer, dropout=dropout,
@@ -161,6 +165,8 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         return covariate_vector
 
     def prediction(self, phenotype_vector, system_embedding, gene_embedding):
+        #genotype_embedding = torch.cat([system_embedding, gene_embedding], axis=1)
+        #phenotype_feature = self.get_sys2pheno(phenotype_vector, genotype_embedding, system_mask=None)
         phenotype_weighted_by_systems = self.get_sys2pheno(phenotype_vector, system_embedding, system_mask=None)
         phenotype_weighted_by_genes = self.get_gene2pheno(phenotype_vector, gene_embedding, gene_mask=None)
         phenotype_feature = torch.cat([phenotype_weighted_by_systems, phenotype_weighted_by_genes], dim=-1)

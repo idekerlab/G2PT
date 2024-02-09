@@ -58,8 +58,6 @@ class SNP2PTrainer(object):
         self.fix_system = fix_system
         self.g2p_module_names = ["Mut2Sys", "Sys2Cell", "Cell2Sys"]
         # self.system_embedding = copy.deepcopy(self.g2p_model.system_embedding)
-        print(self.nested_subtrees_forward)
-        print(self.nested_subtrees_backward)
 
     def train(self, epochs, output_path=None):
 
@@ -76,14 +74,19 @@ class SNP2PTrainer(object):
                                                                      and self.args.rank % torch.cuda.device_count() == 0):
                         performance = self.evaluate(self.snp2p_model, self.validation_dataloader, epoch + 1,
                                                     name="Validation")
-                        if performance > best_performance:
-                            self.best_model = copy.deepcopy(self.snp2p_model).to('cpu')
                         torch.cuda.empty_cache()
                         gc.collect()
                         if output_path:
                             output_path_epoch = output_path + ".%d" % epoch
                             print("Save to...", output_path_epoch)
-                            torch.save(self.snp2p_model, output_path_epoch)
+                            if self.args.multiprocessing_distributed:
+                                torch.save({"arguments": self.args,
+                                            "state_dict": self.snp2p_model.module.state_dict()},
+                                           output_path_epoch)
+                            else:
+                                torch.save(
+                                    {"arguments": self.args, "state_dict": self.snp2p_model.state_dict()},
+                                    output_path_epoch)
                 # if output_path:
                 #    output_path_epoch = output_path + ".%d"%epoch
                 #    print("Save to...", output_path_epoch)
