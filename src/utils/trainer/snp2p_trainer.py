@@ -119,7 +119,7 @@ class SNP2PTrainer(object):
                 phenotype_predicted = model(batch['genotype'], batch['covariates'],
                                             self.nested_subtrees_forward,
                                             self.nested_subtrees_backward,
-                                            gene2sys_mask=self.gene2sys_mask,
+                                            gene2sys_mask=batch['gene2sys_mask'],
                                             sys2gene_mask=self.sys2gene_mask,
                                             sys2cell=self.args.sys2cell,
                                             cell2sys=self.args.cell2sys,
@@ -180,7 +180,7 @@ class SNP2PTrainer(object):
         self.snp2p_model.train()
         if self.args.multiprocessing_distributed:
             self.snp2p_dataloader.sampler.set_epoch(epoch)
-        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", ccc=True)
+        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", ccc=False)
 
     def iter_minibatches(self, dataloader, epoch, name="", ccc=True):
         '''
@@ -202,7 +202,7 @@ class SNP2PTrainer(object):
             phenotype_predicted = self.snp2p_model(batch['genotype'], batch['covariates'],
                                                    self.nested_subtrees_forward,
                                                    self.nested_subtrees_backward,
-                                                   gene2sys_mask=self.gene2sys_mask,
+                                                   gene2sys_mask=batch['gene2sys_mask'],
                                                    sys2gene_mask=self.sys2gene_mask,
                                                    sys2cell=self.args.sys2cell,
                                                    cell2sys=self.args.cell2sys,
@@ -238,7 +238,7 @@ class SNP2PTrainer(object):
                 loss = loss + 0.1 * ccc_loss
             self.optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(self.snp2p_model.parameters(), 1)
+            #nn.utils.clip_grad_norm_(self.snp2p_model.parameters(), 1)
             self.optimizer.step()
             # self.scheduler.step()
             # if self.fix_system:

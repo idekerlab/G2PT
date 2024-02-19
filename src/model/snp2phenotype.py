@@ -131,7 +131,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         gene_embedding = self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)
         return gene_embedding + snp_effect
 
-    def get_snp_effects(self, genotype, transformer):
+    def get_snp_effects(self, genotype, transformer, attention=False, score=False):
         snp_indices = genotype['snp']
         batch_size, snp_length = snp_indices.size()
         gene_indices = genotype['gene']
@@ -146,7 +146,18 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             snp_effect_from_embedding = transformer(gene_embedding, snp_embedding, mask)
         else:
             snp_effect_from_embedding = transformer(gene_embedding, snp_embedding, mask)
-        return gene_indices, snp_effect_from_embedding
+        if attention:
+            attention_result = transformer.get_attention(gene_embedding, snp_embedding, mask)
+            if score:
+                score_result = transformer.get_score(gene_embedding, snp_embedding, mask)
+                return gene_indices, snp_effect_from_embedding, attention_result, score_result
+            else:
+                return gene_indices, snp_effect_from_embedding, attention_result
+        elif score:
+            score_result = transformer.get_score(gene_embedding, snp_embedding, mask)
+            return gene_indices, snp_effect_from_embedding, score_result
+        else:
+            return gene_indices, snp_effect_from_embedding
 
 
     def get_gene2sys(self, system_embedding, gene_embedding, gene2sys_mask):

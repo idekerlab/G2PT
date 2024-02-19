@@ -15,12 +15,20 @@ from torch.utils.data.distributed import DistributedSampler
 
 class SNP2PDataset(Dataset):
 
-    def __init__(self, genotype_phenotype, snp_data, tree_parser:SNPTreeParser, effective_allele='heterozygous'):
+    def __init__(self, genotype_phenotype, snp_data, tree_parser:SNPTreeParser, effective_allele='heterozygous', age_mean=None, age_std=None):
         self.g2p_df = genotype_phenotype
         self.tree_parser = TreeParser
         self.snp_df = snp_data
         self.tree_parser = tree_parser
         self.effective_allele = effective_allele
+        if age_mean is None:
+            self.age_mean = self.g2p_df[3].mean()
+        else:
+            self.age_mean = age_mean
+        if age_std is None:
+            self.age_std = self.g2p_df[3].std()
+        else:
+            self.age_std = age_std
 
 
     def __len__(self):
@@ -55,43 +63,36 @@ class SNP2PDataset(Dataset):
             total_snps = homozygous
         sample2snp_dict['embedding'] = self.tree_parser.get_snp2gene(total_snps, type_indices=type_indices )
         '''
-        snp_type_dict = {}
+        result_dict = dict()
+        snp_type_dict = dict()
 
         snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
         #snp_type_dict['homozygous_a0'] = self.tree_parser.get_snp2gene(homozygous_a2, {1.0: homozygous_a2})
         snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
         sample2snp_dict['embedding'] = snp_type_dict
         '''
-        heterozygous_gene_indices = torch.unique(snp_type_dict['heterozygous']['gene']).tolist()
-        homozygous_a1_gene_indices = torch.unique(snp_type_dict['homozygous_a1']['gene']).tolist()
         #homozygous_a2_gene_indices = torch.unique(snp_type_dict['homozygous_a0']['gene']).tolist()
         #homozygous_a1_gene_indices = self.tree_parser.get_snp2gene_indices(homozygous_a1)
         #homozygous_a2_gene_indices = self.tree_parser.get_snp2gene_indices(homozygous_a2)
         #heterozygous_gene_indices = self.tree_parser.get_snp2gene_indices(heterozygous)
-        
+        '''
+        heterozygous_gene_indices = torch.unique(snp_type_dict['heterozygous']['gene']).tolist()
+        homozygous_a1_gene_indices = torch.unique(snp_type_dict['homozygous_a1']['gene']).tolist()
         gene2sys_mask_for_gene = torch.zeros((self.tree_parser.n_systems, self.tree_parser.n_genes), dtype=torch.bool)
         gene2sys_mask_for_gene[:, homozygous_a1_gene_indices] = 1
-        #gene2sys_mask_for_gene[:, homozygous_a2_gene_indices] = 1
-        #if self.effective_allele=='heterozygous':
-
         gene2sys_mask_for_gene[:, heterozygous_gene_indices] = 1
-
-        sample2snp_dict["gene2sys_mask"] = torch.tensor(self.tree_parser.gene2sys_mask, dtype=torch.bool) & gene2sys_mask_for_gene
-        '''
-        result_dict = dict()
-
+        result_dict["gene2sys_mask"] = torch.tensor(self.tree_parser.gene2sys_mask, dtype=torch.bool) & gene2sys_mask_for_gene
         result_dict['phenotype'] = phenotype
-        #sex_age_tensor = [0, 0, 0, 0]
-        sex_age_tensor = [0, 0]
+        sex_age_tensor = [0, 0, 0, 0]
+        #sex_age_tensor = [0, 0]
         if int(sex)==-9:
             pass
         else:
             sex_age_tensor[int(sex)] = 1
-        #sex_age_tensor[2] = age
-        #sex_age_tensor[3] = age_sq
+        sex_age_tensor[2] = (age - self.age_mean)/self.age_std
+        sex_age_tensor[3] = (age_sq - self.age_mean**2)/(self.age_std**2)
         sex_age_tensor = torch.tensor(sex_age_tensor, dtype=torch.float32)
         covariates = sex_age_tensor#torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
-
         result_dict['genotype'] = sample2snp_dict
         end = time.time()
         result_dict["datatime"] = torch.tensor(end-start)
@@ -159,7 +160,7 @@ class SNP2PCollator(object):
         # print(mask.sum())
         '''
         genotype_dict['embedding'] = snp_type_dict
-        #genotype_dict['gene2sys_mask'] = torch.stack([d['genotype']['gene2sys_mask'] for d in data])
+        result_dict['gene2sys_mask'] = torch.stack([d['gene2sys_mask'] for d in data])
         result_dict['genotype'] = genotype_dict
         result_dict['covariates'] = torch.stack([d['covariates'] for d in data])
         result_dict['phenotype'] = torch.tensor([d['phenotype'] for d in data], dtype=torch.float32)
@@ -201,18 +202,26 @@ class CohortSampler(Sampler):
 
 class DistributedCohortSampler(DistributedSampler):
 
-    def __init__(self, dataset, num_replicas=None, rank=None, shuffle=False, seed = 0, phenotype_index='phenotype', z_weight=1):
+    def __init__(self, dataset, num_replicas=None, rank=None, shuffle=False, seed = 0, phenotype_col='phenotype', z_weight=1, sex_col=2):
         #super(DrugResponseSampler, self).__init__()
         super().__init__(dataset, num_replicas, rank, shuffle, seed, drop_last=False)
         self.indices = dataset.index
         self.num_samples = int(dataset.shape[0]/num_replicas)
-
-        phenotype_values = dataset[phenotype_index].values
+        dataset_sex_0 = dataset.loc[dataset[sex_col]==0]
+        phenotype_values = dataset_sex_0[phenotype_col].values
         a, loc, scale = skewnorm.fit(phenotype_values)
+        dataset_sex_0['phenotype'] = skewnorm(a, loc, scale*z_weight).pdf(phenotype_values)
+
+        dataset_sex_1 = dataset.loc[dataset[sex_col]==1]
+        phenotype_values = dataset_sex_1[phenotype_col].values
+        a, loc, scale = skewnorm.fit(phenotype_values)
+        dataset_sex_1['phenotype'] = skewnorm(a, loc, scale*z_weight).pdf(phenotype_values)
+
+        dataset_merged = pd.concat([dataset_sex_0, dataset_sex_1]).sort_index()
         #weights = np.array(z_weights*np.abs((phenotype_values-phenotype_mean)/np.std(phenotype_std)), dtype=np.int)
-        self.weights = skewnorm(a, loc, scale*z_weight).pdf(phenotype_values)
+        #self.weights = skewnorm(a, loc, scale*z_weight).pdf(phenotype_values)
         #self.dataset = result_df.reset_index()[["cellline", "drug", "response", "source", "zscore"]]
-        self.weights = torch.tensor(self.weights, dtype=torch.double)
+        self.weights = torch.tensor(dataset_merged['phenotype'].values, dtype=torch.double)
     def __iter__(self):
         count = 0
         index = [i for i in torch.multinomial(self.weights*10, self.num_samples, replacement=True)]

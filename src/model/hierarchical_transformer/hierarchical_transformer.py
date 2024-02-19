@@ -106,4 +106,13 @@ class HierarchicalTransformer(nn.Module):
         result = result.masked_fill(node_mask, 0)
         return result
 
-
+    def get_attention(self, q, k, mask):
+        batch_size = q.size(0)
+        if self.conv_type == 'system':
+            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
+        return self.hierarchical_transformer_update.attention.get_attention(q, k, k, mask=mask)
+    def get_score(self, q, k, mask):
+        batch_size = q.size(0)
+        if self.conv_type == 'system':
+            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
+        return self.hierarchical_transformer_update.attention.get_score(q, k, k, mask=mask)
