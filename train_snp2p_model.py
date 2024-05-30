@@ -16,14 +16,12 @@ import torch.utils.data.distributed
 
 from prettytable import PrettyTable
 
-from src.model.snp2phenotype import SNP2PhenotypeModel
+from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
 from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
 from datetime import timedelta
-import numpy as np
-import torch.nn as nn
 
 from torch.utils.data.dataloader import DataLoader
 
@@ -40,62 +38,41 @@ def count_parameters(model):
     print(f"Total Trainable Params: {total_params}")
     return total_params
 
-def get_slurm_nodelist():
-    """
-    Returns a list of nodes allocated in the Slurm job.
-    """
-    if 'SLURM_JOB_NODELIST' in os.environ:
-        try:
-            # Extract the node list using scontrol
-            result = subprocess.check_output(
-                ['scontrol', 'show', 'hostnames', os.environ['SLURM_JOB_NODELIST']],
-                universal_newlines=True
-            )
-            # Split the result to get individual node names
-            nodes = result.strip().split('\n')
-            return nodes
-        except subprocess.CalledProcessError as e:
-            print("Error getting node list: ", e)
-            return None
-    else:
-        print("SLURM_JOB_NODELIST environment variable not set")
-        return None
 
 def main():
     parser = argparse.ArgumentParser(description='Some beautiful description')
+    # Participant Genotype file
+    parser.add_argument('--genotype', help='Personal gentype file', type=str)
+    # Indexing files
+    parser.add_argument('--snp2id', help='SNP to ID mapping file', type=str)
+    parser.add_argument('--gene2id', help='Gene to ID mapping file', type=str)
+    # Hierarchy files
     parser.add_argument('--onto', help='Ontology file used to guide the neural network', type=str)
+    parser.add_argument('--snp2gene', help='SNP to gene mapping file', type=str)
     parser.add_argument('--subtree_order', help='Subtree cascading order', nargs='+', default=['default'])
+    # Training, validation, test files
     parser.add_argument('--train', help='Training dataset', type=str)
     parser.add_argument('--val', help='Validation dataset', type=str, default=None)
     parser.add_argument('--test', help='Test dataset', type=str, default=None)
-    parser.add_argument('--system_embedding', default=None)
-    parser.add_argument('--gene_embedding', default=None)
-
+    # Propagation option
+    parser.add_argument('--sys2env', action='store_true', default=False)
+    parser.add_argument('--env2sys', action='store_true', default=False)
+    parser.add_argument('--sys2gene', action='store_true', default=False)
+    parser.add_argument('--regression', action='store_true', default=False)
+    # Model parameters
+    parser.add_argument('--hidden_dims', help='hidden dimension for model', default=256, type=int)
+    # Training parameters
     parser.add_argument('--epochs', help='Training epochs for training', type=int, default=300)
     parser.add_argument('--lr', help='Learning rate', type=float, default=0.001)
     parser.add_argument('--wd', help='Weight decay', type=float, default=0.001)
-    parser.add_argument('--z_weight', type=float, default=1.0)
-
-
-    parser.add_argument('--hidden_dims', help='hidden dimension for model', default=256, type=int)
+    parser.add_argument('--z_weight', help='Sampling weight', type=float, default=1.0)
     parser.add_argument('--dropout', help='dropout ratio', type=float, default=0.2)
     parser.add_argument('--batch_size', help='Batch size', type=int, default=128)
-    parser.add_argument('--val_step', help='Batch size', type=int, default=20)
-
-    parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
-    parser.add_argument('--gene2id', help='Gene to ID mapping file', type=str)
-    parser.add_argument('--snp2gene', help='Gene to ID mapping file', type=str)
-    parser.add_argument('--snp2id', help='Gene to ID mapping file', type=str)
-
-    parser.add_argument('--l2_lambda', help='l1 lambda for l1 loss', type=float, default=0.001)
-
-    parser.add_argument('--snp', help='Mutation information for cell lines', type=str)
-
-    parser.add_argument('--model', help='model trained', default=None)
-
+    parser.add_argument('--val_step', help='Validation step', type=int, default=20)
     parser.add_argument('--jobs', help="The number of threads", type=int, default=0)
-    parser.add_argument('--out', help="output model path")
-
+    # GPU option
+    parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
+    # Multi-GPU option
     parser.add_argument('--world-size', default=-1, type=int,
                         help='number of nodes for distributed training')
     parser.add_argument('--rank', default=-1, type=int,
@@ -105,37 +82,25 @@ def main():
                         help='url used to set up distributed training')
     parser.add_argument('--dist-backend', default='nccl', type=str,
                         help='distributed backend')
-    parser.add_argument('--seed', default=None, type=int,
-                        help='seed for initializing training. ')
-    parser.add_argument('--gpu', default=None, type=int,
-                        help='GPU id to use.')
     parser.add_argument('--multiprocessing-distributed', action='store_true',
                         help='Use multi-processing distributed training to launch '
                              'N processes per node, which has N GPUs. This is the '
                              'fastest way to use PyTorch for either single node or '
                              'multi node data parallel training')
 
-    parser.add_argument('--sys2cell', action='store_true', default=False)
-    parser.add_argument('--cell2sys', action='store_true', default=False)
-    parser.add_argument('--sys2gene', action='store_true', default=False)
-    parser.add_argument('--by-chr', action='store_true', default=False)
-    parser.add_argument('--effective-allele', type=str, choices=['homozygous', 'heterozygous'], default='heterozygous')
-    parser.add_argument('--regression', action='store_true', default=False)
+    # Model input and output
+    parser.add_argument('--model', help='path to trained model', default=None)
+    parser.add_argument('--out', help="output model path")
 
     args = parser.parse_args()
     if args.cuda is not None:
         warnings.warn('You have chosen a specific GPU. This will completely '
                       'disable data parallelism.')
-        args.gpu = args.cuda
-
-    nodelist = get_slurm_nodelist()
-    if nodelist:
-        print("Nodes allocated:", nodelist)
 
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
 
-    print("Loading SNP dataset... at %s"%args.snp)
-    args.snp = pd.read_csv(args.snp, index_col=0, sep='\t')#.astype('int32')
+    print("Loading Genotype dataset... at %s"%args.genotype)
+    args.genotype = pd.read_csv(args.genotype, index_col=0, sep='\t')#.astype('int32')
     print("Loading done...")
 
     ngpus_per_node = torch.cuda.device_count()
@@ -156,7 +121,7 @@ def main():
         mp.spawn(main_worker, nprocs=args.world_size, args=(ngpus_per_node, args))
     else:
         # Simply call main_worker function
-        main_worker(args.gpu, ngpus_per_node, args)
+        main_worker(args.cuda, ngpus_per_node, args)
 
 
 def main_worker(rank, ngpus_per_node, args):
@@ -183,20 +148,21 @@ def main_worker(rank, ngpus_per_node, args):
         torch.cuda.empty_cache()
     print("Finish setup main worker", rank)
 
-    if torch.cuda.is_available():
+    if args.distributed:
         device = torch.device("cuda:%d" % gpu)
+    elif args.cuda is not None:
+        device = torch.device("cuda:%d" % args.cuda)
     else:
         device = torch.device("cpu")
 
-    tree_parser = SNPTreeParser(args.onto, args.snp2gene, args.gene2id, args.snp2id, by_chr=args.by_chr)
+    tree_parser = SNPTreeParser(args.onto, args.snp2gene, args.gene2id, args.snp2id)
 
     if args.model is not None:
         snp2p_model = torch.load(args.model, map_location=device)
     else:
-        snp2p_model = SNP2PhenotypeModel(tree_parser, [], args.hidden_dims,
-                                         effective_allele=args.effective_allele,
+        snp2p_model = SNP2PhenotypeModel(tree_parser, args.hidden_dims, subtree_order=args.subtree_order,
                                          dropout=args.dropout, n_covariates=4,
-                                         binary=(not args.regression), activation='sigmoid')
+                                         binary=(not args.regression), activation='softmax')
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -204,7 +170,7 @@ def main_worker(rank, ngpus_per_node, args):
         # For multiprocessing distributed, DistributedDataParallel constructor
         # should always set the single device scope, otherwise,
         # DistributedDataParallel will use all available devices.
-        if args.gpu is None:
+        if args.cuda is None:
             #torch.cuda.set_device(args.gpu)
             print("Distributed training are set up")
             snp2p_model.to(device)
@@ -216,15 +182,14 @@ def main_worker(rank, ngpus_per_node, args):
             print(args.batch_size, args.jobs)
             snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[gpu], find_unused_parameters=True)
         else:
-
             snp2p_model.to(device)
             # DistributedDataParallel will divide and allocate batch_size to all
             # available GPUs if device_ids are not set
             snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, find_unused_parameters=True)
-    elif args.gpu is not None:
+    elif args.cuda is not None:
         #torch.cuda.set_device(args.gpu)
         snp2p_model = snp2p_model.to(device)
-        print("Model is loaded at GPU(%d)" % args.gpu)
+        print("Model is loaded at GPU(%d)" % args.cuda)
     else:
         # DataParallel will divide and allocate batch_size to all available GPUs
         snp2p_model = torch.nn.DataParallel(snp2p_model).to(device)
@@ -234,42 +199,19 @@ def main_worker(rank, ngpus_per_node, args):
         print("Summary of trainable parameters")
         count_parameters(snp2p_model)
 
-
     fix_system = False
-    '''
-    if args.system_embedding:
-        system_embedding_dict = np.load(args.system_embedding, allow_pickle=True).item()
-        #print("Loading System Embeddings :", args.system_embedding)
-        #if "NEST" not in NeST_embedding_dict.keys():
-        #    print("NEST root term does not exist!")
-        #    system_embedding_dict["NEST"] = np.mean(
-        #        np.stack([system_embedding_dict["NEST:1"], NeST_embedding_dict["NEST:2"], NeST_embedding_dict["NEST:3"]],
-        #                 axis=0), axis=0, keepdims=False)
-        system_embeddings = np.stack(
-            [system_embedding_dict[key] for key, value in sorted(tree_parser.system2ind.items(), key=lambda a: a[1])])
-        snp2p_model.system_embedding.weight = nn.Parameter(torch.tensor(system_embeddings))
-        print(snp2p_model.system_embedding.weight)
-        snp2p_model.system_embedding.weight.requires_grad = False
-        fix_system = True
-    if args.gene_embedding:
-        gene_embedding_dict = np.load(args.gene_embedding, allow_pickle=True).item()
-        print("Loading Gene Embeddings :", args.gene_embedding)
-        gene_embeddings = np.stack([gene_embedding_dict[key] for key, value in sorted(tree_parser.gene2ind.items(), key=lambda a: a[1])])
-        snp2p_model.gene_embedding.weight = nn.Parameter(torch.tensor(gene_embeddings))
-        #drug_response_model.gene_embedding.weight.requires_grad = False
-    '''
     print("Summary of trainable parameters")
-    if args.sys2cell:
-        print("Model will use Sys2Cell")
-    if args.cell2sys:
-        print("Model will use Cell2Sys")
+    if args.sys2env:
+        print("Model will use Sys2Env")
+    if args.env2sys:
+        print("Model will use Env2Sys")
     if args.sys2gene:
         print("Model will use Sys2Gene")
 
 
     train_dataset = pd.read_csv(args.train, header=None, sep='\t')
 
-    snp2p_dataset = SNP2PDataset(train_dataset, args.snp, tree_parser, args.effective_allele)
+    snp2p_dataset = SNP2PDataset(train_dataset, args.genotype, tree_parser)
     snp2p_collator = SNP2PCollator(tree_parser)
 
     if args.distributed:
@@ -277,7 +219,6 @@ def main_worker(rank, ngpus_per_node, args):
         #affinity_dataset = affinity_dataset.sample(frac=1).reset_index(drop=True)
             snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank,
                                                      phenotype_col=1, sex_col=2, z_weight=args.z_weight)
-            #snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
         else:
             snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
         shuffle = False
@@ -292,7 +233,7 @@ def main_worker(rank, ngpus_per_node, args):
                                   num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler)
     if args.val is not None:
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
-        val_snp2p_dataset = SNP2PDataset(val_dataset, args.snp, tree_parser, args.effective_allele, age_mean=snp2p_dataset.age_mean,
+        val_snp2p_dataset = SNP2PDataset(val_dataset, args.genotype, tree_parser, args.effective_allele, age_mean=snp2p_dataset.age_mean,
                                          age_std=snp2p_dataset.age_std)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                               num_workers=args.jobs, collate_fn=snp2p_collator)

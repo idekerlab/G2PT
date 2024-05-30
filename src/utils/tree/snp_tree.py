@@ -6,7 +6,7 @@ from . import TreeParser
 
 class SNPTreeParser(TreeParser):
 
-    def __init__(self, ontology, snp2gene, gene2ind, snp2id, by_chr=False):
+    def __init__(self, ontology, snp2gene, gene2ind, snp2id):
         super(SNPTreeParser, self).__init__(ontology, gene2ind)
         print("%d in gene2sys mask" % self.gene2sys_mask.sum())
         snp2ind = pd.read_csv(snp2id, sep='\t', names=['index', 'snp'])
@@ -27,9 +27,6 @@ class SNPTreeParser(TreeParser):
 
         print("%d SNPs are queried" % self.n_snps)
         print(self.snp2ind)
-        if by_chr:
-            print("Embedding will feed by chromosome")
-        self.by_chr = by_chr
         self.snp2gene_mask = np.zeros((self.n_genes, self.n_snps))
         self.gene2snp_dict = {ind:[] for gene, ind in self.gene2ind.items()}
         self.snp2gene_dict = {ind:[] for ind in range(self.n_snps)}

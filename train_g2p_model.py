@@ -1,10 +1,5 @@
-import argparse
 import os
-import random
-import shutil
-import time
 import warnings
-from enum import Enum
 import pandas as pd
 
 import argparse
@@ -18,13 +13,11 @@ import torch.utils.data.distributed
 
 from prettytable import PrettyTable
 
-from src.model.genotype2phenotype_model import Genotype2PhenotypeModel
+from src.model.model.genotype2phenotype_model import Genotype2PhenotypeModel
 
 from src.utils.data import TreeParser
 from src.utils.data.dataset import G2PDataset, G2PCollator
 from src.utils.trainer import G2PTrainer
-import numpy as np
-import torch.nn as nn
 
 from torch.utils.data.dataloader import DataLoader
 
@@ -217,9 +210,9 @@ def main_worker(gpu, ngpus_per_node, args):
         #drug_response_model.gene_embedding.weight.requires_grad = False
     '''
     print("Summary of trainable parameters")
-    if args.sys2cell:
+    if args.sys2env:
         print("Model will use Sys2Cell")
-    if args.cell2sys:
+    if args.env2sys:
         print("Model will use Cell2Sys")
     if args.sys2gene:
         print("Model will use Sys2Gene")

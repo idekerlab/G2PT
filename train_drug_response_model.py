@@ -1,10 +1,5 @@
-import argparse
 import os
-import random
-import shutil
-import time
 import warnings
-from enum import Enum
 import pandas as pd
 
 import argparse
@@ -19,13 +14,13 @@ import torch.utils.data.distributed
 from prettytable import PrettyTable
 
 from src.model.compound import ECFPCompoundModel, ChemBERTaCompoundModel
-from src.model.drug_response_model import DrugResponseModel
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline, RobertaModel, RobertaTokenizer
+from src.model.model.drug_response_model import DrugResponseModel
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from src.utils.data import CompoundEncoder
 from src.utils.tree import MutTreeParser
-from src.utils.data.dataset import DrugResponseDataset, DrugResponseCollator, DrugResponseSampler, DrugBatchSampler, DrugDataset, CellLineBatchSampler
-from src.utils.trainer import DrugResponseTrainer, DrugTrainer, DrugResponseFineTuner
+from src.utils.data.dataset import DrugResponseDataset, DrugResponseCollator, DrugDataset, CellLineBatchSampler
+from src.utils.trainer import DrugResponseTrainer, DrugTrainer
 import numpy as np
 import torch.nn as nn
 
