@@ -9,7 +9,6 @@ from tqdm import tqdm
 import numpy as np
 import copy
 from src.utils.data import move_to
-from transformers import get_linear_schedule_with_warmup
 from src.utils.trainer import CCCLoss
 import copy
 
@@ -40,8 +39,6 @@ class G2PTrainer(object):
         self.best_model = self.g2p_model
 
         self.total_train_step = len(self.g2p_dataloader)*args.epochs# + len(self.drug_response_dataloader_cellline)*args.epochs
-        self.scheduler = get_linear_schedule_with_warmup(self.optimizer, int(0.2 * self.total_train_step),
-                                                          self.total_train_step)
         self.nested_subtrees_forward = self.g2p_dataloader.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='forward')
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)

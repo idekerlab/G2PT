@@ -9,7 +9,6 @@ from tqdm import tqdm
 import numpy as np
 import copy
 from src.utils.data import move_to
-from transformers import get_linear_schedule_with_warmup
 from src.utils.trainer import CCCLoss
 import copy
 
