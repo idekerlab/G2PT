@@ -111,7 +111,7 @@ You may increase this number to speed up the training process within the memory 
 
 ```
                   
-usage: train_model.py 
+usage: train_snp2p_model.py 
                       --onto ONTO
                       --snp2gene SNP2Gene
                       --subtree_order default

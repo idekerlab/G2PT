@@ -44,7 +44,7 @@ class SNP2PTrainer(object):
 
         self.total_train_step = len(
             self.snp2p_dataloader) * args.epochs  # + len(self.drug_response_dataloader_cellline)*args.epochs
-        # self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
+        #self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
         self.nested_subtrees_forward = self.snp2p_dataloader.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='forward', return_indices=True)
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
@@ -56,7 +56,7 @@ class SNP2PTrainer(object):
         self.gene2sys_mask = self.sys2gene_mask.T
         self.args = args
         self.fix_system = fix_system
-        self.g2p_module_names = ["Mut2Sys", "Sys2Env", "Env2Sys"]
+        self.g2p_module_names = ["Mut2Sys", "Sys2Cell", "Cell2Sys"]
         # self.system_embedding = copy.deepcopy(self.g2p_model.system_embedding)
 
     def train(self, epochs, output_path=None):
@@ -87,6 +87,7 @@ class SNP2PTrainer(object):
                                 torch.save(
                                     {"arguments": self.args, "state_dict": self.snp2p_model.state_dict()},
                                     output_path_epoch)
+            #self.scheduler.step()
 
     def evaluate(self, model, dataloader, epoch, name="Validation"):
         trues = []
@@ -105,8 +106,8 @@ class SNP2PTrainer(object):
                                             self.nested_subtrees_backward,
                                             gene2sys_mask=batch['gene2sys_mask'],
                                             sys2gene_mask=self.sys2gene_mask,
-                                            sys2env=self.args.sys2env,
-                                            env2sys=self.args.env2sys,
+                                            sys2cell=self.args.sys2cell,
+                                            cell2sys=self.args.cell2sys,
                                             sys2gene=self.args.sys2gene)
                 #for phenotype_predicted_i, module_name in zip(phenotype_predicted, self.g2p_module_names):
                 phenotype_predicted_detached = phenotype_predicted.detach().cpu().numpy()
@@ -186,8 +187,8 @@ class SNP2PTrainer(object):
                                                    self.nested_subtrees_backward,
                                                    gene2sys_mask=batch['gene2sys_mask'],
                                                    sys2gene_mask=self.sys2gene_mask,
-                                                   sys2env=self.args.sys2env,
-                                                   env2sys=self.args.env2sys,
+                                                   sys2cell=self.args.sys2cell,
+                                                   cell2sys=self.args.cell2sys,
                                                    sys2gene=self.args.sys2gene)
             phenotype_loss = 0
             ccc_loss = 0
