@@ -42,7 +42,7 @@ def count_parameters(model):
 def main():
     parser = argparse.ArgumentParser(description='Some beautiful description')
     # Participant Genotype file
-    parser.add_argument('--genotype', help='Personal gentype file', type=str)
+    parser.add_argument('--genotype', help='Personal genotype file', type=str)
     # Indexing files
     parser.add_argument('--snp2id', help='SNP to ID mapping file', type=str)
     parser.add_argument('--gene2id', help='Gene to ID mapping file', type=str)
@@ -129,9 +129,6 @@ def main_worker(rank, ngpus_per_node, args):
     node_name = socket.gethostname()
     print(f"Initialize main worker {rank} at node {node_name}")
 
-    if args.gpu is not None:
-        print("Use GPU: {} for training".format(args.gpu))
-
     if args.distributed:
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
@@ -216,16 +213,16 @@ def main_worker(rank, ngpus_per_node, args):
 
     if args.distributed:
         if args.regression:
-        #affinity_dataset = affinity_dataset.sample(frac=1).reset_index(drop=True)
-            snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank,
-                                                     phenotype_col=1, sex_col=2, z_weight=args.z_weight)
+            #snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank,
+            #                                         phenotype_col=1, sex_col=2, z_weight=args.z_weight)
+            snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
         else:
             snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
         shuffle = False
     else:
         shuffle = False
         if args.regression:
-            snp2p_sampler = CohortSampler(train_dataset, phenotype_col=1, sex_col=2, z_weight=args.z_weight)
+            snp2p_sampler = None#CohortSampler(train_dataset, phenotype_col=1, sex_col=2, z_weight=args.z_weight)
         else:
             snp2p_sampler = None
 
@@ -233,7 +230,7 @@ def main_worker(rank, ngpus_per_node, args):
                                   num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler)
     if args.val is not None:
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
-        val_snp2p_dataset = SNP2PDataset(val_dataset, args.genotype, tree_parser, args.effective_allele, age_mean=snp2p_dataset.age_mean,
+        val_snp2p_dataset = SNP2PDataset(val_dataset, args.genotype, tree_parser, age_mean=snp2p_dataset.age_mean,
                                          age_std=snp2p_dataset.age_std)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                               num_workers=args.jobs, collate_fn=snp2p_collator)

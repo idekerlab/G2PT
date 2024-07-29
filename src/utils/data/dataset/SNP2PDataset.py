@@ -15,12 +15,11 @@ from torch.utils.data.distributed import DistributedSampler
 
 class SNP2PDataset(Dataset):
 
-    def __init__(self, genotype_phenotype, snp_data, tree_parser:SNPTreeParser, effective_allele='heterozygous', age_mean=None, age_std=None):
+    def __init__(self, genotype_phenotype, snp_data, tree_parser:SNPTreeParser, age_mean=None, age_std=None):
         self.g2p_df = genotype_phenotype
         self.tree_parser = TreeParser
         self.snp_df = snp_data
         self.tree_parser = tree_parser
-        self.effective_allele = effective_allele
         if age_mean is None:
             self.age_mean = self.g2p_df[3].mean()
         else:
@@ -51,31 +50,14 @@ class SNP2PDataset(Dataset):
             heterozygous = [int(i) for i in heterozygous.split(",")]
         else:
             heterozygous = []
-        '''
-        type_indices = {1.0:homozygous}
-        if self.effective_allele=='heterozygous':
-            heterozygous = [int(i) for i in (self.snp_df.loc[sample_ind, 'heterozygous']).split(
-                ",")]  # np.where(self.snp_df.loc[sample_ind].values == 1.0)[0]
-            total_snps = np.concatenate([heterozygous,homozygous])
-            type_indices[2.0] = homozygous
-            type_indices[1.0] = heterozygous
-        else:
-            total_snps = homozygous
-        sample2snp_dict['embedding'] = self.tree_parser.get_snp2gene(total_snps, type_indices=type_indices )
-        '''
+
         result_dict = dict()
         snp_type_dict = dict()
 
         snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
-        #snp_type_dict['homozygous_a0'] = self.tree_parser.get_snp2gene(homozygous_a2, {1.0: homozygous_a2})
         snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
         sample2snp_dict['embedding'] = snp_type_dict
-        '''
-        #homozygous_a2_gene_indices = torch.unique(snp_type_dict['homozygous_a0']['gene']).tolist()
-        #homozygous_a1_gene_indices = self.tree_parser.get_snp2gene_indices(homozygous_a1)
-        #homozygous_a2_gene_indices = self.tree_parser.get_snp2gene_indices(homozygous_a2)
-        #heterozygous_gene_indices = self.tree_parser.get_snp2gene_indices(heterozygous)
-        '''
+
         heterozygous_gene_indices = torch.unique(snp_type_dict['heterozygous']['gene']).tolist()
         homozygous_a1_gene_indices = torch.unique(snp_type_dict['homozygous_a1']['gene']).tolist()
         gene2sys_mask_for_gene = torch.zeros((self.tree_parser.n_systems, self.tree_parser.n_genes), dtype=torch.bool)
@@ -111,54 +93,21 @@ class SNP2PCollator(object):
         result_dict = dict()
         genotype_dict = dict()
 
-        if self.tree_parser.by_chr:
-            snp_type_dict = {}
-            for snp_type in ['heterozygous', 'homozygous_a1', 'homozygous_a0']:
-                embedding_dict = {}
-                for CHR in self.tree_parser.chromosomes:
-                    indices_dict = dict()
-                    for embedding_type in ["snp", "gene"]:
-                        indices_dict[embedding_type] = pad_sequence(
-                            [d['genotype']['embedding'][snp_type_dict][CHR][embedding_type] for d in data], batch_first=True,
-                            padding_value=self.padding_index[embedding_type]).to(torch.long)
+        snp_type_dict = {}
+        for snp_type in ['heterozygous', 'homozygous_a1']:
+            embedding_dict = {}
+            for embedding_type in ['snp', 'gene']:
+                embedding_dict[embedding_type] = pad_sequence(
+                        [d['genotype']['embedding'][snp_type][embedding_type] for d in data], batch_first=True,
+                        padding_value=self.padding_index[embedding_type]).to(torch.long)
+            gene_max_len = embedding_dict["gene"].size(1)
+            snp_max_len = embedding_dict["snp"].size(1)
+            mask = torch.stack(
+                    [d["genotype"]["embedding"][snp_type]['mask'] for d in data])[:, :gene_max_len, :snp_max_len]
+            embedding_dict['mask'] = mask
+            #print(mask.sum())
+            snp_type_dict[snp_type] = embedding_dict
 
-                    chr_snp_max_len = indices_dict["snp"].size(1)
-                    chr_gene_max_len = indices_dict["gene"].size(1)
-                    mask = torch.stack([d["genotype"]["embedding"][snp_type_dict][CHR]['mask'][:chr_gene_max_len,:chr_snp_max_len] for d in data])
-                    indices_dict['mask'] = mask
-                    embedding_dict[CHR] = indices_dict
-                snp_type_dict[snp_type] = embedding_dict
-        else:
-
-            snp_type_dict = {}
-            for snp_type in ['heterozygous', 'homozygous_a1']:
-                embedding_dict = {}
-                for embedding_type in ['snp', 'gene']:
-                    embedding_dict[embedding_type] = pad_sequence(
-                            [d['genotype']['embedding'][snp_type][embedding_type] for d in data], batch_first=True,
-                            padding_value=self.padding_index[embedding_type]).to(torch.long)
-                gene_max_len = embedding_dict["gene"].size(1)
-                snp_max_len = embedding_dict["snp"].size(1)
-                mask = torch.stack(
-                        [d["genotype"]["embedding"][snp_type]['mask'] for d in data])[:, :gene_max_len, :snp_max_len]
-                embedding_dict['mask'] = mask
-                #print(mask.sum())
-                snp_type_dict[snp_type] = embedding_dict
-
-        '''
-        #genotype_dict['embedding'] = snp_type_dict
-        embedding_dict = {}
-        for embedding_type in ['snp', 'gene']:
-            embedding_dict[embedding_type] = pad_sequence(
-                [d['genotype']['embedding'][embedding_type] for d in data], batch_first=True,
-                padding_value=self.padding_index[embedding_type]).to(torch.long)
-        gene_max_len = embedding_dict["gene"].size(1)
-        snp_max_len = embedding_dict["snp"].size(1)
-        mask = torch.stack(
-            [d["genotype"]["embedding"]['mask'] for d in data])[:, :gene_max_len, :snp_max_len]
-        embedding_dict['mask'] = mask
-        # print(mask.sum())
-        '''
         genotype_dict['embedding'] = snp_type_dict
         result_dict['gene2sys_mask'] = torch.stack([d['gene2sys_mask'] for d in data])
         result_dict['genotype'] = genotype_dict

@@ -109,34 +109,54 @@ You may increase this number to speed up the training process within the memory 
    * _--out_: a name of directory where you want to store the trained models.
 
 
-```
-                  
-usage: train_snp2p_model.py 
-                      --onto ONTO
-                      --snp2gene SNP2Gene
-                      --subtree_order default
-                      --genotype featurename:file_dir
-                      --train TRAIN --val VAL --test TEST
-                      
-                      --epochs EPOCHS
-                      --lr LR
-                      --wd WD
-                      --batch_size BATCH_SIZE
-                      --dropout DROPOUT
-                      --val_step VAL_STEP
-                      --jobs JOBS
-                      
-                      --cuda CUDA
-                      
-                      --hidden_dims HIDDEN_DIMS
-                      
-                      --snp2id SNP2ID
-                      --gene2id GENE2ID
-                      --genotypes GENOTYPES
-                      
-                      
+### Model Training Example (Single GPU) 
+
+```          
+usage: train_snp2p_model.py \
+                      --onto ONTO \
+                      --snp2gene SNP2Gene \
+                      --snp2id SNP2ID \
+                      --gene2id GENE2ID \ 
+                      --genotype genotype_file_dir \
+                      --train TRAIN --val VAL --test TEST \
+                      --epochs EPOCHS \
+                      --lr LR \
+                      --wd WD \
+                      --batch_size BATCH_SIZE \
+                      --dropout DROPOUT \
+                      --val_step VAL_STEP \
+                      --jobs JOBS \
+                      --cuda 0 \
+                      --hidden_dims HIDDEN_DIMS \
                       --out OUT
 ```
+
+### Model Training Example (Multiple GPUs)
+
+```          
+usage: train_snp2p_model.py \
+                      --onto ONTO \
+                      --snp2gene SNP2Gene \
+                      --snp2id SNP2ID \
+                      --gene2id GENE2ID \ 
+                      --genotype genotype_file_dir \
+                      --train TRAIN --val VAL --test TEST \
+                      --epochs EPOCHS \
+                      --lr LR \
+                      --wd WD \
+                      --batch_size BATCH_SIZE \
+                      --dropout DROPOUT \
+                      --val_step VAL_STEP \
+                      --jobs JOBS \    
+                      --dist-backend 'nccl' \
+                      --dist-url 'tcp://127.0.0.1:2222' \ 
+                      --multiprocessing-distributed \ 
+                      --world-size 1 \ 
+                      --rank 0 \
+                      --hidden_dims HIDDEN_DIMS \
+                      --out OUT
+```
+
 
 you can train model with sample data by using [train_model.sh](train_model.sh)
 
