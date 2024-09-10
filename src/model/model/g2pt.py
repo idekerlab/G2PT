@@ -57,10 +57,16 @@ class Genotype2PhenotypeTransformer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.activation = nn.GELU()
 
+    def get_gene2sys(self, system_embedding, gene_embedding, gene2sys_mask):
+        system_embedding_input = self.sys_norm(system_embedding)
+        gene_embedding_input_input = self.gene_norm(gene_embedding)
+        system_effect = self.gene2sys.forward(system_embedding_input, gene_embedding_input_input, gene2sys_mask)
+        return system_embedding,  system_effect
+
     def get_sys2gene(self, gene_embedding, system_embedding, sys2gene_mask):
         gene_embedding_input = self.gene_norm(gene_embedding)
-        system_embedding = self.sys_norm(system_embedding)
-        system_effect = self.sys2gene.forward(gene_embedding_input, system_embedding, sys2gene_mask)
+        system_embedding_input = self.sys_norm(system_embedding)
+        system_effect = self.sys2gene.forward(gene_embedding_input, system_embedding_input, sys2gene_mask)
         return gene_embedding,  system_effect
 
     def get_sys2sys(self, system_embedding, nested_hierarchical_masks, direction='forward', return_updates = True, with_indices=False, update_tensor=None):
@@ -100,12 +106,15 @@ class Genotype2PhenotypeTransformer(nn.Module):
                         results.append(
                             update_tensor[b].index_add(0, hierarchical_mask['query'], hitr_result[b]))
                     system_effect = torch.stack(results, dim=0)
-                    update_tensor = update_tensor + system_effect
-                    update_result = update_result + system_effect
+
+                    #update_tensor = update_tensor + system_effect
+                    #update_result = update_result + system_effect
+                    update_tensor = update_tensor + self.effect_norm(system_effect)
+                    update_result = update_result + self.effect_norm(system_effect)
                 else:
-                    system_embedding_output = system_embedding_output + hitr_result
-                    update_tensor = update_tensor + hitr_result
-                    update_result = update_result + hitr_result
+                    system_embedding_output = system_embedding_output + self.effect_norm(hitr_result)
+                    update_tensor = update_tensor + self.effect_norm(hitr_result)
+                    update_result = update_result + self.effect_norm(hitr_result)
         if return_updates:
             # return original system embeddings and update tensor separately
             return system_embedding, update_result

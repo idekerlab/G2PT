@@ -15,11 +15,12 @@ from torch.utils.data.distributed import DistributedSampler
 
 class SNP2PDataset(Dataset):
 
-    def __init__(self, genotype_phenotype, snp_data, tree_parser:SNPTreeParser, age_mean=None, age_std=None):
+    def __init__(self, genotype_phenotype, snp_data, tree_parser:SNPTreeParser, age_mean=None, age_std=None, n_cov=4):
         self.g2p_df = genotype_phenotype
         self.tree_parser = TreeParser
         self.snp_df = snp_data
         self.tree_parser = tree_parser
+        self.n_cov = n_cov
         if age_mean is None:
             self.age_mean = self.g2p_df[3].mean()
         else:
@@ -65,14 +66,15 @@ class SNP2PDataset(Dataset):
         gene2sys_mask_for_gene[:, heterozygous_gene_indices] = 1
         result_dict["gene2sys_mask"] = torch.tensor(self.tree_parser.gene2sys_mask, dtype=torch.bool) & gene2sys_mask_for_gene
         result_dict['phenotype'] = phenotype
-        #sex_age_tensor = [0, 0 ]
-        sex_age_tensor = [0, 0, 0, 0]
+        sex_age_tensor = [0]*self.n_cov
+        #sex_age_tensor = [0, 0, 0, 0]
         if int(sex)==-9:
             pass
         else:
             sex_age_tensor[int(sex)] = 1
-        sex_age_tensor[2] = (age - self.age_mean)/self.age_std
-        sex_age_tensor[3] = (age_sq - self.age_mean**2)/(self.age_std**2)
+        if self.n_cov>=4:
+            sex_age_tensor[2] = (age - self.age_mean)/self.age_std
+            sex_age_tensor[3] = (age_sq - self.age_mean**2)/(self.age_std**2)
         sex_age_tensor = torch.tensor(sex_age_tensor, dtype=torch.float32)
         covariates = sex_age_tensor#torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
         result_dict['genotype'] = sample2snp_dict

@@ -43,6 +43,7 @@ def main():
     parser = argparse.ArgumentParser(description='Some beautiful description')
     # Participant Genotype file
     parser.add_argument('--genotype', help='Personal genotype file', type=str)
+    parser.add_argument('--n_cov', help='The number of covariates', type=int, default=4)
     # Indexing files
     parser.add_argument('--snp2id', help='SNP to ID mapping file', type=str)
     parser.add_argument('--gene2id', help='Gene to ID mapping file', type=str)
@@ -155,11 +156,23 @@ def main_worker(rank, ngpus_per_node, args):
     tree_parser = SNPTreeParser(args.onto, args.snp2gene, args.gene2id, args.snp2id)
 
     if args.model is not None:
-        snp2p_model = torch.load(args.model, map_location=device)
+        snp2p_model_dict = torch.load(args.model, map_location=device)
+        print(args.model, 'loaded')
+        snp2p_model = SNP2PhenotypeModel(tree_parser, args.hidden_dims, subtree_order=args.subtree_order,
+                                         dropout=args.dropout, n_covariates=args.n_cov,
+                                         binary=(not args.regression), activation='softmax')
+        print(args.model, 'initialized')
+        snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
+        if args.model.split('.')[-1].isdigit():
+            args.start_epoch = int(args.model.split('.')[-1])
+        else:
+            args.start_epoch = 0
+
     else:
         snp2p_model = SNP2PhenotypeModel(tree_parser, args.hidden_dims, subtree_order=args.subtree_order,
-                                         dropout=args.dropout, n_covariates=4,
+                                         dropout=args.dropout, n_covariates=args.n_cov,
                                          binary=(not args.regression), activation='softmax')
+        args.start_epoch = 0
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -208,7 +221,7 @@ def main_worker(rank, ngpus_per_node, args):
 
     train_dataset = pd.read_csv(args.train, header=None, sep='\t')
 
-    snp2p_dataset = SNP2PDataset(train_dataset, args.genotype, tree_parser)
+    snp2p_dataset = SNP2PDataset(train_dataset, args.genotype, tree_parser, n_cov=args.n_cov)
     snp2p_collator = SNP2PCollator(tree_parser)
 
     if args.distributed:
@@ -231,7 +244,7 @@ def main_worker(rank, ngpus_per_node, args):
     if args.val is not None:
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
         val_snp2p_dataset = SNP2PDataset(val_dataset, args.genotype, tree_parser, age_mean=snp2p_dataset.age_mean,
-                                         age_std=snp2p_dataset.age_std)
+                                         age_std=snp2p_dataset.age_std, n_cov=args.n_cov)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                               num_workers=args.jobs, collate_fn=snp2p_collator)
     else:
