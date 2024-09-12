@@ -5,7 +5,7 @@ from src.model.hierarchical_transformer import PositionWiseFeedForward, MultiHea
 
 
 
-class Genotype2Phenotype(nn.Module):
+class System2Phenotype(nn.Module):
 
     def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, transform=True, activation='softmax'):
         super().__init__()

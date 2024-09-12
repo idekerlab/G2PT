@@ -9,7 +9,6 @@ from scipy.stats import spearmanr, pearsonr
 from tqdm import tqdm
 import numpy as np
 import copy
-from transformers import get_linear_schedule_with_warmup
 from src.utils.trainer import CCCLoss
 from src.utils.data import move_to
 import copy
@@ -59,6 +58,7 @@ class DrugResponseTrainer(object):
         self.fix_embedding = fix_embedding
         self.g2p_module_names = ["Mut2Sys", "Sys2Cell", "Cell2Sys"]
         self.performance = {}
+        
         if fix_embedding:
             if self.args.multiprocessing_distributed:
                 self.system_embedding = copy.deepcopy(self.drug_response_model.module.system_embedding)
@@ -220,6 +220,7 @@ class DrugResponseTrainer(object):
                 mean_feature_loss += float(feature_loss/3)
             self.optimizer.zero_grad()
             loss.backward()
+            nn.utils.clip_grad_norm_(self.drug_response_model.parameters(), 1)
             self.optimizer.step()
             #self.scheduler.step()
             #self.drug_response_model.compound_encoder = self.compound_encoder

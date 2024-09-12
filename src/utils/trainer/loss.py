@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from fast_soft_sort.pytorch_ops import soft_rank
 import torch.nn.functional as F
 from torch.autograd import Variable
 

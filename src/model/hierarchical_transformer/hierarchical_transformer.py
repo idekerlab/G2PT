@@ -45,7 +45,6 @@ class HierarchicalTransformerUpdate(nn.Module):
 
     def forward(self, q, k, v, mask=None, dropout=True):
         result = self.attention.forward(q, k, v, mask=mask, dropout=dropout)
-        result = q + result
         #result_layer_norm = self.layer_norm(result)
         if self.norm_channel_first:
             result = result.transpose(-1, -2)
@@ -89,14 +88,14 @@ class HierarchicalTransformer(nn.Module):
         result = self.hierarchical_transformer_update(q, k, k, mask, dropout=dropout)
 
         #result_layer_norm = self.layer_norm(result)
-        if self.norm is not None:
-            if self.norm_channel_first:
-                result = result.transpose(-1, -2)
-                result = self.norm(result)
-                result = result.transpose(-1, -2)
+        #if self.norm is not None:
+        if self.norm_channel_first:
+            result = result.transpose(-1, -2)
+            result = self.norm(result)
+            result = result.transpose(-1, -2)
                 #result = (result + result_layer_norm)/2
-            else:
-                result = self.norm(result)
+        else:
+            result = self.norm(result)
                 #result = (result + result_layer_norm)/2
         #updated_value = updated_value.permute(0, 2, 1)
         if self.n_type > 1:
@@ -106,8 +105,13 @@ class HierarchicalTransformer(nn.Module):
         result = result.masked_fill(node_mask, 0)
         return result
 
-    def get_attention(self, q, k, v, norm=True):
-        return self.hierarchical_transformer_update.attention.get_attention(q, k, v, mask=None)
-
-    def get_score(self, q, k, v, norm=True):
-        return self.hierarchical_transformer_update.attention.get_score(q, k, v, mask=None)
+    def get_attention(self, q, k, mask):
+        batch_size = q.size(0)
+        if self.conv_type == 'system':
+            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
+        return self.hierarchical_transformer_update.attention.get_attention(q, k, k, mask=mask)
+    def get_score(self, q, k, mask):
+        batch_size = q.size(0)
+        if self.conv_type == 'system':
+            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
+        return self.hierarchical_transformer_update.attention.get_score(q, k, k, mask=mask)

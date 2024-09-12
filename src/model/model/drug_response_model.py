@@ -3,11 +3,12 @@ import torch
 
 from src.model.model import Genotype2PhenotypeTransformer
 from src.model.hierarchical_transformer import Genotype2Phenotype
+from src.model.hierarchical_transformer import HierarchicalTransformer
 
 class DrugResponseModel(Genotype2PhenotypeTransformer):
 
-    def __init__(self, tree_parser, genotypes, hidden_dims, compound_encoder, dropout=0.2):
-        super(DrugResponseModel, self).__init__(tree_parser, genotypes, hidden_dims, dropout=dropout)
+    def __init__(self, tree_parser, genotypes, hidden_dims, compound_encoder, dropout=0.2, activation='softmax'):
+        super(DrugResponseModel, self).__init__(tree_parser, genotypes, hidden_dims, dropout=dropout, activation=activation)
 
 
         self.compound_encoder = compound_encoder
@@ -24,6 +25,13 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
 
         self.gene2comp_norm_inner = nn.LayerNorm(hidden_dims, eps=0.1)
         self.gene2comp_norm_outer = nn.LayerNorm(hidden_dims, eps=0.1)
+
+        self.mut2sys = nn.ModuleDict({genotype: HierarchicalTransformer(hidden_dims, 4,
+                                                                        hidden_dims * 4, self.mut_update_norm_inner,
+                                                                        self.mut_update_norm_outer, dropout,
+                                                                        norm_channel_first=self.norm_channel_first,
+                                                                        conv_type='genotype')
+                                      for genotype in self.genotypes})
 
         self.sys2comp = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.sys2comp_norm_inner,
                                            outer_norm=self.sys2comp_norm_outer, dropout=dropout, transform=True)

@@ -1,10 +1,5 @@
-import argparse
 import os
-import random
-import shutil
-import time
 import warnings
-from enum import Enum
 import pandas as pd
 
 import argparse
@@ -24,8 +19,8 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipe
 
 from src.utils.data import CompoundEncoder
 from src.utils.tree import MutTreeParser
-from src.utils.data.dataset import DrugResponseDataset, DrugResponseCollator, DrugResponseSampler, DrugBatchSampler, DrugDataset, CellLineBatchSampler
-from src.utils.trainer import DrugResponseTrainer, DrugTrainer, DrugResponseFineTuner
+from src.utils.data.dataset import DrugResponseDataset, DrugResponseCollator, DrugDataset, CellLineBatchSampler
+from src.utils.trainer import DrugResponseTrainer, DrugTrainer
 import numpy as np
 import torch.nn as nn
 
@@ -194,28 +189,34 @@ def main_worker(gpu, ngpus_per_node, args):
         drug_response_model = torch.load(args.model, map_location=device)
     else:
         drug_response_model = DrugResponseModel(tree_parser, list(args.genotypes.keys()),
-                                                args.hidden_dims, compound_model, dropout=args.dropout)
-    fix_system = False
+                                                args.hidden_dims, compound_model, dropout=args.dropout, activation='sig')
+    fix_embedding = False
     if args.system_embedding:
         system_embedding_dict = np.load(args.system_embedding, allow_pickle=True).item()
-        #print("Loading System Embeddings :", args.system_embedding)
+        print("Loading System Embeddings :", args.system_embedding)
         #if "NEST" not in NeST_embedding_dict.keys():
         #    print("NEST root term does not exist!")
         #    system_embedding_dict["NEST"] = np.mean(
         #        np.stack([system_embedding_dict["NEST:1"], NeST_embedding_dict["NEST:2"], NeST_embedding_dict["NEST:3"]],
         #                 axis=0), axis=0, keepdims=False)
         system_embeddings = np.stack(
-            [system_embedding_dict[key] for key, value in sorted(tree_parser.sys2ind.items(), key=lambda a: a[1])])
-        drug_response_model.system_embedding.weight = nn.Parameter(torch.tensor(system_embeddings))
-        print(drug_response_model.system_embedding.weight)
+            [system_embedding_dict[key] for key, value in sorted(tree_parser.sys2ind.items(), key=lambda a: a[1])] + [np.zeros(args.hidden_dims)])
+        system_embeddings = system_embeddings.astype(np.float32)
+        system_embeddings = torch.from_numpy(system_embeddings)
+        drug_response_model.system_embedding.weight = nn.Parameter(system_embeddings)
         drug_response_model.system_embedding.weight.requires_grad = False
-        fix_system = True
+        print(drug_response_model.system_embedding.weight)
+        fix_embedding = False
     if args.gene_embedding:
         gene_embedding_dict = np.load(args.gene_embedding, allow_pickle=True).item()
         print("Loading Gene Embeddings :", args.gene_embedding)
-        gene_embeddings = np.stack([gene_embedding_dict[key] for key, value in sorted(tree_parser.gene2ind.items(), key=lambda a: a[1])])
-        drug_response_model.gene_embedding.weight = nn.Parameter(torch.tensor(gene_embeddings))
-        #drug_response_model.gene_embedding.weight.requires_grad = False
+        gene_embeddings = np.stack([gene_embedding_dict[key] for key, value in sorted(tree_parser.gene2ind.items(), key=lambda a: a[1])] + [np.zeros(args.hidden_dims)])
+        gene_embeddings = gene_embeddings.astype(np.float32)
+        gene_embeddings = torch.from_numpy(gene_embeddings)
+        drug_response_model.gene_embedding.weight = nn.Parameter(gene_embeddings)
+        drug_response_model.gene_embedding.weight.requires_grad = False
+        print(drug_response_model.gene_embedding.weight)
+        fix_embedding = False
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -314,9 +315,8 @@ def main_worker(gpu, ngpus_per_node, args):
 
 
 
-    drug_response_trainer = DrugResponseTrainer(drug_response_model, drug_response_dataloader_drug, drug_response_dataloader_cellline, device, args,
-                                                validation_dataloader=val_drug_response_dataloader, fix_embedding=fix_system)
-    print("Training drug response model ...")
+    drug_response_trainer = DrugResponseTrainer(drug_response_model, drug_response_dataloader_drug, drug_response_dataloader_cellline, device, args, validation_dataloader=val_drug_response_dataloader, fix_embedding=fix_embedding)
+
     drug_response_trainer.train(args.epochs, args.out)
     print("Done training and validating model")
 

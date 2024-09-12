@@ -98,7 +98,7 @@ class DrugResponseDataset(Dataset):
         result_dict['drug'] = self.drug_dict[drug]
         return result_dict
 
-    def get_crispr_celline(self, drug, i, inhibition=True, cell_feature={}):
+    def get_crispr_cellline(self, drug, i, inhibition=True, cell_feature={}):
 
         #for key, value in cell_feature.items():
         #    for i in value:
