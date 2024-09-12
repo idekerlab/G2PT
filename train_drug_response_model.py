@@ -14,7 +14,7 @@ import torch.utils.data.distributed
 from prettytable import PrettyTable
 
 from src.model.compound import DrugEmbeddingCompoundModel, ECFPCompoundModel, ChemBERTaCompoundModel
-from src.model.drug_response_model import DrugResponseModel
+from src.model.model.drug_response_model import DrugResponseModel
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline, RobertaModel, RobertaTokenizer
 
 from src.utils.data import CompoundEncoder

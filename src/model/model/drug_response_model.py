@@ -8,9 +8,9 @@ from src.model.hierarchical_transformer import HierarchicalTransformer
 class DrugResponseModel(Genotype2PhenotypeTransformer):
 
     def __init__(self, tree_parser, genotypes, hidden_dims, compound_encoder, dropout=0.2, activation='softmax'):
-        super(DrugResponseModel, self).__init__(tree_parser, genotypes, hidden_dims, dropout=dropout, activation=activation)
+        super(DrugResponseModel, self).__init__(tree_parser, hidden_dims, dropout=dropout, activation=activation)
 
-
+        self.genotypes = genotypes
         self.compound_encoder = compound_encoder
         self.compound_mapper_1 = nn.Linear(compound_encoder.hidden_layers[-1], hidden_dims)
         self.compound_norm_1 = nn.LayerNorm(hidden_dims, eps=0.1)

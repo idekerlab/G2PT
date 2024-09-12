@@ -16,7 +16,10 @@ class Genotype2PhenotypeTransformer(nn.Module):
         self.n_genes = self.tree_parser.n_genes
         print("Model is initialized with %d systems and %d gene mutations" % (self.n_systems, self.n_genes))
 
-
+        print('\n')
+        print("self.n_systems:", self.n_systems)
+        print("hidden_dims:", hidden_dims)
+        print('\n')
         self.system_embedding = nn.Embedding(self.n_systems+1, hidden_dims, padding_idx=self.n_systems)
         self.gene_embedding = nn.Embedding(self.n_genes+1, hidden_dims, padding_idx=self.n_genes)
 
