@@ -18,7 +18,7 @@ import torch.utils.data.distributed
 
 from prettytable import PrettyTable
 
-from src.model.compound import ECFPCompoundModel, ChemBERTaCompoundModel
+from src.model.compound import DrugEmbeddingCompoundModel, ECFPCompoundModel, ChemBERTaCompoundModel
 from src.model.drug_response_model import DrugResponseModel
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline, RobertaModel, RobertaTokenizer
 
@@ -73,6 +73,7 @@ def main():
 
     parser.add_argument('--genotypes', help='Mutation information for cell lines', type=str)
 
+    parser.add_argument('--drug_embedding', action='store_true', help='enable learning drug embeddings')
     parser.add_argument('--bert', help='huggingface repository for smiles parsing', default=None)
     parser.add_argument('--radius', help='ECFP radius', type=int, default=2)
     parser.add_argument('--n_bits', help='ECFP number of bits', type=int, default=512)
@@ -152,8 +153,19 @@ def main_worker(gpu, ngpus_per_node, args):
         print("GPU %d process initialized" % (gpu))
         torch.cuda.empty_cache()
 
+    if torch.cuda.is_available():
+        device = torch.device("cuda:%d" % gpu)
+    else:
+        device = torch.device("cpu")
 
-    if args.bert is not None:
+    tree_parser = MutTreeParser(args.onto, args.gene2id)
+    train_dataset = pd.read_csv(args.train, header=None, sep='\t')
+    
+    if args.drug_embedding:
+        print("Drug embeddings will not use fingerprint, to be learned from nn.Embedding")
+        compound_encoder = CompoundEncoder('Embedding', dataset=train_dataset, out=args.out)
+        compound_model = DrugEmbeddingCompoundModel(compound_encoder.num_drugs(), args.hidden_dims)
+    elif args.bert is not None:
         print(args.bert, "is used for compound encoding")
         tokenizer = AutoTokenizer.from_pretrained(args.bert)
         compound_encoder = CompoundEncoder('SMILES', tokenizer=tokenizer)
@@ -171,29 +183,16 @@ def main_worker(gpu, ngpus_per_node, args):
         print("ECFP with radius %d, and %d bits used for compound encoding"%(args.radius, args.n_bits))
         compound_encoder = CompoundEncoder('Morgan', args.radius, args.n_bits)
         compound_model = ECFPCompoundModel(args.n_bits, args.compound_layers, args.dropout)
-
-    tree_parser = MutTreeParser(args.onto, args.gene2id)
-
-    train_dataset = pd.read_csv(args.train, header=None, sep='\t')
-
-    if torch.cuda.is_available():
-        device = torch.device("cuda:%d" % gpu)
-    else:
-        device = torch.device("cpu")
-
-    compound_dataset = DrugDataset(train_dataset, compound_encoder)
-    compound_datalorder = DataLoader(compound_dataset, shuffle=True, batch_size=args.batch_size, num_workers=args.jobs)
-
-    compound_trainer = DrugTrainer(compound_model, compound_datalorder, device=device, args=args)
-
-
+        compound_dataset = DrugDataset(train_dataset, compound_encoder)
+        compound_dataloader = DataLoader(compound_dataset, shuffle=True, batch_size=args.batch_size, num_workers=args.jobs)
+        compound_trainer = DrugTrainer(compound_model, compound_dataloader, device=device, lr=args.lr, wd=args.wd)
+        compound_model = compound_trainer.train(args.compound_epochs)
 
     args.genotypes = {genotype.split(":")[0]: genotype.split(":")[1] for genotype in args.genotypes.split(',')}
     if args.model is not None:
         print("Loading Model at %s"%args.model)
         drug_response_model = torch.load(args.model, map_location=device)
     else:
-        compound_model = compound_trainer.train(args.compound_epochs)
         drug_response_model = DrugResponseModel(tree_parser, list(args.genotypes.keys()),
                                                 args.hidden_dims, compound_model, dropout=args.dropout)
     fix_system = False
@@ -301,14 +300,14 @@ def main_worker(gpu, ngpus_per_node, args):
                                                   batch_size=args.batch_size, group_index=0, drug_index=1,
                                                   response_index=2, z_weights=args.z_weight)
     drug_response_dataloader_drug = DataLoader(drug_response_dataset,
-                                          batch_size=args.batch_size,
-                                          #sampler=drug_response_sampler,
-    #                                      batch_sampler= drug_batch_sampler,
-                                          collate_fn=drug_response_collator,
-                                          num_workers=args.jobs,  shuffle=shuffle, sampler=interaction_sampler)
+                                               batch_size=args.batch_size,
+                                               #sampler=drug_response_sampler,
+                                               #batch_sampler= drug_batch_sampler,
+                                               collate_fn=drug_response_collator,
+                                               num_workers=args.jobs,  shuffle=shuffle, sampler=interaction_sampler)
     drug_response_dataloader_cellline = DataLoader(drug_response_dataset,
-                                               # batch_size=args.batch_size,
-                                               # sampler=drug_response_sampler,
+                                               #batch_size=args.batch_size,
+                                               #sampler=drug_response_sampler,
                                                #batch_sampler=cellline_batch_sampler,
                                                collate_fn=drug_response_collator,
                                                num_workers=args.jobs, shuffle=shuffle, sampler=interaction_sampler)
@@ -316,16 +315,18 @@ def main_worker(gpu, ngpus_per_node, args):
 
 
     drug_response_trainer = DrugResponseTrainer(drug_response_model, drug_response_dataloader_drug, drug_response_dataloader_cellline, device, args,
-                                                validation_dataloader=val_drug_response_dataloader, fix_system=fix_system)
+                                                validation_dataloader=val_drug_response_dataloader, fix_embedding=fix_system)
+    print("Training drug response model ...")
     drug_response_trainer.train(args.epochs, args.out)
-
+    print("Done training and validating model")
 
 
     test_dataset = pd.read_csv(args.test, header=None, sep='\t')
 
     test_drug_response_dataset = DrugResponseDataset(test_dataset, args.cell2id, args.genotypes, compound_encoder,
-                                                     tree_parser, args.subtree_order)
-    drug_response_collator = DrugResponseCollator(list(args.genotypes.keys()), compound_encoder)
+                                                     tree_parser)
+    
+    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder)
 
     test_drug_response_dataloader = DataLoader(test_drug_response_dataset, shuffle=False, batch_size=args.batch_size,
                                                num_workers=args.jobs, collate_fn=drug_response_collator)
@@ -335,7 +336,7 @@ def main_worker(gpu, ngpus_per_node, args):
     best_model = drug_response_trainer.get_best_model()
     drug_response_trainer.evaluate(best_model, test_drug_response_dataloader, 1, name="Test")
     print("Saving model to %s"%args.out)
-    torch.save(drug_response_model, args.out)
+    torch.save({"arguments": args, "state_dict": best_model.state_dict()}, args.out)
 
 if __name__ == '__main__':
     main()

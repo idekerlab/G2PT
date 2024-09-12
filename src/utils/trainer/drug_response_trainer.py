@@ -14,6 +14,7 @@ from src.utils.trainer import CCCLoss
 from src.utils.data import move_to
 import copy
 from torch.nn import functional as F
+import pickle
 
 
 class DrugResponseTrainer(object):
@@ -57,6 +58,7 @@ class DrugResponseTrainer(object):
         #self.compound_encoder = copy.deepcopy(self.drug_response_model.compound_encoder)
         self.fix_embedding = fix_embedding
         self.g2p_module_names = ["Mut2Sys", "Sys2Cell", "Cell2Sys"]
+        self.performance = {}
         if fix_embedding:
             if self.args.multiprocessing_distributed:
                 self.system_embedding = copy.deepcopy(self.drug_response_model.module.system_embedding)
@@ -100,6 +102,12 @@ class DrugResponseTrainer(object):
             #            parameters_to_prune.append((module, 'weight'))
             #        prune.global_unstructured(parameters_to_prune, pruning_method=prune.L1Unstructured, amount=self.args.dropout)
             self.scheduler.step()
+
+        out = output_path.split("/")
+        folder = out[0]
+        fold = out[1].split("_")[2]
+        with open(folder+'/val_performance_'+fold+'.pkl', 'wb') as handle:
+            pickle.dump(self.performance, handle)
 
     def get_best_model(self):
         return self.best_model
@@ -161,6 +169,7 @@ class DrugResponseTrainer(object):
         print("Pearson per drug: ", pearson_per_drug)
         print("Spearman per drug: ", spearman_per_drug)
 
+        self.performance[epoch] = {"pearson_per_drug": pearson_dict, "spearman_per_drug": spearman_dict}
         return pearson_per_drug
 
 

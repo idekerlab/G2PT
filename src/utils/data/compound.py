@@ -3,7 +3,9 @@ from rdkit.Chem import AllChem
 from torch.utils.data.dataset import Dataset
 from scipy.stats import zscore, skewnorm
 import numpy as np
+import pandas as pd
 import torch
+import pickle
 
 
 def skew_normal_mode(data):
@@ -19,21 +21,36 @@ def skew_normal_mode(data):
 
 class CompoundEncoder(object):
 
-    def __init__(self, feature="Morgan", radius=2, n_bits=2048, tokenizer=None, **kwargs):
+    def __init__(self, feature="Morgan", radius=2, n_bits=2048, tokenizer=None, dataset=[], out=None, **kwargs):
         self.feature = feature
         self.radius = radius
         self.n_bits = n_bits
         self.tokenizer = tokenizer
+        self.dataset = dataset
+        self.out = out
 
+        if isinstance(self.dataset, pd.DataFrame):
+            self.drugs = list(self.dataset.groupby(1).groups)
+            self.smiles2ind = {k: v for v, k in enumerate(self.drugs)}
+
+            dir = self.out.split("/")[0]
+            with open(dir+'/smiles2ind.pkl', 'wb') as handle:
+                pickle.dump(self.smiles2ind, handle)
+            
     def get_type(self):
         return self.feature
+
+    def num_drugs(self):
+        return len(self.drugs)
 
     def mol_to_morgan(self, mol):
         fp = AllChem.GetMorganFingerprintAsBitVect(mol, self.radius, nBits=self.n_bits)
         return fp
 
     def encode(self, smiles):
-        if self.feature=='Morgan':
+        if self.feature =='Embedding':
+            return(torch.tensor(self.smiles2ind[smiles]))
+        elif self.feature=='Morgan':
             mol = Chem.MolFromSmiles(smiles)
             morgan_feature = torch.tensor(self.mol_to_morgan(mol), dtype=torch.float32)
             return morgan_feature
@@ -41,6 +58,8 @@ class CompoundEncoder(object):
             return smiles
 
     def collate(self, encoded_list):
+        if self.feature == 'Embedding':
+            return torch.stack(encoded_list)
         if self.feature=='Morgan':
             return torch.stack(encoded_list)
         elif self.feature=="SMILES":

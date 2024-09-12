@@ -11,11 +11,11 @@ from transformers import get_linear_schedule_with_warmup
 
 class DrugTrainer(object):
 
-    def __init__(self, compound_model, compound_dataloader, device, args):
+    def __init__(self, compound_model, compound_dataloader, device, lr, wd):
         self.device = device
         self.compound_model = compound_model.to(self.device)
         self.compound_dataloader = compound_dataloader
-        self.optimizer = optim.AdamW(self.compound_model.parameters(), lr=args.lr, weight_decay=args.wd)
+        self.optimizer = optim.AdamW(self.compound_model.parameters(), lr=lr, weight_decay=wd)
         self.loss_func = nn.MSELoss()
 
 
