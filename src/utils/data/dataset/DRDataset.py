@@ -62,11 +62,11 @@ class DrugResponseDataset(Dataset):
         cell_ind = self.cell2ind[cell]
 
         if self.with_indices:
-            cell_mut_dict = {mut_type:self.tree_parser.get_mut2sys(np.where(mut_value.iloc[cell_ind].values == 1.0)[0],
+            cell_mut_dict = {mut_type:self.tree_parser.get_mut2gene(np.where(mut_value.iloc[cell_ind].values == 1.0)[0],
                                                                    type_indices={1.0: np.where(mut_value.iloc[cell_ind].values == 1.0)[0]})
                              for mut_type, mut_value in self.cell2genotype_dict.items()}
         else:
-            cell_mut_dict = {mut_type: self.tree_parser.get_system2genotype_mask(
+            cell_mut_dict = {mut_type: self.tree_parser.get_mutation2genotype_mask(
                 torch.tensor(mut_value.iloc[cell_ind].values, dtype=torch.float32))
                              for mut_type, mut_value in self.cell2genotype_dict.items()}
         #cell_tree_mask = self.cell_tree_mask_dict[cell]
@@ -130,12 +130,9 @@ class DrugResponseCollator(object):
         for genotype in self.genotypes:
             if self.with_indices:
                 embedding_dict = {}
-                embedding_dict['gene'] = pad_sequence([dr['genotype'][genotype]['gene'] for dr in data], padding_value=self.tree_parser.n_genes, batch_first=True).to(torch.long)
-                embedding_dict['sys'] = pad_sequence([dr['genotype'][genotype]['sys'] for dr in data], padding_value=self.tree_parser.n_systems, batch_first=True).to(torch.long)
-                gene_max_len = embedding_dict['gene'].size(1)
-                sys_max_len = embedding_dict['sys'].size(1)
-                embedding_dict['mask'] = torch.stack([dr['genotype'][genotype]['mask'] for dr in data])[:, :sys_max_len, :gene_max_len]
-
+                embedding_dict['mut'] = pad_sequence([dr['genotype'][genotype]['mut'] for dr in data], padding_value=self.tree_parser.n_genes-1, batch_first=True).to(torch.long)
+                mut_max_len = embedding_dict['mut'].size(1)
+                embedding_dict['mask'] = torch.stack([dr['genotype'][genotype]['mask'] for dr in data])[:, :mut_max_len, :mut_max_len]
                 mutation_dict[genotype] = embedding_dict
             else:
                 mutation_dict[genotype] = torch.stack([dr['genotype'][genotype] for dr in data])

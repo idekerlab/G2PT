@@ -261,7 +261,7 @@ def main_worker(gpu, ngpus_per_node, args):
         print("Model will use Sys2Gene")
 
     drug_response_dataset = DrugResponseDataset(train_dataset, args.cell2id, args.genotypes, compound_encoder,
-                                                tree_parser)
+                                                tree_parser, with_indices=True)
 
     if args.distributed:
         #affinity_dataset = affinity_dataset.sample(frac=1).reset_index(drop=True)
@@ -274,15 +274,15 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.val is not None:
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
         val_drug_response_dataset = DrugResponseDataset(val_dataset, args.cell2id, args.genotypes, compound_encoder,
-                                                    tree_parser)
-        drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder)
+                                                    tree_parser, with_indices=True)
+        drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder, with_indices=True)
 
         val_drug_response_dataloader = DataLoader(val_drug_response_dataset, shuffle=False, batch_size=args.batch_size,
                                               num_workers=args.jobs, collate_fn=drug_response_collator)
     else:
         val_drug_response_dataloader = None
 
-    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder)
+    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder, with_indices=True)
     '''
     if args.model is not None:
         drug_response_dataloader = DataLoader(drug_response_dataset, batch_size=args.batch_size,
@@ -324,9 +324,9 @@ def main_worker(gpu, ngpus_per_node, args):
     test_dataset = pd.read_csv(args.test, header=None, sep='\t')
 
     test_drug_response_dataset = DrugResponseDataset(test_dataset, args.cell2id, args.genotypes, compound_encoder,
-                                                     tree_parser)
+                                                     tree_parser, with_indices=True)
     
-    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder)
+    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder, with_indices=True)
 
     test_drug_response_dataloader = DataLoader(test_drug_response_dataset, shuffle=False, batch_size=args.batch_size,
                                                num_workers=args.jobs, collate_fn=drug_response_collator)

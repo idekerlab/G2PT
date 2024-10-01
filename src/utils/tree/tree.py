@@ -106,6 +106,11 @@ class TreeParser(object):
         system_hierarchy_dict = {system: self.get_system_hierarchies(system, interaction_type) for system in systems}
         return system_hierarchy_dict
 
+    def get_mutation2genotype_mask(self, mut_vector):
+        gene2mut_mask =  torch.logical_and(torch.tensor(self.mut2gene_mask, dtype=torch.bool),
+                                             mut_vector.unsqueeze(0).expand(self.n_genes, -1).bool())
+        return gene2mut_mask.float()
+    
     def get_system2genotype_mask(self, mut_vector):
         system2mut_mask =  torch.logical_and(torch.tensor(self.gene2sys_mask, dtype=torch.bool),
                                              mut_vector.unsqueeze(0).expand(self.n_systems, -1).bool())
