@@ -23,6 +23,7 @@ from src.utils.data.dataset import DrugResponseDataset, DrugResponseCollator, Dr
 from src.utils.trainer import DrugResponseTrainer, DrugTrainer
 import numpy as np
 import torch.nn as nn
+#import time
 
 from torch.utils.data.dataloader import DataLoader
 
@@ -99,9 +100,12 @@ def main():
                              'fastest way to use PyTorch for either single node or '
                              'multi node data parallel training')
 
+    parser.add_argument('--gene2drug', action='store_true', default=False)
+    parser.add_argument('--mut2gene', action='store_true', default=False)
     parser.add_argument('--sys2cell', action='store_true', default=False)
     parser.add_argument('--cell2sys', action='store_true', default=False)
     parser.add_argument('--sys2gene', action='store_true', default=False)
+    parser.add_argument('--with_indices', action='store_true', default=False)
     args = parser.parse_args()
     torch.cuda.empty_cache()
 
@@ -253,15 +257,19 @@ def main_worker(gpu, ngpus_per_node, args):
         print("Summary of trainable parameters")
         count_parameters(drug_response_model)
     print(args.sys2cell, args.cell2sys, args.sys2gene)
+    if args.mut2gene:
+        print("Model will use Mut2Gene, not Mut2Sys")
     if args.sys2cell:
         print("Model will use Sys2Cell")
     if args.cell2sys:
         print("Model will use Cell2Sys")
     if args.sys2gene:
         print("Model will use Sys2Gene")
+    if args.gene2drug:
+        print("Model will predict with gene2drug")
 
     drug_response_dataset = DrugResponseDataset(train_dataset, args.cell2id, args.genotypes, compound_encoder,
-                                                tree_parser, with_indices=True)
+                                                tree_parser, mut2gene=args.mut2gene, with_indices=args.with_indices)
 
     if args.distributed:
         #affinity_dataset = affinity_dataset.sample(frac=1).reset_index(drop=True)
@@ -274,15 +282,15 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.val is not None:
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
         val_drug_response_dataset = DrugResponseDataset(val_dataset, args.cell2id, args.genotypes, compound_encoder,
-                                                    tree_parser, with_indices=True)
-        drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder, with_indices=True)
+                                                    tree_parser, mut2gene=args.mut2gene, with_indices=args.with_indices)
+        drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder, mut2gene=args.mut2gene, with_indices=args.with_indices)
 
         val_drug_response_dataloader = DataLoader(val_drug_response_dataset, shuffle=False, batch_size=args.batch_size,
                                               num_workers=args.jobs, collate_fn=drug_response_collator)
     else:
         val_drug_response_dataloader = None
 
-    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder, with_indices=True)
+    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder, mut2gene=args.mut2gene, with_indices=args.with_indices)
     '''
     if args.model is not None:
         drug_response_dataloader = DataLoader(drug_response_dataset, batch_size=args.batch_size,
@@ -317,16 +325,18 @@ def main_worker(gpu, ngpus_per_node, args):
 
     drug_response_trainer = DrugResponseTrainer(drug_response_model, drug_response_dataloader_drug, drug_response_dataloader_cellline, device, args, validation_dataloader=val_drug_response_dataloader, fix_embedding=fix_embedding)
 
+    #start = time.time()
     drug_response_trainer.train(args.epochs, args.out)
+    #end = time.time()
     print("Done training and validating model")
-
+    #print("Training time:", end - start)
 
     test_dataset = pd.read_csv(args.test, header=None, sep='\t')
 
     test_drug_response_dataset = DrugResponseDataset(test_dataset, args.cell2id, args.genotypes, compound_encoder,
-                                                     tree_parser, with_indices=True)
+                                                     tree_parser, mut2gene=args.mut2gene, with_indices=args.with_indices)
     
-    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder, with_indices=True)
+    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder, mut2gene=args.mut2gene, with_indices=args.with_indices)
 
     test_drug_response_dataloader = DataLoader(test_drug_response_dataset, shuffle=False, batch_size=args.batch_size,
                                                num_workers=args.jobs, collate_fn=drug_response_collator)

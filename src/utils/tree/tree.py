@@ -26,6 +26,7 @@ class TreeParser(object):
         for parent_system, child_system in zip(self.system_df['parent'], self.system_df['child']):
             self.system2system_mask[self.sys2ind[parent_system], self.sys2ind[child_system]] = 1
 
+        self.mut2gene_mask = torch.eye(self.n_genes)
         self.gene2sys_mask = np.zeros((len(self.sys2ind), len(self.gene2ind)))
         self.sys2gene_dict = {self.sys2ind[system]: [] for system in systems}
         self.gene2sys_dict = {gene: [] for gene in range(self.n_genes)}
@@ -105,6 +106,11 @@ class TreeParser(object):
         systems = self.get_parent_system_of_gene(gene)
         system_hierarchy_dict = {system: self.get_system_hierarchies(system, interaction_type) for system in systems}
         return system_hierarchy_dict
+
+    def get_mutation2genotype_mask(self, mut_vector):
+        gene2mut_mask =  torch.logical_and(torch.tensor(self.mut2gene_mask, dtype=torch.bool),
+                                             mut_vector.unsqueeze(0).expand(self.n_genes, -1).bool())
+        return gene2mut_mask.float()
 
     def get_mutation2genotype_mask(self, mut_vector):
         gene2mut_mask =  torch.logical_and(torch.tensor(self.mut2gene_mask, dtype=torch.bool),
