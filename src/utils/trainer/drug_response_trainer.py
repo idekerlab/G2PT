@@ -13,6 +13,7 @@ from src.utils.trainer import CCCLoss
 from src.utils.data import move_to
 import copy
 from torch.nn import functional as F
+import pickle
 
 
 class DrugResponseTrainer(object):
@@ -29,9 +30,6 @@ class DrugResponseTrainer(object):
         self.drug_response_dataloader_drug = drug_response_dataloader_drug
         self.drug_response_dataloader_cellline = drug_response_dataloader_cellline
         self.feature_loss = nn.BCELoss()
-        #self.nested_subtrees = self.move_to(self.nested_subtrees, self.device)
-        #self.gene2gene_mask = torch.tensor(self.drug_response_dataloader.dataset.tree_parser.gene2gene_mask, dtype=torch.float32)
-        #self.gene2gene_mask = self.move_to(self.gene2gene_mask, self.device)
         self.compound_loss = nn.L1Loss()
         self.ccc_loss = CCCLoss()
         self.beta = 0.1
@@ -50,12 +48,14 @@ class DrugResponseTrainer(object):
         self.nested_subtrees_backward = self.drug_response_dataloader_drug.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='backward')
         self.nested_subtrees_backward = move_to(self.nested_subtrees_backward, device)
+        self.gene2system_mask = move_to(torch.tensor(self.drug_response_dataloader_drug.dataset.tree_parser.gene2sys_mask, dtype=torch.bool), device)
         self.system2gene_mask = move_to(torch.tensor(self.drug_response_dataloader_drug.dataset.tree_parser.sys2gene_mask, dtype=torch.bool), device)
         print("%d sys2gene in Dataloader" % self.drug_response_dataloader_drug.dataset.tree_parser.sys2gene_mask.sum())
         self.args = args
-        #self.compound_encoder = copy.deepcopy(self.drug_response_model.compound_encoder)
         self.fix_embedding = fix_embedding
         self.g2p_module_names = ["Mut2Sys", "Sys2Cell", "Cell2Sys"]
+        self.performance = {}
+        
         if fix_embedding:
             if self.args.multiprocessing_distributed:
                 self.system_embedding = copy.deepcopy(self.drug_response_model.module.system_embedding)
@@ -63,9 +63,6 @@ class DrugResponseTrainer(object):
             else:
                 self.system_embedding = copy.deepcopy(self.drug_response_model.system_embedding)
                 self.gene_embedding = copy.deepcopy(self.drug_response_model.gene_embedding)
-        #print(self.system2gene_mask)
-        #print(self.nested_subtrees_forward)
-        #print(self.nested_subtrees_backward)
 
     def train(self, epochs, output_path=None):
 
@@ -92,13 +89,13 @@ class DrugResponseTrainer(object):
                             torch.save({"arguments": self.args, "state_dict":self.drug_response_model.module.state_dict()}, output_path_epoch)
                         else:
                             torch.save({"arguments": self.args, "state_dict":self.drug_response_model.state_dict()}, output_path_epoch)
-            #if (epoch   % self.args.val_step)==0:
-            #    parameters_to_prune = []
-            #    for name, module in self.drug_response_model.named_modules():
-            #        if type(module) in [nn.Linear]:
-            #            parameters_to_prune.append((module, 'weight'))
-            #        prune.global_unstructured(parameters_to_prune, pruning_method=prune.L1Unstructured, amount=self.args.dropout)
             self.scheduler.step()
+
+        out = output_path.split("/")
+        folder = out[0]
+        fold = out[1].split("_")[2]
+        with open(folder+'/val_performance_'+fold+'.pkl', 'wb') as handle:
+            pickle.dump(self.performance, handle)
 
     def get_best_model(self):
         return self.best_model
@@ -117,13 +114,15 @@ class DrugResponseTrainer(object):
                 trues.append(batch['response_mean'] + batch['response_residual'])
                 batch = move_to(batch, self.device)
                 drug_response_predicted = model(batch['genotype'], batch['drug'],
-                                                self.nested_subtrees_forward, self.nested_subtrees_backward, self.system2gene_mask,
+                                                self.nested_subtrees_forward, self.nested_subtrees_backward, 
+                                                self.gene2system_mask, self.system2gene_mask,
                                                 sys2cell=self.args.sys2cell,
                                                 cell2sys=self.args.cell2sys,
-                                                sys2gene=self.args.sys2gene)
+                                                sys2gene=self.args.sys2gene,
+                                                gene2drug=self.args.gene2drug,
+                                                mut2gene=self.args.mut2gene,
+                                                with_indices=self.args.with_indices)
                 drug_response_predicted_detached = drug_response_predicted.detach().cpu().numpy()
-                #compound_predicted_detached = compound_predicted.detach().cpu().numpy()
-                #results.append(compound_predicted_detached+drug_response_predicted_detached)
                 results.append(drug_response_predicted_detached)
                 dataloader_with_tqdm.set_description("%s epoch: %d" % (name, epoch))
                 del drug_response_predicted
@@ -144,8 +143,6 @@ class DrugResponseTrainer(object):
         for smiles, indice in test_grouped.groups.items():
             if len(indice) <= 1:
                 continue
-            #print(test_df.loc[indice][2])
-            #print(results[indice])
             r2 = metrics.r2_score(test_df.loc[indice][2], results[indice])
             rho = spearmanr(test_df.loc[indice][2], results[indice]).correlation
             pearson = pearsonr(test_df.loc[indice][2], results[indice])[0]
@@ -160,6 +157,7 @@ class DrugResponseTrainer(object):
         print("Pearson per drug: ", pearson_per_drug)
         print("Spearman per drug: ", spearman_per_drug)
 
+        self.performance[epoch] = {"pearson_per_drug": pearson_dict, "spearman_per_drug": spearman_dict}
         return pearson_per_drug
 
 
@@ -178,10 +176,14 @@ class DrugResponseTrainer(object):
         for i, batch in enumerate(dataloader_with_tqdm):
             batch = move_to(batch, self.device)
             drug_response_predicted = self.drug_response_model(batch['genotype'], batch['drug'],
-                                                           self.nested_subtrees_forward, self.nested_subtrees_backward, self.system2gene_mask,
+                                                               self.nested_subtrees_forward, self.nested_subtrees_backward, 
+                                                               self.gene2system_mask, self.system2gene_mask,
                                                                sys2cell=self.args.sys2cell,
                                                                cell2sys=self.args.cell2sys,
-                                                               sys2gene=self.args.sys2gene)
+                                                               sys2gene=self.args.sys2gene,
+                                                               gene2drug=self.args.gene2drug,
+                                                               mut2gene=self.args.mut2gene,
+                                                               with_indices=self.args.with_indices)
 
             #compound_loss = self.compound_loss(compound_predicted[:, 0], batch['response_mean'].to(torch.float32))
             #drug_response_loss = self.drug_response_loss(compound_predicted[:, 0]+drug_response_predicted[:, 0], (batch['response_mean']+batch['response_residual']).to(torch.float32))
@@ -198,7 +200,7 @@ class DrugResponseTrainer(object):
             #print(compound_predicted, drug_response_predicted)
             #print(compound_loss, drug_response_loss, ccc_loss)
             #break
-            loss =  drug_response_loss
+            loss = drug_response_loss
             if ccc:
                 loss = loss + ccc_loss * self.beta
             if feature_loss:

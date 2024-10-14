@@ -51,7 +51,7 @@ class SNP2PDataset(Dataset):
             heterozygous = [int(i) for i in heterozygous.split(",")]
         else:
             heterozygous = []
-
+            
         result_dict = dict()
         snp_type_dict = dict()
 
@@ -151,7 +151,7 @@ class CohortSampler(Sampler):
 
     def __iter__(self):
         count = 0
-        index = [i for i in torch.multinomial(self.weights, self.num_samples, replacement=True)]
+        index = [i for i in torch.multinomial(self.weights*10, self.num_samples, replacement=True)]
         while count < self.num_samples:
             #print(index[count], type(index[count]))
             #result = index[count].item()
@@ -191,7 +191,7 @@ class DistributedCohortSampler(DistributedSampler):
         self.weights = torch.tensor(dataset_merged['phenotype'].values, dtype=torch.double)
     def __iter__(self):
         count = 0
-        index = [i for i in torch.multinomial(self.weights, self.num_samples, replacement=True)]
+        index = [i for i in torch.multinomial(self.weights*10, self.num_samples, replacement=True)]
         while count < self.num_samples:
             #print(index[count], type(index[count]))
             #result = index[count].item()

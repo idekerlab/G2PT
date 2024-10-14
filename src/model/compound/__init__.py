@@ -1,1 +1,1 @@
-from .compound_encoder import ECFPCompoundModel, ChemBERTaCompoundModel
+from .compound_encoder import DrugEmbeddingCompoundModel, ECFPCompoundModel, ChemBERTaCompoundModel

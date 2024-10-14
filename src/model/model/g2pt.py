@@ -16,13 +16,15 @@ class Genotype2PhenotypeTransformer(nn.Module):
         self.n_genes = self.tree_parser.n_genes
         print("Model is initialized with %d systems and %d gene mutations" % (self.n_systems, self.n_genes))
 
-
         self.system_embedding = nn.Embedding(self.n_systems+1, hidden_dims, padding_idx=self.n_systems)
         self.gene_embedding = nn.Embedding(self.n_genes+1, hidden_dims, padding_idx=self.n_genes)
 
         self.mut_update_norm_inner = nn.LayerNorm(hidden_dims, eps=0.1)
         self.mut_update_norm_outer = nn.LayerNorm(hidden_dims, eps=0.1)  # LayerNormNormedScaleOnly(hidden_dims)
 
+        self.gene2sys_update_norm_inner = nn.LayerNorm(hidden_dims, eps=0.1)
+        self.gene2sys_update_norm_outer = nn.LayerNorm(hidden_dims, eps=0.1)  # LayerNormNormedScaleOnly(hidden_dims)
+        
         self.sys2env_update_norm_inner = nn.LayerNorm(hidden_dims, eps=0.1)
         self.sys2env_update_norm_outer = nn.LayerNorm(hidden_dims, eps=0.1)  # LayerNormNormedScaleOnly(hidden_dims)
 
@@ -34,6 +36,10 @@ class Genotype2PhenotypeTransformer(nn.Module):
 
         self.norm_channel_first = False
 
+        self.gene2sys = HierarchicalTransformer(hidden_dims, 4, hidden_dims * 4,
+                                                      self.gene2sys_update_norm_inner, self.gene2sys_update_norm_outer,
+                                                      dropout, norm_channel_first=self.norm_channel_first,
+                                                      conv_type='system', activation='softmax')
         self.sys2env = nn.ModuleList([HierarchicalTransformer(hidden_dims, 4, hidden_dims * 4,
                                                               self.sys2env_update_norm_inner,
                                                               self.sys2env_update_norm_outer,
@@ -60,8 +66,8 @@ class Genotype2PhenotypeTransformer(nn.Module):
     def get_gene2sys(self, system_embedding, gene_embedding, gene2sys_mask):
         system_embedding_input = self.sys_norm(system_embedding)
         gene_embedding_input_input = self.gene_norm(gene_embedding)
-        system_effect = self.gene2sys.forward(system_embedding_input, gene_embedding_input_input, gene2sys_mask)
-        return system_embedding,  system_effect
+        gene_effect = self.gene2sys.forward(system_embedding_input, gene_embedding_input_input, gene2sys_mask)
+        return system_embedding,  gene_effect
 
     def get_sys2gene(self, gene_embedding, system_embedding, sys2gene_mask):
         gene_embedding_input = self.gene_norm(gene_embedding)
@@ -73,8 +79,9 @@ class Genotype2PhenotypeTransformer(nn.Module):
         batch_size = system_embedding.size(0)
         feature_size = system_embedding.size(2)
         system_embedding_output = torch.clone(system_embedding)
-
         update_result = torch.zeros_like(system_embedding)
+        if update_tensor is None:
+            update_tensor = torch.zeros_like(system_embedding)
         if direction=='forward':
             sys2sys = self.sys2env
         else:
@@ -97,6 +104,7 @@ class Genotype2PhenotypeTransformer(nn.Module):
                     system_embedding_queries = self.sys_norm(system_embedding_output)
                     system_embedding_keys = self.sys_norm(system_embedding_output)
                     mask = hierarchical_mask
+
 
                 hitr_result = hitr.forward(system_embedding_queries, system_embedding_keys, mask)
 

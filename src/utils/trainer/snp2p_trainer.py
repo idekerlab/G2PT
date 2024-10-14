@@ -131,7 +131,6 @@ class SNP2PTrainer(object):
             print("R_square: ", r_square)
             print("Pearson R", pearson)
             print("Spearman Rho: ", spearman)
-
             print("Performance female")
             female_indices = covariates[:, 0]==1
             r_square = metrics.r2_score(trues[female_indices], results[female_indices])
@@ -142,7 +141,6 @@ class SNP2PTrainer(object):
             print("R_square: ", r_square)
             print("Pearson R", pearson)
             print("Spearman Rho: ", spearman)
-
             print("Performance male")
             male_indices = covariates[:, 1]==1
             r_square = metrics.r2_score(trues[male_indices], results[male_indices])
@@ -217,6 +215,7 @@ class SNP2PTrainer(object):
                                                     phenotype_predicted[woman_indices, 0])
                 ccc_loss += ccc_loss_result_man + ccc_loss_result_woman
                 mean_ccc_loss += float((ccc_loss_result_man + ccc_loss_result_woman))/2
+
             loss = phenotype_loss
             if ccc:
                 loss = loss + 0.1 * ccc_loss

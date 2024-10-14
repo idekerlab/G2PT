@@ -1,5 +1,17 @@
 import torch.nn as nn
 
+class DrugEmbeddingCompoundModel(nn.Module):
+
+    def __init__(self, num_embeddings, embedding_dim = 256):
+        super().__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.hidden_layers = [embedding_dim]
+        self.drug_embedding = nn.Embedding(num_embeddings, embedding_dim)
+
+    def forward(self, x):
+        return self.drug_embedding(x)
+
 class ECFPCompoundModel(nn.Module):
 
     def __init__(self, n_bits:int =1024, hidden_layers:tuple = (256, ), dropout=0.2):

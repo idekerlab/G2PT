@@ -22,12 +22,13 @@ def skew_normal_mode(data):
 
 class DrugResponseDataset(Dataset):
 
-    def __init__(self, drug_response, cell2ind, cell2genotypes, compound_encoder, tree_parser:MutTreeParser, with_indices=False):
+    def __init__(self, drug_response, cell2ind, cell2genotypes, compound_encoder, tree_parser:MutTreeParser, mut2gene=False, with_indices=False):
 
         self.compound_encoder = compound_encoder
         self.drug_response_df = drug_response #this is dataframe because dataset is split to train and val
         self.compound_grouped = self.drug_response_df.groupby(1)
         self.drug_dict = {drug:self.compound_encoder.encode(drug) for drug in self.drug_response_df[1].unique()}
+        self.mut2gene = mut2gene
         self.with_indices = with_indices
 
         #self.drug_response_mean_dict = {drug: skew_normal_mode(self.compound_grouped.get_group(drug)[2])[0] for drug in self.drug_response_df[1].unique()}
@@ -40,13 +41,6 @@ class DrugResponseDataset(Dataset):
 
         self.cell2genotype_dict = {genotype: pd.read_csv(mut_data, header=None).astype('int32') for genotype, mut_data in cell2genotypes.items()}
         self.tree_parser = tree_parser
-
-        '''
-        self.mut_sum_dict = {cell: sum([self.tree_parser.get_system2genotype_mask(torch.tensor(mut_value.iloc[ind].values, dtype=torch.float32))
-                         for mut_type, mut_value in self.cell2genotype_dict.items()]) for cell, ind in self.cell2ind.items()}
-        self.cell_tree_mask_dict = {cell:[[self.tree_parser.mask_subtree_mask_by_mut(tree_mask, self.mut_sum_dict[cell]) for tree_mask in  sub_tree] for sub_tree in self.nested_subtrees]
-                                    for cell, ind in self.cell2ind.items()}
-        '''
 
     def __len__(self):
         return self.drug_response_df.shape[0]
@@ -62,20 +56,28 @@ class DrugResponseDataset(Dataset):
         cell_ind = self.cell2ind[cell]
 
         if self.with_indices:
-            cell_mut_dict = {mut_type:self.tree_parser.get_mut2sys(np.where(mut_value.iloc[cell_ind].values == 1.0)[0],
-                                                                   type_indices={1.0: np.where(mut_value.iloc[cell_ind].values == 1.0)[0]})
-                             for mut_type, mut_value in self.cell2genotype_dict.items()}
+            if self.mut2gene:
+                cell_mut_dict = {mut_type:self.tree_parser.get_mut2gene(np.where(mut_value.iloc[cell_ind].values == 1.0)[0],
+                                                                        type_indices={1.0: np.where(mut_value.iloc[cell_ind].values == 1.0)[0]})
+                                 for mut_type, mut_value in self.cell2genotype_dict.items()}
+            else:
+                cell_mut_dict = {mut_type:self.tree_parser.get_mut2sys(np.where(mut_value.iloc[cell_ind].values == 1.0)[0],
+                                                                       type_indices={1.0: np.where(mut_value.iloc[cell_ind].values == 1.0)[0]})
+                                 for mut_type, mut_value in self.cell2genotype_dict.items()}
         else:
-            cell_mut_dict = {mut_type: self.tree_parser.get_system2genotype_mask(
-                torch.tensor(mut_value.iloc[cell_ind].values, dtype=torch.float32))
-                             for mut_type, mut_value in self.cell2genotype_dict.items()}
-        #cell_tree_mask = self.cell_tree_mask_dict[cell]
+            if self.mut2gene:
+                cell_mut_dict = {mut_type: self.tree_parser.get_mutation2genotype_mask(
+                    torch.tensor(mut_value.iloc[cell_ind].values, dtype=torch.float32))
+                                 for mut_type, mut_value in self.cell2genotype_dict.items()}
+            else:
+                cell_mut_dict = {mut_type: self.tree_parser.get_system2genotype_mask(
+                    torch.tensor(mut_value.iloc[cell_ind].values, dtype=torch.float32))
+                                 for mut_type, mut_value in self.cell2genotype_dict.items()}
 
         result_dict = dict()
         result_dict['genotype'] = cell_mut_dict
         result_dict['drug'] = self.drug_dict[drug]
         if self.drug_response_df.shape[1]>2:
-            #result_dict['nested_system_mask'] = cell_tree_mask
             drug_mean = self.drug_response_mean_dict[drug]
             drug_residual = response - drug_mean
             result_dict["response_mean"] = drug_mean
@@ -89,9 +91,6 @@ class DrugResponseDataset(Dataset):
             for i in indices:
                 mut_value[i] = 1
             cell_mut_dict[mut_type] = self.tree_parser.get_system2genotype_mask(mut_value)
-        #cell_mut_dict['mutation'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
-        #cell_mut_dict['cna'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
-        #cell_mut_dict['cnd'] = self.tree_parser.get_mut2sys([], type_indices={1.0: []})
 
         result_dict = dict()
         result_dict['genotype'] = cell_mut_dict
@@ -116,40 +115,37 @@ class DrugResponseDataset(Dataset):
 
 class DrugResponseCollator(object):
 
-    def __init__(self, tree_parser:MutTreeParser, genotypes, compound_encoder, with_indices=False):
+    def __init__(self, tree_parser:MutTreeParser, genotypes, compound_encoder, mut2gene=False, with_indices=False):
         self.tree_parser = tree_parser
         self.genotypes = genotypes
         self.compound_encoder = compound_encoder
         self.compound_type = self.compound_encoder.feature
+        self.mut2gene = mut2gene
         self.with_indices = with_indices
 
     def __call__(self, data):
         result_dict = dict()
         mutation_dict = dict()
-        #result_nested_mask = list()
         for genotype in self.genotypes:
             if self.with_indices:
                 embedding_dict = {}
-                embedding_dict['gene'] = pad_sequence([dr['genotype'][genotype]['gene'] for dr in data], padding_value=self.tree_parser.n_genes, batch_first=True).to(torch.long)
-                embedding_dict['sys'] = pad_sequence([dr['genotype'][genotype]['sys'] for dr in data], padding_value=self.tree_parser.n_systems, batch_first=True).to(torch.long)
-                gene_max_len = embedding_dict['gene'].size(1)
-                sys_max_len = embedding_dict['sys'].size(1)
-                embedding_dict['mask'] = torch.stack([dr['genotype'][genotype]['mask'] for dr in data])[:, :sys_max_len, :gene_max_len]
-
-                mutation_dict[genotype] = embedding_dict
+                if self.mut2gene:
+                    embedding_dict['mut'] = pad_sequence([dr['genotype'][genotype]['mut'] for dr in data], padding_value=self.tree_parser.n_genes-1, batch_first=True).to(torch.long)
+                    mut_max_len = embedding_dict['mut'].size(1)
+                    embedding_dict['mask'] = torch.stack([dr['genotype'][genotype]['mask'] for dr in data])[:, :mut_max_len, :mut_max_len]
+                    mutation_dict[genotype] = embedding_dict
+                else:
+                    embedding_dict['gene'] = pad_sequence([dr['genotype'][genotype]['gene'] for dr in data], padding_value=self.tree_parser.n_genes, batch_first=True).to(torch.long)
+                    embedding_dict['sys'] = pad_sequence([dr['genotype'][genotype]['sys'] for dr in data], padding_value=self.tree_parser.n_systems, batch_first=True).to(torch.long)
+                    gene_max_len = embedding_dict['gene'].size(1)
+                    sys_max_len = embedding_dict['sys'].size(1)
+                    embedding_dict['mask'] = torch.stack([dr['genotype'][genotype]['mask'] for dr in data])[:, :sys_max_len, :gene_max_len]
+                    mutation_dict[genotype] = embedding_dict
             else:
                 mutation_dict[genotype] = torch.stack([dr['genotype'][genotype] for dr in data])
-        '''
-        for i in  range(len(data[0]["nested_system_mask"])):
-            result_list = []
-            for j in range(len(data[0]["nested_system_mask"][i])):
-                result_list.append(torch.stack([dr["nested_system_mask"][i][j] for dr in data]))
-            result_nested_mask.append(result_list)
-        '''
 
         result_dict['genotype'] = mutation_dict
         result_dict['drug'] = self.compound_encoder.collate([dr['drug'] for dr in data])
-        #result_dict['nested_system_mask'] = result_nested_mask
         if 'response_mean' in data[0].keys():
             result_dict['response_mean'] = torch.tensor([dr['response_mean'] for dr in data])
             result_dict['response_residual'] = torch.tensor([dr['response_residual'] for dr in data])

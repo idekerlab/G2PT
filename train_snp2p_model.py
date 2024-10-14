@@ -38,7 +38,6 @@ def count_parameters(model):
     print(f"Total Trainable Params: {total_params}")
     return total_params
 
-
 def main():
     parser = argparse.ArgumentParser(description='Some beautiful description')
     # Participant Genotype file
@@ -134,6 +133,7 @@ def main_worker(rank, ngpus_per_node, args):
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
         if args.multiprocessing_distributed:
+
             # For multiprocessing distributed training, rank needs to be the
             # global rank among all the processes
             args.rank = rank
