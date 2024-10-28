@@ -164,5 +164,5 @@ you can train model with sample data by using [train_model.sh](train_model.sh)
 ## Future Works
 
 - [x] Applying [Differential Transformer](https://github.com/microsoft/unilm/tree/master/Diff-Transformer) to genetic factor translation
-- [ ] Build data loader from `plink` binary file using [`pandas-plink`](https://pypi.org/project/pandas-plink/) 
+- [ ] Build data loader for `plink` binary file using [`pandas-plink`](https://pypi.org/project/pandas-plink/) 
 
