@@ -1,1 +1,1 @@
-from .norm import LayerNormNormedScaleOnly
+from .norm import LayerNormNormedScaleOnly, RMSNorm

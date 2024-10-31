@@ -7,7 +7,7 @@ from src.model.hierarchical_transformer import HierarchicalTransformer
 
 class DrugResponseModel(Genotype2PhenotypeTransformer):
 
-    def __init__(self, tree_parser, genotypes, hidden_dims, compound_encoder, dropout=0.2, activation='softmax'):
+    def __init__(self, tree_parser, genotypes, hidden_dims, compound_encoder, dropout=0.2, activation='softmax', diff_transformer=False, depth=1):
         super(DrugResponseModel, self).__init__(tree_parser, hidden_dims, dropout=dropout, activation=activation)
 
         self.genotypes = genotypes
@@ -42,9 +42,11 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
                                       for genotype in self.genotypes})
 
         self.sys2comp = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.sys2comp_norm_inner,
-                                           outer_norm=self.sys2comp_norm_outer, dropout=dropout, transform=True)
+                                           outer_norm=self.sys2comp_norm_outer, dropout=dropout, depth=depth, 
+                                           diff_transformer=diff_transformer)
         self.gene2comp = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.gene2comp_norm_inner,
-                                            outer_norm=self.gene2comp_norm_outer, dropout=dropout, transform=True)
+                                            outer_norm=self.gene2comp_norm_outer, dropout=dropout, depth=depth,
+                                            diff_transformer=diff_transformer)
         self.sigmoid = nn.Sigmoid()
         self.predict_norm_genes_systems = nn.LayerNorm(hidden_dims * 2, eps=0.1)
         self.predictor_genes_systems = nn.Linear(hidden_dims*2, 1)
