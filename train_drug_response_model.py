@@ -100,6 +100,7 @@ def main():
                              'fastest way to use PyTorch for either single node or '
                              'multi node data parallel training')
 
+    parser.add_argument('--diff_transformer', action='store_true', default=False)
     parser.add_argument('--gene2drug', action='store_true', default=False)
     parser.add_argument('--mut2gene', action='store_true', default=False)
     parser.add_argument('--sys2cell', action='store_true', default=False)
@@ -193,7 +194,8 @@ def main_worker(gpu, ngpus_per_node, args):
         drug_response_model = torch.load(args.model, map_location=device)
     else:
         drug_response_model = DrugResponseModel(tree_parser, list(args.genotypes.keys()),
-                                                args.hidden_dims, compound_model, dropout=args.dropout, activation='sig')
+                                                args.hidden_dims, compound_model, dropout=args.dropout, 
+                                                diff_transformer=args.diff_transformer)
     fix_embedding = False
     if args.system_embedding:
         system_embedding_dict = np.load(args.system_embedding, allow_pickle=True).item()
@@ -267,6 +269,8 @@ def main_worker(gpu, ngpus_per_node, args):
         print("Model will use Sys2Gene")
     if args.gene2drug:
         print("Model will predict with gene2drug")
+    if args.diff_transformer:
+        print("Model will train with differential attention")
 
     drug_response_dataset = DrugResponseDataset(train_dataset, args.cell2id, args.genotypes, compound_encoder,
                                                 tree_parser, mut2gene=args.mut2gene, with_indices=args.with_indices)

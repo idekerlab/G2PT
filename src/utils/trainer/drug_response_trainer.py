@@ -41,7 +41,8 @@ class DrugResponseTrainer(object):
         self.total_train_step = len(self.drug_response_dataloader_drug)*args.epochs# + len(self.drug_response_dataloader_cellline)*args.epochs
         #self.scheduler = get_linear_schedule_with_warmup(self.optimizer, int(0.2 * self.total_train_step),
         #                                                  self.total_train_step)
-        self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, 10)
+        #self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, 10)
+        self.scheduler = optim.lr_scheduler.CyclicLR(self.optimizer, base_lr=args.lr/10, max_lr=args.lr, cycle_momentum=False)
         self.nested_subtrees_forward = self.drug_response_dataloader_drug.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='forward')
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
@@ -55,6 +56,7 @@ class DrugResponseTrainer(object):
         self.fix_embedding = fix_embedding
         self.g2p_module_names = ["Mut2Sys", "Sys2Cell", "Cell2Sys"]
         self.performance = {}
+        self.loss = {}
         
         if fix_embedding:
             if self.args.multiprocessing_distributed:
@@ -68,14 +70,14 @@ class DrugResponseTrainer(object):
 
         self.best_model = self.drug_response_model
         best_performance = 0
-        for epoch in range(epochs):
-            self.train_epoch(epoch + 1)
+        for epoch in range(1, epochs+1):
+            self.train_epoch(epoch)
             gc.collect()
             torch.cuda.empty_cache()
 
-            if (epoch % self.args.val_step)==0 & (epoch != 0):
+            if (epoch % self.args.val_step)==0:
                 if self.validation_dataloader is not None:
-                    performance = self.evaluate(self.drug_response_model, self.validation_dataloader, epoch+1, name="Validation")
+                    performance = self.evaluate(self.drug_response_model, self.validation_dataloader, epoch, name="Validation")
                     if performance > best_performance:
                         self.best_model = copy.deepcopy(self.drug_response_model).to('cpu')
                     torch.cuda.empty_cache()
@@ -89,13 +91,15 @@ class DrugResponseTrainer(object):
                             torch.save({"arguments": self.args, "state_dict":self.drug_response_model.module.state_dict()}, output_path_epoch)
                         else:
                             torch.save({"arguments": self.args, "state_dict":self.drug_response_model.state_dict()}, output_path_epoch)
-            self.scheduler.step()
 
         out = output_path.split("/")
         folder = out[0]
         fold = out[1].split("_")[2]
         with open(folder+'/val_performance_'+fold+'.pkl', 'wb') as handle:
             pickle.dump(self.performance, handle)
+
+        with open(folder+'/epoch_loss.pkl', 'wb') as handle:
+            pickle.dump(self.loss, handle)
 
     def get_best_model(self):
         return self.best_model
@@ -214,7 +218,7 @@ class DrugResponseTrainer(object):
             loss.backward()
             nn.utils.clip_grad_norm_(self.drug_response_model.parameters(), 1)
             self.optimizer.step()
-            #self.scheduler.step()
+            self.scheduler.step()
             #self.drug_response_model.compound_encoder = self.compound_encoder
             if self.fix_embedding:
                 self.drug_response_model.system_embedding = self.system_embedding
@@ -223,6 +227,7 @@ class DrugResponseTrainer(object):
             dataloader_with_tqdm.set_description(
                     "%s Train epoch: %d, Compound loss %.3f,  Drug Response loss: %.3f, CCCLoss: %.3f, FeatureLoss: %.3f" % (
                         name, epoch, mean_comp_loss / (i + 1), mean_response_loss / (i + 1), mean_ccc_loss / (i + 1), mean_feature_loss/(i+1)))
+            self.loss[epoch] = loss
             del loss
             del drug_response_loss, ccc_loss
             del drug_response_predicted
