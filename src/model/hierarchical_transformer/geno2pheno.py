@@ -1,16 +1,20 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
-from src.model.hierarchical_transformer import PositionWiseFeedForward, MultiHeadedAttention
+from src.model.hierarchical_transformer import PositionWiseFeedForward, MultiHeadedDiffAttention, MultiHeadedAttention
 
 
 
 class Genotype2Phenotype(nn.Module):
 
-    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, transform=True, activation='softmax'):
+    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, depth=1, 
+                 diff_transformer=False, transform=True, activation='softmax'):
         super().__init__()
         self.attn_heads = attn_heads
-        self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, activation=activation,
+        if diff_transformer:
+            self.attention = MultiHeadedDiffAttention(h=2*attn_heads, d_model=hidden, depth=depth)
+        else:
+            self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, activation=activation,
                                               transform=transform)
         self.feed_forward = PositionWiseFeedForward(d_model=hidden, d_ff=feed_forward_hidden, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
