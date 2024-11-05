@@ -92,7 +92,7 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
             else:
                 system_embedding, system_attention = self.get_system2comp(compound_embedding, system_embedding,
                                                                        attention=True, score=False)
-                gene_embedding, gene_attention = self.get_gene2comp(comound_embedding, gene_embedding, 
+                gene_embedding, gene_attention = self.get_gene2comp(compound_embedding, gene_embedding, 
                                                                     attention=True, score=False)
                 return prediction, system_attention, gene_attention
         else:
