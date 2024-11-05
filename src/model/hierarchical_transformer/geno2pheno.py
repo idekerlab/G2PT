@@ -12,7 +12,7 @@ class Genotype2Phenotype(nn.Module):
         super().__init__()
         self.attn_heads = attn_heads
         if diff_transformer:
-            self.attention = MultiHeadedDiffAttention(h=2*attn_heads, d_model=hidden, depth=depth)
+            self.attention = MultiHeadedDiffAttention(h=attn_heads, d_model=hidden, depth=depth)
         else:
             self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, activation=activation,
                                               transform=transform)
@@ -21,6 +21,7 @@ class Genotype2Phenotype(nn.Module):
         self.inner_norm = inner_norm
         self.outer_norm = outer_norm
         self.activation = nn.GELU()
+        self.diff_transformer = diff_transformer
 
     def forward(self, q, k, v, mask=None):
         result = self.attention.forward(q, k, v, mask=mask)
