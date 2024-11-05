@@ -5,7 +5,7 @@ from torch.utils.data.sampler import Sampler, BatchSampler
 from scipy.stats import zscore, skewnorm
 import torch
 from src.utils.tree import MutTreeParser
-from random import shuffle
+import random
 from torch.nn.utils.rnn import pad_sequence
 
 
@@ -46,6 +46,8 @@ class DrugResponseDataset(Dataset):
         return self.drug_response_df.shape[0]
 
     def __getitem__(self, index):
+        if self.drug_response_df.shape[1]>=5:
+            cell, drug, response, source, _ = self.drug_response_df.iloc[index].values
         if self.drug_response_df.shape[1]==4:
             cell, drug, response, source = self.drug_response_df.iloc[index].values
         elif self.drug_response_df.shape[1]==3:
@@ -211,7 +213,7 @@ class DrugBatchSampler(BatchSampler):
 
     def __iter__(self):
         count = 0
-        shuffle(self.result_dfs)
+        random.shuffle(self.result_dfs)
         while count < self.n_drugs:
             drug_df = self.result_dfs[count]
             weights = torch.tensor(drug_df["zscore"].tolist(), dtype=torch.double)
@@ -261,7 +263,7 @@ class CellLineBatchSampler(BatchSampler):
 
     def __iter__(self):
         count = 0
-        shuffle(self.result_dfs)
+        random.shuffle(self.result_dfs)
         while count < self.n_celllines:
             celline_df = self.result_dfs[count]
             weights = torch.tensor(celline_df["zscore"].tolist(), dtype=torch.double)
@@ -271,3 +273,78 @@ class CellLineBatchSampler(BatchSampler):
 
     def __len__(self):
         return self.n_celllines
+
+class MetaDrugResponseDataset(DrugResponseDataset):
+
+    def __init__(self, drug_response, cell2ind, cell2genotypes, compound_encoder, tree_parser: MutTreeParser,
+                 mut2gene=False, with_indices=False, class_ind=3):
+        super(MetaDrugResponseDataset, self).__init__(drug_response,
+                                                      cell2ind, cell2genotypes,
+                                                      compound_encoder,
+                                                      tree_parser,
+                                                      mut2gene=False, with_indices=False)
+
+        self.classes = list(self.drug_response_df[class_ind].unique())
+        self.drug_response_df_grouped = self.drug_response_df.groupby(by=class_ind)
+
+    def __len__(self):
+        return self.drug_response_df.shape[0]
+
+
+class DistributedMetaTaskSampler:
+    def __init__(self, dataset: MetaDrugResponseDataset, collator: DrugResponseCollator, num_classes_per_task, num_support, num_query, rank, world_size):
+        self.dataset = dataset
+        self.collator = collator
+        self.num_classes_per_task = num_classes_per_task
+        self.num_support = num_support
+        self.num_query = num_query
+        self.rank = rank
+        self.world_size = world_size
+        self.all_classes = list(self.dataset.classes)
+
+        # Initial assignment of classes per rank
+        self._shuffle_classes()
+
+    def _shuffle_classes(self):
+        # Shuffle the classes to provide variability each epoch
+        random.shuffle(self.all_classes)
+
+        # Split classes into chunks assigned to each GPU
+        self.classes_per_rank = len(self.all_classes) // self.world_size
+        start_idx = self.rank * self.classes_per_rank
+        end_idx = start_idx + self.classes_per_rank
+        self.assigned_classes = self.all_classes[start_idx:end_idx]
+
+    def get_n_class_samples(self, class_label, n_samples):
+        indices = self.dataset.drug_response_df_grouped.groups[class_label].tolist()
+        random.shuffle(indices)
+        indices = indices[:n_samples]
+        return [self.dataset[i] for i in indices]
+
+    def sample_task(self):
+        # Randomly sample a subset of classes assigned to this GPU
+        selected_classes = random.sample(self.assigned_classes, self.num_classes_per_task)
+
+        support_set = []
+        query_set = []
+
+        for class_label in selected_classes:
+            # Get all samples for the selected class
+            class_samples = self.get_n_class_samples(class_label, self.num_support+self.num_query)
+            # Shuffle the class samples
+            random.shuffle(class_samples)
+
+            # Split samples into support and query sets
+            support_samples = class_samples[:self.num_support]
+            query_samples = class_samples[self.num_support:self.num_support + self.num_query]
+
+            support_set.extend(support_samples)
+            query_set.extend(query_samples)
+
+        # Convert support and query sets to tensors
+        support = self.collator([x for x in support_set])
+        query = self.collator([x for x in query_set])
+
+        return support, query
+
+
