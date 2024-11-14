@@ -66,7 +66,7 @@ to run the training scripts:
 
 
 3. Training, validation, test covariates files
-   * Training, validation, test file include sample ID, response value, and covariates.
+   * Training, validation, test file include FID, IID, phenotype value, and covariates.
    * same as `.cov` in [PLINK](https://www.cog-genomics.org/plink/1.9/formats#cov)
    * (Future work) If you do not put `.cov` while you put PLINK bfiles. Covariates will be generated from `.fam` file.  
    * You should include `PHENOTYPE` in training and validation covariate file 
@@ -86,10 +86,10 @@ There are several optional parameters that you can provide in addition to the in
    * _--hiddens-dims_: embedding and hierarchical transformer dimension size
 3. Training parameters: 
    * _--epochs_ : the number of epoch to run during the training phase. The default is set to 256.
-   * _--val-step_: Validation step
+   * _--val-step_: Validation step to measure performance on validation dataset during training
    * _--batch-size_ : the size of each batch to process at a time. The default is set to 5000.
 You may increase this number to speed up the training process within the memory capacity
-   * _--z-weight_ : for the continuous phenotype, with high `z_weight` will be more sampled  
+   * _--z-weight_ : for the continuous phenotype, with high `z-weight` will be more sampled  
    * _--dropout_: dropout option. Default is set 0.2
    * _--lr_ : Learning rate. Default is set 0.001.
    * _--wd_ : Weight decay. Default is set 0.001.
@@ -105,7 +105,7 @@ You may increase this number to speed up the training process within the memory 
      * _--dist-url_ : distribute url, `tcp://127.0.0.1:2222`
      * _--dist_backend_ : distribute backend default is `nccl`
 5. Model input and output:
-   * _--model_: if you have trained model, put the path to the trained model.
+   * _--model_: if you have trained model to load, put the path to the trained model.
    * _--out_: a name of directory where you want to store the trained models.
 
 
@@ -126,7 +126,7 @@ usage: train_snp2p_model.py \
                       --val-step VAL_STEP \
                       --jobs JOBS \
                       --cuda 0 \
-                      --hidden_dims HIDDEN_DIMS \
+                      --hidden-dims HIDDEN_DIMS \
                       --out OUT
 ```
 
@@ -144,14 +144,14 @@ usage: train_snp2p_model.py \
                       --wd WD \
                       --batch_size BATCH_SIZE \
                       --dropout DROPOUT \
-                      --val_step VAL_STEP \
+                      --val-step VAL-STEP \
                       --jobs JOBS \    
                       --dist-backend 'nccl' \
                       --dist-url 'tcp://127.0.0.1:2222' \ 
                       --multiprocessing-distributed \ 
                       --world-size 1 \ 
                       --rank 0 \
-                      --hidden_dims HIDDEN_DIMS \
+                      --hidden-dims HIDDEN_DIMS \
                       --out OUT
 ```
 
