@@ -8,7 +8,6 @@ from scipy.stats import spearmanr
 from tqdm import tqdm
 import numpy as np
 import copy
-from transformers import get_linear_schedule_with_warmup
 from src.utils.trainer import CCCLoss
 
 

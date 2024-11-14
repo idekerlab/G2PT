@@ -6,7 +6,6 @@ from tqdm import tqdm
 from src.utils.data import move_to
 import numpy as np
 import copy
-from transformers import get_linear_schedule_with_warmup
 
 
 class DrugTrainer(object):

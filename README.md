@@ -25,12 +25,9 @@ To train a new model using a custom data set, first make sure that you have
 a proper virtual environment set up. Also make sure that you have all the required files
 to run the training scripts:
 
-1. Genotype indexing files:
-    * Tab-delimited files to index snp, gene. 
-      * _--snp2id_ : index of SNP, the first column indicates index and the second column indicates SNP ID 
-      * _--gene2id.txt_ : index of gene, the first column indicates index and the second column indicates gene
-2. Participant Genotype files:
-    * Tab-delimited file containing personal genotype data. 
+1. Participant Genotype files:
+    * You can put [PLINK binary file](https://www.cog-genomics.org/plink/1.9/input#bed) 
+    * Or you can put tab-delimited file containing personal genotype data to reduce memory usage 
       * Index will indicate Sample ID. 
       * `homozygous_a0`, `heterozygous`, `homozygous_a1` contain index of SNP by the allele   
 
@@ -39,7 +36,7 @@ to run the training scripts:
 | 1000909 | 0,1,3,5,7,9   | 2,4,5        | 6,8           |
 | 1000303 | 1,3,6,7,8,9   | 2,5          | 4             |
 
-4. Ontology (hierarchy) file: _--onto_ :
+2. Ontology (hierarchy) file: _--onto_ :
     * A tab-delimited file that contains the ontology (hierarchy) that defines the structure of a branch
     of a G2TP model that encodes the genotypes. The first column is always a term (subsystem or pathway),
     and the second column is a term or a gene.
@@ -68,12 +65,15 @@ to run the training scripts:
   * _--subtree_order_ : if you have nested subtrees in ontology, you can set this option default is `['default']` (no subtree inside)
 
 
-5. Training, validation, test files
-   * Training, validation, test file include sample ID, response value, and covariates. 
+3. Training, validation, test covariates files
+   * Training, validation, test file include sample ID, response value, and covariates.
+   * same as `.cov` in [PLINK](https://www.cog-genomics.org/plink/1.9/formats#cov)
+   * (Future work) If you do not put `.cov` while you put PLINK bfiles. Covariates will be generated from `.fam` file.  
+   * You should include `PHENOTYPE` in training and validation covariate file 
 
-| Sample_ID | response | sex | age | age_sq | cov_1 | cov_2 | ... | cov_n |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | 
-| 10008090 | 1.343 | 1 | 64 | 3489 | 0.2 | 0.3 | ... | 0.5 |
+| FID      | IID   | PHENOTYPE | SEX | AGE | COV1 | COV2 | ... | COVN |
+|----------|-------|-----------|-----|-----|------|--------| --- |--------| 
+| 10008090 | 10008090 | 1.2       | 1   | 48  | 3    | 0.3    | ... | 0.5    |
 
 
 There are several optional parameters that you can provide in addition to the input files:
@@ -83,13 +83,13 @@ There are several optional parameters that you can provide in addition to the in
    * _--env2sys_ : determines whether model will do Env2Sys propagation
    * _--sys2gene_ : determines whether model will do Gene2Sys propagation
 2. Model parameter:
-   * _--hiddens_dims_: embedding and hierarchical transformer dimension size
+   * _--hiddens-dims_: embedding and hierarchical transformer dimension size
 3. Training parameters: 
    * _--epochs_ : the number of epoch to run during the training phase. The default is set to 256.
-   * _--val_step_: Validation step
-   * _--batch_size_ : the size of each batch to process at a time. The default is set to 5000.
+   * _--val-step_: Validation step
+   * _--batch-size_ : the size of each batch to process at a time. The default is set to 5000.
 You may increase this number to speed up the training process within the memory capacity
-   * _--z_weight_ : for the continuous phenotype, with high `z_weight` will be more sampled  
+   * _--z-weight_ : for the continuous phenotype, with high `z_weight` will be more sampled  
    * _--dropout_: dropout option. Default is set 0.2
    * _--lr_ : Learning rate. Default is set 0.001.
    * _--wd_ : Weight decay. Default is set 0.001.
@@ -99,10 +99,10 @@ You may increase this number to speed up the training process within the memory 
      is to use GPU 0.
    * Multi GPU option (multi-node will be supported)
      * _--multiprocessing-distributed_ : determines whether model will be trained in multi-gpu distributed set-up
-     * _--world_size_ : size of world, default is 1
+     * _--world-size_ : size of world, default is 1
      * _--rank_ : rank, default is 0
-     * _--local_rank_ : local rank, default is 0
-     * _--dist_url_ : distribute url, `tcp://127.0.0.1:2222`
+     * _--local-rank_ : local rank, default is 0
+     * _--dist-url_ : distribute url, `tcp://127.0.0.1:2222`
      * _--dist_backend_ : distribute backend default is `nccl`
 5. Model input and output:
    * _--model_: if you have trained model, put the path to the trained model.
@@ -115,16 +115,15 @@ You may increase this number to speed up the training process within the memory 
 usage: train_snp2p_model.py \
                       --onto ONTO \
                       --snp2gene SNP2Gene \
-                      --snp2id SNP2ID \
-                      --gene2id GENE2ID \ 
-                      --genotype genotype_file_dir \
-                      --train TRAIN --val VAL --test TEST \
+                      --train-bfile train  --train-cov train.cov \
+                      --val-bfile val  --val-cov val.cov \
+                      --test-bfile train  --test-cov test.cov \
                       --epochs EPOCHS \
                       --lr LR \
                       --wd WD \
-                      --batch_size BATCH_SIZE \
+                      --batch-size BATCH_SIZE \
                       --dropout DROPOUT \
-                      --val_step VAL_STEP \
+                      --val-step VAL_STEP \
                       --jobs JOBS \
                       --cuda 0 \
                       --hidden_dims HIDDEN_DIMS \
@@ -137,10 +136,9 @@ usage: train_snp2p_model.py \
 usage: train_snp2p_model.py \
                       --onto ONTO \
                       --snp2gene SNP2Gene \
-                      --snp2id SNP2ID \
-                      --gene2id GENE2ID \ 
-                      --genotype genotype_file_dir \
-                      --train TRAIN --val VAL --test TEST \
+                      --train-bfile train  --train-cov train.cov \
+                      --val-bfile val  --val-cov val.cov \
+                      --test-bfile train  --test-cov test.cov \
                       --epochs EPOCHS \
                       --lr LR \
                       --wd WD \
@@ -164,5 +162,5 @@ you can train model with sample data by using [train_model.sh](train_model.sh)
 ## Future Works
 
 - [x] Applying [Differential Transformer](https://github.com/microsoft/unilm/tree/master/Diff-Transformer) to genetic factor translation
-- [ ] Build data loader for `plink` binary file using [`pandas-plink`](https://pypi.org/project/pandas-plink/) 
-
+- [x] Build data loader for `plink` binary file using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/) 
+- [ ] Inferring covariates from `.fam`

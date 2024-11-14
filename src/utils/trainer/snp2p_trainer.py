@@ -10,7 +10,7 @@ from tqdm import tqdm
 import numpy as np
 import copy
 from src.utils.data import move_to
-from src.utils.trainer import CCCLoss
+from src.utils.trainer import CCCLoss, FocalLoss
 import copy
 
 
@@ -24,7 +24,7 @@ class SNP2PTrainer(object):
         if args.regression:
             self.phenotype_loss = nn.MSELoss()
         else:
-            self.phenotype_loss = nn.BCELoss()
+            self.phenotype_loss = FocalLoss(alpha=1, gamma=2)#nn.BCELoss()
         self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=args.lr,
                                      weight_decay=args.wd)
         self.validation_dataloader = validation_dataloader
@@ -49,6 +49,7 @@ class SNP2PTrainer(object):
     def train(self, epochs, output_path=None):
         ccc = False
 
+        #performance = self.evaluate(self.snp2p_model, self.validation_dataloader, 0, name='Validation', print_importance=False)
         #self.best_model = self.snp2p_model
         best_performance = 0
         for epoch in range(self.args.start_epoch, epochs):
@@ -61,7 +62,7 @@ class SNP2PTrainer(object):
                     if not self.args.multiprocessing_distributed or (self.args.multiprocessing_distributed
                                                                      and self.args.rank % torch.cuda.device_count() == 0):
                         performance = self.evaluate(self.snp2p_model, self.validation_dataloader, epoch + 1,
-                                                    name="Validation", print_importance=True)
+                                                    name="Validation", print_importance=False)
                         torch.cuda.empty_cache()
                         gc.collect()
                 if output_path:
@@ -93,7 +94,7 @@ class SNP2PTrainer(object):
                 trues.append(batch['phenotype'])
                 covariates.append(batch['covariates'].detach().cpu().numpy())
                 batch = move_to(batch, self.device)
-                phenotype_predicted, sys_score, gene_score = model(batch['genotype'], batch['covariates'],
+                phenotype_predicted = model(batch['genotype'], batch['covariates'],
                                                                    self.nested_subtrees_forward,
                                                                    self.nested_subtrees_backward,
                                                                    gene2sys_mask=self.gene2sys_mask,#batch['gene2sys_mask'],
@@ -101,12 +102,12 @@ class SNP2PTrainer(object):
                                                                    sys2env=self.args.sys2env,
                                                                    env2sys=self.args.env2sys,
                                                                    sys2gene=self.args.sys2gene,
-                                                                   score=True)
+                                                                   )
                 #for phenotype_predicted_i, module_name in zip(phenotype_predicted, self.g2p_module_names):
                 phenotype_predicted_detached = phenotype_predicted.detach().cpu().numpy()
 
-                sys_scores.append(sys_score.detach().cpu().numpy())
-                gene_scores.append(gene_score.detach().cpu().numpy())
+                #sys_scores.append(sys_score.detach().cpu().numpy())
+                #gene_scores.append(gene_score.detach().cpu().numpy())
 
                 results.append(phenotype_predicted_detached)
                 dataloader_with_tqdm.set_description("%s epoch: %d" % (name, epoch))
@@ -182,7 +183,7 @@ class SNP2PTrainer(object):
         self.snp2p_model.train()
         if self.args.multiprocessing_distributed:
             self.snp2p_dataloader.sampler.set_epoch(epoch)
-        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", ccc=ccc, sex=True)
+        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", ccc=ccc, sex=False)
 
     def iter_minibatches(self, dataloader, epoch, name="", ccc=False, sex=False):
         mean_response_loss = 0.

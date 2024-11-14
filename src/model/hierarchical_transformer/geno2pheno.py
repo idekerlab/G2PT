@@ -12,7 +12,7 @@ class Genotype2Phenotype(nn.Module):
         self.attn_heads = attn_heads
         #self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, activation=activation,
         #                                      transform=transform)
-        self.attention = MultiheadDiffAttn(h=attn_heads*2, d_model=hidden, depth=1)
+        self.attention = MultiheadDiffAttn(h=attn_heads, d_model=hidden, depth=1)
         self.feed_forward = PositionWiseFeedForward(d_model=hidden, d_ff=feed_forward_hidden, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
         self.inner_norm = inner_norm

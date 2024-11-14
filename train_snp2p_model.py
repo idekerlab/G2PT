@@ -18,7 +18,7 @@ from prettytable import PrettyTable
 
 from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
-from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler
+from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler, PLINKDataset
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
 from datetime import timedelta
@@ -42,34 +42,39 @@ def count_parameters(model):
 def main():
     parser = argparse.ArgumentParser(description='Some beautiful description')
     # Participant Genotype file
-    parser.add_argument('--genotype', help='Personal genotype file', type=str)
+    parser.add_argument('--genotype-csv', help='Personal genotype file', type=str, default=None)
     parser.add_argument('--n_cov', help='The number of covariates', type=int, default=4)
     # Indexing files
-    parser.add_argument('--snp2id', help='SNP to ID mapping file', type=str)
-    parser.add_argument('--gene2id', help='Gene to ID mapping file', type=str)
+    #parser.add_argument('--snp2id', help='SNP to ID mapping file', type=str)
+    #parser.add_argument('--gene2id', help='Gene to ID mapping file', type=str)
     # Hierarchy files
     parser.add_argument('--onto', help='Ontology file used to guide the neural network', type=str)
     parser.add_argument('--snp2gene', help='SNP to gene mapping file', type=str)
     parser.add_argument('--subtree_order', help='Subtree cascading order', nargs='+', default=['default'])
-    # Training, validation, test files
-    parser.add_argument('--train', help='Training dataset', type=str)
-    parser.add_argument('--val', help='Validation dataset', type=str, default=None)
-    parser.add_argument('--test', help='Test dataset', type=str, default=None)
+
+    # Train bfile format
+    parser.add_argument('--train-bfile', help='Training genotype dataset', type=str, default=None)
+    parser.add_argument('--train-cov', help='Training covariates dataset', type=str, default=None)
+    parser.add_argument('--val-bfile', help='Validation dataset', type=str, default=None)
+    parser.add_argument('--val-cov', help='Validation covariates dataset', type=str, default=None)
+    parser.add_argument('--test-bfile', help='Test dataset', type=str, default=None)
+    parser.add_argument('--test-cov', help='Validation covariates dataset', type=str, default=None)
+
     # Propagation option
     parser.add_argument('--sys2env', action='store_true', default=False)
     parser.add_argument('--env2sys', action='store_true', default=False)
     parser.add_argument('--sys2gene', action='store_true', default=False)
     parser.add_argument('--regression', action='store_true', default=False)
     # Model parameters
-    parser.add_argument('--hidden_dims', help='hidden dimension for model', default=256, type=int)
+    parser.add_argument('--hidden-dims', help='hidden dimension for model', default=256, type=int)
     # Training parameters
     parser.add_argument('--epochs', help='Training epochs for training', type=int, default=300)
     parser.add_argument('--lr', help='Learning rate', type=float, default=0.001)
     parser.add_argument('--wd', help='Weight decay', type=float, default=0.001)
-    parser.add_argument('--z_weight', help='Sampling weight', type=float, default=1.0)
+    parser.add_argument('--z-weight', help='Sampling weight', type=float, default=1.0)
     parser.add_argument('--dropout', help='dropout ratio', type=float, default=0.2)
-    parser.add_argument('--batch_size', help='Batch size', type=int, default=128)
-    parser.add_argument('--val_step', help='Validation step', type=int, default=20)
+    parser.add_argument('--batch-size', help='Batch size', type=int, default=128)
+    parser.add_argument('--val-step', help='Validation step', type=int, default=20)
     parser.add_argument('--jobs', help="The number of threads", type=int, default=0)
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
@@ -78,7 +83,7 @@ def main():
                         help='number of nodes for distributed training')
     parser.add_argument('--rank', default=-1, type=int,
                         help='node rank for distributed training')
-    parser.add_argument('--local_rank', default=1)
+    parser.add_argument('--local-rank', default=1)
     parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
                         help='url used to set up distributed training')
     parser.add_argument('--dist-backend', default='nccl', type=str,
@@ -99,10 +104,6 @@ def main():
                       'disable data parallelism.')
 
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
-
-    print("Loading Genotype dataset... at %s"%args.genotype)
-    args.genotype = pd.read_csv(args.genotype, index_col=0, sep='\t')#.astype('int32')
-    print("Loading done...")
 
     ngpus_per_node = torch.cuda.device_count()
     if args.multiprocessing_distributed:
@@ -153,13 +154,35 @@ def main_worker(rank, ngpus_per_node, args):
     else:
         device = torch.device("cpu")
 
-    tree_parser = SNPTreeParser(args.onto, args.snp2gene, args.gene2id, args.snp2id)
+    tree_parser = SNPTreeParser(args.onto, args.snp2gene)
 
+    fix_system = False
+
+    if args.train_bfile is None:
+        print("Loading Genotype dataset... at %s" % args.genotype_csv)
+        genotype = pd.read_csv(args.genotype_csv, index_col=0, sep='\t')  # .astype('int32')
+        print("Loading done...")
+        train_dataset = pd.read_csv(args.train_cov, header=None, sep='\t')
+        snp2p_dataset = SNP2PDataset(train_dataset, genotype, tree_parser, n_cov=args.n_cov)
+    else:
+        print("Loading PLINK bfile... at %s" % args.train_bfile)
+        snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov)
+        print("Loading done...")
+
+    snp2p_collator = SNP2PCollator(tree_parser)
+
+    print("Summary of trainable parameters")
+    if args.sys2env:
+        print("Model will use Sys2Env")
+    if args.env2sys:
+        print("Model will use Env2Sys")
+    if args.sys2gene:
+        print("Model will use Sys2Gene")
     if args.model is not None:
         snp2p_model_dict = torch.load(args.model, map_location=device)
         print(args.model, 'loaded')
         snp2p_model = SNP2PhenotypeModel(tree_parser, args.hidden_dims, subtree_order=args.subtree_order,
-                                         dropout=args.dropout, n_covariates=args.n_cov,
+                                         dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          binary=(not args.regression), activation='softmax')
         print(args.model, 'initialized')
         snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
@@ -170,7 +193,7 @@ def main_worker(rank, ngpus_per_node, args):
 
     else:
         snp2p_model = SNP2PhenotypeModel(tree_parser, args.hidden_dims, subtree_order=args.subtree_order,
-                                         dropout=args.dropout, n_covariates=args.n_cov,
+                                         dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          binary=(not args.regression), activation='softmax')
         args.start_epoch = 0
 
@@ -182,7 +205,7 @@ def main_worker(rank, ngpus_per_node, args):
         # DistributedDataParallel will use all available devices.
         if args.cuda is None:
             #torch.cuda.set_device(args.gpu)
-            print("Distributed training are set up")
+            print("Distributed trainings are set up")
             snp2p_model.to(device)
             # When using a single GPU per process and per
             # DistributedDataParallel, we need to divide the batch size
@@ -209,21 +232,6 @@ def main_worker(rank, ngpus_per_node, args):
         print("Summary of trainable parameters")
         count_parameters(snp2p_model)
 
-    fix_system = False
-    print("Summary of trainable parameters")
-    if args.sys2env:
-        print("Model will use Sys2Env")
-    if args.env2sys:
-        print("Model will use Env2Sys")
-    if args.sys2gene:
-        print("Model will use Sys2Gene")
-
-
-    train_dataset = pd.read_csv(args.train, header=None, sep='\t')
-
-    snp2p_dataset = SNP2PDataset(train_dataset, args.genotype, tree_parser, n_cov=args.n_cov)
-    snp2p_collator = SNP2PCollator(tree_parser)
-
     if args.distributed:
         if args.regression:
             #snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank,
@@ -241,9 +249,14 @@ def main_worker(rank, ngpus_per_node, args):
 
     snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
                                   num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler)
-    if args.val is not None:
-        val_dataset = pd.read_csv(args.val, header=None, sep='\t')
-        val_snp2p_dataset = SNP2PDataset(val_dataset, args.genotype, tree_parser, age_mean=snp2p_dataset.age_mean,
+
+    if args.val_bfile is not None:
+        val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov)
+        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
+                                          num_workers=args.jobs, collate_fn=snp2p_collator)
+    elif args.val_cov is not None:
+        val_dataset = pd.read_csv(args.val_cov, header=None, sep='\t')
+        val_snp2p_dataset = SNP2PDataset(val_dataset, genotype, tree_parser, age_mean=snp2p_dataset.age_mean,
                                          age_std=snp2p_dataset.age_std, n_cov=args.n_cov)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                               num_workers=args.jobs, collate_fn=snp2p_collator)
@@ -253,9 +266,6 @@ def main_worker(rank, ngpus_per_node, args):
     drug_response_trainer = SNP2PTrainer(snp2p_model, snp2p_dataloader, device, args,
                                                 validation_dataloader=val_snp2p_dataloader, fix_system=fix_system)
     drug_response_trainer.train(args.epochs, args.out)
-
-
-
 
 if __name__ == '__main__':
     main()

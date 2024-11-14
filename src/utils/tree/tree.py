@@ -5,13 +5,14 @@ import torch
 
 class TreeParser(object):
 
-    def __init__(self, ontology, gene2ind):
+    def __init__(self, ontology):
         self.ontology = pd.read_csv(ontology, sep='\t', names=['parent', 'child', 'interaction'])
-        gene2ind = pd.read_csv(gene2ind, sep='\t', names=['index', 'gene'])
-        self.gene2ind = {gene:index for index, gene in zip(gene2ind['index'], gene2ind['gene'])}
-        self.ind2gene = {index:gene for index, gene in zip(gene2ind['index'], gene2ind['gene'])}
+        #gene2ind = pd.read_csv(gene2ind, sep='\t', names=['index', 'gene'])
         self.system_df = self.ontology.loc[self.ontology['interaction'] != 'gene']
         self.gene2sys_df = self.ontology.loc[self.ontology['interaction'] == 'gene']
+        genes = self.gene2sys_df['child'].unique()
+        self.gene2ind = {gene: index for index, gene in enumerate(genes)}
+        self.ind2gene = {index: gene for index, gene in enumerate(genes)}
         systems = np.unique(self.system_df[['parent', 'child']].values)
         self.sys2ind = {system: i for i, system in enumerate(systems)}
         self.ind2sys = {i:system for system, i in self.sys2ind.items()}

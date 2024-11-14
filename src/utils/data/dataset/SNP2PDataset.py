@@ -1,16 +1,14 @@
 import pandas as pd
-import numpy as np
 from torch.utils.data.dataset import Dataset
-from torch.utils.data.sampler import Sampler, BatchSampler
+from torch.utils.data.sampler import Sampler
 from scipy.stats import zscore, skewnorm
 import torch
 from src.utils.tree import TreeParser, SNPTreeParser
 from torch.nn.utils.rnn import pad_sequence
-from torch.nn.functional import one_hot
 import time
-from random import shuffle
-from ast import literal_eval
 from torch.utils.data.distributed import DistributedSampler
+from sgkit.io import plink
+import numpy as np
 
 
 class SNP2PDataset(Dataset):
@@ -82,6 +80,87 @@ class SNP2PDataset(Dataset):
         result_dict["datatime"] = torch.tensor(end-start)
         result_dict["covariates"] = covariates
 
+        return result_dict
+
+class PLINKDataset(Dataset):
+
+    def __init__(self, tree_parser, bfile, cov, age_mean=None, age_std=None):
+        self.tree_parser = tree_parser
+        plink_data = plink.read_plink(path=bfile)
+        self.genotype = pd.DataFrame(plink_data.call_genotype.as_numpy().sum(axis=-1).T)
+        self.genotype.index = plink_data.sample_id.values
+        self.genotype.columns = plink_data.variant_id.values
+        snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
+        self.genotype = self.genotype[snp_sorted]
+        self.cov_df = pd.read_csv(cov, sep='\t')
+        self.cov_df['FID'] = self.cov_df['FID'].astype(int)
+        self.cov_df['IID'] = self.cov_df['IID'].astype(int)
+        self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov!='PHENOTYPE']
+        self.n_cov = len(self.cov_ids) + 1 ## +1 for sex cov
+        self.has_phenotype = False
+        if 'PHENOTYPE' in self.cov_df.columns:
+            self.has_phenotype = True
+
+        if 'AGE' in self.cov_ids:
+            self.n_cov += 1 # +1 for age^2
+            if age_mean is None:
+                self.age_mean = self.cov_df['AGE'].mean()
+            else:
+                self.age_mean = age_mean
+            if age_std is None:
+                self.age_std = self.cov_df['AGE'].std()
+            else:
+                self.age_std = age_std
+        print("Model will use %d Covariates"%self.n_cov)
+
+    def __len__(self):
+        return self.cov_df.shape[0]
+
+    def __getitem__(self, index):
+        start = time.time()
+        covariates = self.cov_df.iloc[index]
+        iid = str(int(covariates['IID']))
+        sample2snp_dict = {}
+        homozygous_a1 = np.where(self.genotype.loc[iid]==2)[0]
+        heterozygous = np.where(self.genotype.loc[iid]==1)[0]
+        result_dict = dict()
+        snp_type_dict = dict()
+        snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
+        snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
+        sample2snp_dict['embedding'] = snp_type_dict
+        heterozygous_gene_indices = torch.unique(snp_type_dict['heterozygous']['gene']).tolist()
+        homozygous_a1_gene_indices = torch.unique(snp_type_dict['homozygous_a1']['gene']).tolist()
+        gene2sys_mask_for_gene = torch.zeros((self.tree_parser.n_systems, self.tree_parser.n_genes), dtype=torch.bool)
+        gene2sys_mask_for_gene[:, homozygous_a1_gene_indices] = 1
+        gene2sys_mask_for_gene[:, heterozygous_gene_indices] = 1
+        result_dict["gene2sys_mask"] = torch.tensor(self.tree_parser.gene2sys_mask, dtype=torch.bool) & gene2sys_mask_for_gene
+        if self.has_phenotype:
+            result_dict['phenotype'] = covariates['PHENOTYPE']
+        covariates_tensor = [0]*self.n_cov
+        sex = covariates['SEX']
+        i_cov = 0
+        if int(sex)==-9:
+            pass
+        else:
+            covariates_tensor[int(sex)] = 1
+        i_cov += 2
+        if 'AGE' in self.cov_ids:
+            age = covariates['AGE']
+            age_sq = age ** 2
+            covariates_tensor[2] = (age - self.age_mean)/self.age_std
+            covariates_tensor[3] = (age_sq - self.age_mean**2)/(self.age_std**2)
+            i_cov += 2
+        for cov_id in self.cov_ids:
+            if (cov_id=='SEX') or (cov_id=='AGE'):
+                continue
+            covariates_tensor[i_cov] = covariates[cov_id]
+            i_cov += 1
+        covariates_tensor = torch.tensor(covariates_tensor, dtype=torch.float32)
+        covariates_tensor = covariates_tensor#torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
+        result_dict['genotype'] = sample2snp_dict
+        end = time.time()
+        result_dict["datatime"] = torch.tensor(end-start)
+        result_dict["covariates"] = covariates_tensor
         return result_dict
 
 class SNP2PCollator(object):

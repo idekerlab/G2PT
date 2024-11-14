@@ -6,15 +6,16 @@ from . import TreeParser
 
 class SNPTreeParser(TreeParser):
 
-    def __init__(self, ontology, snp2gene, gene2ind, snp2id, by_chr=False):
-        super(SNPTreeParser, self).__init__(ontology, gene2ind)
+    def __init__(self, ontology, snp2gene, by_chr=False):
+        super(SNPTreeParser, self).__init__(ontology)
         print("%d in gene2sys mask" % self.gene2sys_mask.sum())
-        snp2ind = pd.read_csv(snp2id, sep='\t', names=['index', 'snp'])
-        self.snp2ind = {snp: index for index, snp in zip(snp2ind['index'], snp2ind['snp'])}
-        self.ind2snp = {index: snp for index, snp in zip(snp2ind['index'], snp2ind['snp'])}
+        #self.snp2gene_df = self.ontology.loc[self.ontology['interaction'] == 'snp']
+        self.snp2gene_df = pd.read_csv(snp2gene, sep='\t', names=['snp', 'gene', 'chr'])
+        snps = self.snp2gene_df['snp'].unique()
+        self.snp2ind = {snp: index for index, snp in enumerate(snps)}
+        self.ind2snp = {index: snp for index, snp in enumerate(snps)}
         self.n_snps = len(self.snp2ind)
         self.snp_pad_index = self.n_snps
-        self.snp2gene_df = pd.read_csv(snp2gene, sep='\t', names=['snp', 'gene', 'chr'])
         self.chromosomes = sorted(self.snp2gene_df.chr.unique())
         self.gene2chr = {gene:CHR for gene, CHR in zip(self.snp2gene_df['gene'], self.snp2gene_df['chr'])}
         self.snp2chr = {snp: CHR for snp, CHR in zip(self.snp2gene_df['snp'], self.snp2gene_df['chr'])}

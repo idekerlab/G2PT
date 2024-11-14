@@ -197,19 +197,22 @@ def lambda_init_fn(depth):
 
 class MultiheadDiffAttn(nn.Module):
     def __init__(self, h, d_model, depth):
+        '''
+        Multi-head Diff Attn for special case with one-head
+        '''
         super().__init__()
         self.embed_dim = d_model
         # num_heads set to half of Transformer's #heads
         self.num_heads = h #// args.model_parallel_size
-        self.num_kv_heads = h // 2
-        self.n_rep = self.num_heads // self.num_kv_heads
+        self.num_kv_heads = h #// 2
+        self.n_rep = 2#self.num_heads // self.num_kv_heads
 
-        self.head_dim = d_model // h // 2
+        self.head_dim = d_model // 2
         self.scaling = self.head_dim ** -0.5
 
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model // self.n_rep, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model // self.n_rep, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
         self.lambda_init = lambda_init_fn(depth)
@@ -220,30 +223,29 @@ class MultiheadDiffAttn(nn.Module):
 
         self.subln = RMSNorm(2 * self.head_dim, eps=1e-5, elementwise_affine=False)
 
-    def forward(
+    def get_attention(
             self,
             q, k, v,
-            attn_mask=None,
+            mask=None,
     ):
         bsz, tgt_len, embed_dim = q.size()
         bsz, src_len, embed_dim = k.size()
 
         q = self.q_proj(q)
         k = self.k_proj(k)
-        v = self.v_proj(v)
 
         q = q.view(bsz, tgt_len, 2 * self.num_heads, self.head_dim)
-        k = k.view(bsz, src_len, 2 * self.num_kv_heads, self.head_dim)
-        v = v.view(bsz, src_len, self.num_kv_heads, 2 * self.head_dim)
+        k = k.view(bsz, src_len, self.num_kv_heads, self.head_dim)
 
         offset = src_len - tgt_len
         q = q.transpose(1, 2)
         k = repeat_kv(k.transpose(1, 2), self.n_rep)
-        v = repeat_kv(v.transpose(1, 2), self.n_rep)
+        #v = repeat_kv(v.transpose(1, 2), self.n_rep)
         q *= self.scaling
         attn_weights = torch.matmul(q, k.transpose(-1, -2))
-        if attn_mask is None:
-            attn_mask = torch.triu(
+        '''
+        if mask is None:
+            mask = torch.triu(
                 torch.zeros([tgt_len, src_len])
                     .float()
                     .fill_(float("-inf"))
@@ -251,17 +253,28 @@ class MultiheadDiffAttn(nn.Module):
                     1 + offset,
             )
         attn_weights = torch.nan_to_num(attn_weights)
-        attn_weights += attn_mask
+        attn_weights += mask
+        '''
         attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).type_as(
             attn_weights
         )
-
         lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float()).type_as(q)
         lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float()).type_as(q)
         lambda_full = lambda_1 - lambda_2 + self.lambda_init
         attn_weights = attn_weights.view(bsz, self.num_heads, 2, tgt_len, src_len)
         attn_weights = attn_weights[:, :, 0] - lambda_full * attn_weights[:, :, 1]
+        return attn_weights
 
+
+    def forward(self, q, k, v, mask=None):
+
+        bsz, tgt_len, embed_dim = q.size()
+        bsz, src_len, embed_dim = k.size()
+
+        attn_weights = self.get_attention(q, k, v, mask=mask)
+        v = self.v_proj(v)
+        v = v.view(bsz, src_len, self.num_kv_heads, self.embed_dim)
+        v = v.transpose(1, 2)
         attn = torch.matmul(attn_weights, v)
         attn = self.subln(attn)
         attn = attn * (1 - self.lambda_init)
