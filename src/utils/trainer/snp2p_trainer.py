@@ -24,7 +24,7 @@ class SNP2PTrainer(object):
         if args.regression:
             self.phenotype_loss = nn.MSELoss()
         else:
-            self.phenotype_loss = FocalLoss(alpha=1, gamma=2)#nn.BCELoss()
+            self.phenotype_loss = nn.BCELoss()
         self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=args.lr,
                                      weight_decay=args.wd)
         self.validation_dataloader = validation_dataloader

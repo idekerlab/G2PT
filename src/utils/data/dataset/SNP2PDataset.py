@@ -84,12 +84,14 @@ class SNP2PDataset(Dataset):
 
 class PLINKDataset(Dataset):
 
-    def __init__(self, tree_parser, bfile, cov, age_mean=None, age_std=None):
+    def __init__(self, tree_parser, bfile, cov, cov_mean_dict=None, cov_std_dict=None):
         self.tree_parser = tree_parser
+        print('Loading PLINK data at %s'%bfile)
         plink_data = plink.read_plink(path=bfile)
         self.genotype = pd.DataFrame(plink_data.call_genotype.as_numpy().sum(axis=-1).T)
         self.genotype.index = plink_data.sample_id.values
         self.genotype.columns = plink_data.variant_id.values
+        print("From PLINK %d variants with %d samples are queried" % (self.genotype.shape[1], self.genotype.shape[0]))
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
         self.genotype = self.genotype[snp_sorted]
         self.cov_df = pd.read_csv(cov, sep='\t')
@@ -97,10 +99,11 @@ class PLINKDataset(Dataset):
         self.cov_df['IID'] = self.cov_df['IID'].astype(int)
         self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov!='PHENOTYPE']
         self.n_cov = len(self.cov_ids) + 1 ## +1 for sex cov
+        self.genotype = self.genotype.loc[self.cov_df['IID'].map(str)]
         self.has_phenotype = False
         if 'PHENOTYPE' in self.cov_df.columns:
             self.has_phenotype = True
-
+        '''
         if 'AGE' in self.cov_ids:
             self.n_cov += 1 # +1 for age^2
             if age_mean is None:
@@ -111,10 +114,28 @@ class PLINKDataset(Dataset):
                 self.age_std = self.cov_df['AGE'].std()
             else:
                 self.age_std = age_std
+        '''
+
+        if cov_mean_dict is None:
+            self.cov_mean_dict = dict()
+            self.cov_std_dict = dict()
+            for cov in self.cov_ids:
+                if not self.is_binary(self.cov_df[cov]):
+                    self.cov_mean_dict[cov] = self.cov_df[cov].mean()
+                    self.cov_std_dict[cov] = self.cov_df[cov].std()
+        else:
+            self.cov_mean_dict = cov_mean_dict
+            self.cov_std_dict = cov_std_dict
+
         print("Model will use %d Covariates"%self.n_cov)
+
+
 
     def __len__(self):
         return self.cov_df.shape[0]
+
+    def is_binary(self, array):
+        return np.isin(array, [0, 1]).all()
 
     def __getitem__(self, index):
         start = time.time()
@@ -144,16 +165,22 @@ class PLINKDataset(Dataset):
         else:
             covariates_tensor[int(sex)] = 1
         i_cov += 2
+        '''
         if 'AGE' in self.cov_ids:
             age = covariates['AGE']
             age_sq = age ** 2
             covariates_tensor[2] = (age - self.age_mean)/self.age_std
             covariates_tensor[3] = (age_sq - self.age_mean**2)/(self.age_std**2)
             i_cov += 2
+        '''
         for cov_id in self.cov_ids:
-            if (cov_id=='SEX') or (cov_id=='AGE'):
+            if cov_id=='SEX':
                 continue
-            covariates_tensor[i_cov] = covariates[cov_id]
+            if cov_id in self.cov_mean_dict.keys():
+                cov_value = (covariates[cov_id]-self.cov_mean_dict[cov_id])/self.cov_std_dict[cov_id]
+            else:
+                cov_value = covariates[cov_id]
+            covariates_tensor[i_cov] = cov_value
             i_cov += 1
         covariates_tensor = torch.tensor(covariates_tensor, dtype=torch.float32)
         covariates_tensor = covariates_tensor#torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
@@ -205,16 +232,17 @@ class CohortSampler(Sampler):
 
     def __init__(self, dataset, n_samples=None, phenotype_col='phenotype', z_weight=1, sex_col=2):
         #super(DrugResponseSampler, self).__init__()
-        self.indices = dataset.index
-        self.num_samples = dataset.shape[0]
+        self.dataset = dataset.cov_df
+        self.indices = self.dataset.index
+        self.num_samples = self.dataset.shape[0]
         
-        phenotype_values = dataset[phenotype_col]
-        dataset_sex_0 = dataset.loc[dataset[sex_col]==0]
+        phenotype_values = self.dataset[phenotype_col]
+        dataset_sex_0 = self.dataset.loc[self.dataset[sex_col]==0]
         phenotype_values = dataset_sex_0[phenotype_col].values
         a, loc, scale = skewnorm.fit(phenotype_values)
         dataset_sex_0['phenotype'] = skewnorm(a, loc, scale*z_weight).pdf(phenotype_values)
 
-        dataset_sex_1 = dataset.loc[dataset[sex_col]==1]
+        dataset_sex_1 = self.dataset.loc[self.dataset[sex_col]==1]
         phenotype_values = dataset_sex_1[phenotype_col].values
         a, loc, scale = skewnorm.fit(phenotype_values)
         dataset_sex_1['phenotype'] = skewnorm(a, loc, scale*z_weight).pdf(phenotype_values)
@@ -242,21 +270,47 @@ class CohortSampler(Sampler):
         return self.num_samples
 
 
+class BinaryCohortSampler(Sampler):
+
+    def __init__(self, dataset, phenotype_col='PHENOTYPE'):
+        # super(DrugResponseSampler, self).__init__()
+        self.dataset = dataset.cov_df
+        self.indices = self.dataset.index
+        self.num_samples = self.dataset.shape[0]
+        class_count = np.bincount(self.dataset[phenotype_col].values)
+        class_weight = 1. / class_count
+        sample_weight = class_weight[self.dataset[phenotype_col].values]
+        self.weights = torch.tensor(sample_weight, dtype=torch.double)
+
+    def __iter__(self):
+        count = 0
+        index = [i for i in torch.multinomial(self.weights, self.num_samples, replacement=True)]
+        while count < self.num_samples:
+            # print(index[count], type(index[count]))
+            # result = index[count].item()
+            # print(result, type(result))
+            yield index[count].item()
+            count += 1
+
+    def __len__(self):
+        return self.num_samples
+
 
 class DistributedCohortSampler(DistributedSampler):
 
-    def __init__(self, dataset, num_replicas=None, rank=None, shuffle=False, seed = 0, phenotype_col='phenotype', z_weight=1, sex_col=2):
+    def __init__(self, dataset, num_replicas=None, rank=None, shuffle=False, seed = 0, phenotype_col='PHENOTYPE', z_weight=1, sex_col=2):
         #super(DrugResponseSampler, self).__init__()
         super().__init__(dataset, num_replicas, rank, shuffle, seed, drop_last=False)
-        self.indices = dataset.index
-        self.num_samples = int(dataset.shape[0]/num_replicas)
-        phenotype_values = dataset[phenotype_col].values
-        dataset_sex_0 = dataset.loc[dataset[sex_col]==0]
+        self.dataset = dataset.cov_df
+        self.indices = self.dataset.index
+        self.num_samples = int(self.dataset.shape[0]/num_replicas)
+        phenotype_values = self.dataset[phenotype_col].values
+        dataset_sex_0 = self.dataset.loc[self.dataset[sex_col]==0]
         phenotype_values = dataset_sex_0[phenotype_col].values
         a, loc, scale = skewnorm.fit(phenotype_values)
         dataset_sex_0['phenotype'] = skewnorm(a, loc, scale*z_weight).pdf(phenotype_values)
 
-        dataset_sex_1 = dataset.loc[dataset[sex_col]==1]
+        dataset_sex_1 = self.dataset.loc[dataset[sex_col]==1]
         phenotype_values = dataset_sex_1[phenotype_col].values
         a, loc, scale = skewnorm.fit(phenotype_values)
         dataset_sex_1['phenotype'] = skewnorm(a, loc, scale*z_weight).pdf(phenotype_values)
@@ -268,6 +322,34 @@ class DistributedCohortSampler(DistributedSampler):
         #self.weights = torch.tensor(self.weights, dtype=torch.double)
         #self.dataset = result_df.reset_index()[["cellline", "drug", "response", "source", "zscore"]]
         self.weights = torch.tensor(dataset_merged['phenotype'].values, dtype=torch.double)
+    def __iter__(self):
+        count = 0
+        index = [i for i in torch.multinomial(self.weights, self.num_samples, replacement=True)]
+        while count < self.num_samples:
+            #print(index[count], type(index[count]))
+            #result = index[count].item()
+            #print(result, type(result))
+            yield index[count].item()
+            count += 1
+
+    def __len__(self):
+        return self.num_samples
+
+class DistributedBinaryCohortSampler(DistributedSampler):
+
+    def __init__(self, dataset, num_replicas=None, rank=None, shuffle=False, seed = 0, phenotype_col='PHENOTYPE', z_weight=1, sex_col=2):
+        #super(DrugResponseSampler, self).__init__()
+        super().__init__(dataset, num_replicas, rank, shuffle, seed, drop_last=False)
+        self.dataset = dataset.cov_df
+        self.indices = self.dataset.index
+        self.num_samples = int(self.dataset.shape[0]/num_replicas)
+        #self.num_case = self.dataset[phenotype_col].sum()
+        #self.num_control = self.num_samples - self.num_case
+        class_count = np.bincount(self.dataset[phenotype_col].values)
+        class_weight = 1./class_count
+        sample_weight = class_weight[self.dataset[phenotype_col].values]
+        self.weights = torch.tensor(sample_weight, dtype=torch.double)
+
     def __iter__(self):
         count = 0
         index = [i for i in torch.multinomial(self.weights, self.num_samples, replacement=True)]

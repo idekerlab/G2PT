@@ -18,7 +18,7 @@ from prettytable import PrettyTable
 
 from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
-from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler, PLINKDataset
+from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler, BinaryCohortSampler, DistributedBinaryCohortSampler, PLINKDataset
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
 from datetime import timedelta
@@ -167,6 +167,8 @@ def main_worker(rank, ngpus_per_node, args):
     else:
         print("Loading PLINK bfile... at %s" % args.train_bfile)
         snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov)
+        args.cov_mean_dict = snp2p_dataset.cov_mean_dict
+        args.cov_std_dict = snp2p_dataset.cov_std_dict
         print("Loading done...")
 
     snp2p_collator = SNP2PCollator(tree_parser)
@@ -234,24 +236,25 @@ def main_worker(rank, ngpus_per_node, args):
 
     if args.distributed:
         if args.regression:
-            #snp2p_sampler = DistributedCohortSampler(train_dataset, num_replicas=args.world_size, rank=args.rank,
-            #                                         phenotype_col=1, sex_col=2, z_weight=args.z_weight)
-            snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
+            snp2p_sampler = DistributedCohortSampler(snp2p_dataset, num_replicas=args.world_size, rank=args.rank,
+                                                     phenotype_col=1, sex_col=2, z_weight=args.z_weight)
+            #snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
         else:
-            snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
+            #snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
+            snp2p_sampler = DistributedBinaryCohortSampler(snp2p_dataset, num_replicas=args.world_size, rank=args.rank)
         shuffle = False
     else:
         shuffle = False
         if args.regression:
-            snp2p_sampler = None#CohortSampler(train_dataset, phenotype_col=1, sex_col=2, z_weight=args.z_weight)
+            snp2p_sampler = CohortSampler(snp2p_dataset, phenotype_col=1, sex_col=2, z_weight=args.z_weight)
         else:
-            snp2p_sampler = None
+            snp2p_sampler = BinaryCohortSampler(snp2p_dataset)
 
     snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
                                   num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler)
 
     if args.val_bfile is not None:
-        val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov)
+        val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, cov_mean_dict=args.cov_mean_dict, cov_std_dict=args.cov_std_dict)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.jobs, collate_fn=snp2p_collator)
     elif args.val_cov is not None:
