@@ -6,11 +6,20 @@ from . import TreeParser
 
 class SNPTreeParser(TreeParser):
 
-    def __init__(self, ontology, snp2gene, by_chr=False):
-        super(SNPTreeParser, self).__init__(ontology)
+    def __init__(self, ontology, snp2gene, sys_annot_file=None, by_chr=False):
+        super(SNPTreeParser, self).__init__(ontology, sys_annot_file=sys_annot_file)
         print("%d in gene2sys mask" % self.gene2sys_mask.sum())
         #self.snp2gene_df = self.ontology.loc[self.ontology['interaction'] == 'snp']
         self.snp2gene_df = pd.read_csv(snp2gene, sep='\t', names=['snp', 'gene', 'chr'])
+
+        snps2gene_df_group_by_snps = self.snp2gene_df.groupby('snp')
+        snps2gene_df_group_by_genes = self.snp2gene_df.groupby('gene')
+
+        self.gene2snp= {gene: snps2gene_df_group_by_genes.get_group(gene)['snp'].values.tolist() for gene in
+                         snps2gene_df_group_by_genes.groups.keys()}
+        self.snp2gene= {snp: snps2gene_df_group_by_snps.get_group(snp)['gene'].values.tolist() for snp in
+                         snps2gene_df_group_by_snps.groups.keys()}
+
         snps = self.snp2gene_df['snp'].unique()
         self.snp2ind = {snp: index for index, snp in enumerate(snps)}
         self.ind2snp = {index: snp for index, snp in enumerate(snps)}
@@ -26,6 +35,15 @@ class SNPTreeParser(TreeParser):
                               self.snp2gene_df.loc[self.snp2gene_df['chr'] == CHR]['snp'].values.tolist()] for CHR in
                         self.chromosomes}
 
+        self.sys2snp = {sys:self.get_sys2snp(sys) for sys in self.sys2ind.keys()}
+        self.snp2sys = {}
+        for sys, snps in self.sys2snp.items():
+            for snp in snps:
+                if snp in self.snp2sys.keys():
+                    self.snp2sys[snp].append(sys)
+                else:
+                    self.snp2sys[snp] = [sys]
+
         print("%d SNPs are queried" % self.n_snps)
         print(self.snp2ind)
         if by_chr:
@@ -40,6 +58,12 @@ class SNPTreeParser(TreeParser):
             self.snp2gene_dict[self.snp2ind[snp]].append(self.gene2ind[gene])
         self.gene2snp_mask = self.snp2gene_mask.T
         print("%d in snp2gene mask" % self.snp2gene_mask.sum())
+
+    def get_sys2snp(self, sys):
+        genes = self.sys2gene_full[sys]
+        snps = [self.gene2snp[gene] for gene in genes if gene in self.gene2snp.keys()]
+        snps = sum(snps, [])
+        return snps
 
     def get_snp2gene_mask(self, gene_indices, snp_indices, type_indices=None, CHR=None):
 

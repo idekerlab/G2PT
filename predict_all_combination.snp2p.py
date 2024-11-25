@@ -71,7 +71,7 @@ def main():
 
     args = parser.parse_args()
 
-    tree_parser = SNPTreeParser(args.onto, args.snp2gene, by_chr=False)
+    tree_parser = SNPTreeParser(args.onto, args.snp2gene, by_chr=False, sys_annot_file=args.system_annot)
 
 
     g2p_model_dict = torch.load(args.model)
@@ -161,14 +161,11 @@ def main():
     sys_importance_df = pd.DataFrame({'System':sys_score_cols})
     
     if args.system_annot is not None:
-        go_descriptions = pd.read_table(args.system_annot,
-                                header=None,
-                                names=['Term', 'Term_Description'],
-                                index_col=0)
+        sys_importance_df['System_annot'] = sys_importance_df['System'].map(lambda a: tree_parser.sys_annot_dict[a])
 
-        go_annot_dict = go_descriptions.to_dict()["Term_Description"]
-        sys_importance_df['System_annot'] = sys_importance_df['System'].map(lambda a: go_annot_dict[a])
-    
+    sys_importance_df['Genes'] = sys_importance_df.System.map(lambda a: ",".join(tree_parser.sys2gene_full[a]))
+    sys_importance_df['Size'] = sys_importance_df.System.map(lambda a: len(tree_parser.sys2gene_full[a]))
+
     whole_dataset_with_attentions_0 = whole_dataset_with_attentions.loc[whole_dataset_with_attentions.SEX==0]
     whole_dataset_with_attentions_1 = whole_dataset_with_attentions.loc[whole_dataset_with_attentions.SEX==1]
 

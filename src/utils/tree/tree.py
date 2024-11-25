@@ -5,11 +5,21 @@ import torch
 
 class TreeParser(object):
 
-    def __init__(self, ontology):
+    def __init__(self, ontology, sys_annot_file=None):
         self.ontology = pd.read_csv(ontology, sep='\t', names=['parent', 'child', 'interaction'])
         #gene2ind = pd.read_csv(gene2ind, sep='\t', names=['index', 'gene'])
         self.system_df = self.ontology.loc[self.ontology['interaction'] != 'gene']
         self.gene2sys_df = self.ontology.loc[self.ontology['interaction'] == 'gene']
+        sys2gene_grouped_by_sys = self.gene2sys_df.groupby('parent')
+        sys2gene_grouped_by_gene = self.gene2sys_df.groupby('child')
+        sys2gene_dict = {sys: sys2gene_grouped_by_sys.get_group(sys)['child'].values.tolist() for sys in
+                         sys2gene_grouped_by_sys.groups.keys()}
+
+        self.sys2gene = {sys: sys2gene_grouped_by_sys.get_group(sys)['child'].values.tolist() for sys in
+                         sys2gene_grouped_by_sys.groups.keys()}
+        self.gene2sys = {gene: sys2gene_grouped_by_gene.get_group(gene)['parent'].values.tolist() for gene in
+                         sys2gene_grouped_by_gene.groups.keys()}
+
         genes = self.gene2sys_df['child'].unique()
         self.gene2ind = {gene: index for index, gene in enumerate(genes)}
         self.ind2gene = {index: gene for index, gene in enumerate(genes)}
@@ -40,6 +50,32 @@ class TreeParser(object):
         self.subtree_types = self.system_df['interaction'].unique()
         self.system_graph = nx.from_pandas_edgelist(self.system_df, create_using=nx.DiGraph(), source='parent',
                                                     target='child')
+
+        for sys in systems:
+            if sys in sys2gene_dict.keys():
+                continue
+            else:
+                sys2gene_dict[sys] = []
+        for sys in systems:
+            self.add_child_genes_to_parents(self.system_graph, sys, sys2gene_dict)
+        self.sys2gene_full = sys2gene_dict
+
+        self.gene2sys_full = {}
+        for sys, genes in self.sys2gene_full.items():
+            for gene in genes:
+                if gene in self.gene2sys_full.keys():
+                    self.gene2sys_full[gene].append(sys)
+                else:
+                    self.gene2sys_full[gene] = [sys]
+
+        if sys_annot_file:
+            sys_descriptions = pd.read_csv(sys_annot_file, header=None, names=['Term', 'Term_Description'], index_col=0, sep='\t')
+
+            self.sys_annot_dict = sys_descriptions.to_dict()["Term_Description"]
+        else:
+            self.sys_annot_dict = None
+
+
         print("Building descendant dict")
         self.descendant_dict = {system: list(nx.descendants(self.system_graph, system))+[system] for system in systems}
         self.descendant_dict_ind = {self.sys2ind[key]:[self.sys2ind[descendant] for descendant in value]
@@ -68,8 +104,45 @@ class TreeParser(object):
                     for child_j in children_genes:
                         self.gene2gene_mask[self.gene2ind[child_i], self.gene2ind[child_j]] = 1
 
+
+
         #self.subtree_depths = {len(nx.dag_longest_path(self.subtree_graphs[subtree_type]))
         #                       for subtree_type in self.subtree_types}
+
+    def add_child_genes_to_parents(self, tree, node, gene_dict):
+        """
+        Recursively adds child genes to parent nodes.
+
+        :param tree: NetworkX DiGraph representing the tree.
+        :param node: Current node to process.
+        :param gene_dict: Dictionary mapping nodes to their gene sets.
+        """
+        # Base case: if the node is a leaf, return its genes
+        if tree.out_degree(node) == 0:
+            return gene_dict[node]
+
+        # Initialize the set of genes for the current node with its own genes
+        genes = set(gene_dict[node])
+
+        # Recurse for all children and add their genes
+        for child in tree.successors(node):
+            child_genes = self.add_child_genes_to_parents(tree, child, gene_dict)
+            genes.update(child_genes)
+
+        # Update the gene set for the current node
+        gene_dict[node] = genes
+        return genes
+
+    def write_gmt(self, output_path):
+        f = open(output_path, 'w')
+        for sys, genes in self.sys2gene_full.items():
+            if self.sys_annot_dict is not None:
+                lines = "\t".join([sys, self.sys_annot_dict[sys]] + list(genes))
+            else:
+                lines = "\t".join([sys]+list(genes))
+            f.write(lines+'\n')
+            f.flush()
+        f.close()
 
     def get_subtree_types(self):
         return self.subtree_types
