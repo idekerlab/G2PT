@@ -84,7 +84,7 @@ class SNP2PDataset(Dataset):
 
 class PLINKDataset(Dataset):
 
-    def __init__(self, tree_parser, bfile, cov, cov_mean_dict=None, cov_std_dict=None):
+    def __init__(self, tree_parser, bfile, cov=None, cov_mean_dict=None, cov_std_dict=None):
         self.tree_parser = tree_parser
         print('Loading PLINK data at %s'%bfile)
         plink_data = plink.read_plink(path=bfile)
@@ -93,29 +93,27 @@ class PLINKDataset(Dataset):
         self.genotype.columns = plink_data.variant_id.values
         print("From PLINK %d variants with %d samples are queried" % (self.genotype.shape[1], self.genotype.shape[0]))
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
-        self.genotype = self.genotype[snp_sorted]
-        self.cov_df = pd.read_csv(cov, sep='\t')
+        if cov is not None:
+            self.cov_df = pd.read_csv(cov, sep='\t')
+        else:
+            self.cov_df = pd.DataFrame({'FID': plink_data.sample_family_id.as_numpy(),
+                                        'IID': plink_data.sample_id.as_numpy(),
+                                        'SEX': plink_data.sample_sex.as_numpy(),
+                                        'PHENOTYPE': plink_data.sample_phenotype.as_numpy() })
+            self.cov_df = self.cov_df[['FID', 'IID', 'SEX', 'PHENOTYPE']]
+            self.cov_df = self.cov_df.loc[self.cov_df.PHENOTYPE!=-1]
+            self.cov_df['SEX'] = self.cov_df['SEX'] - 1
+            self.cov_df['PHENOTYPE'] = self.cov_df['PHENOTYPE'] - 1
+            self.genotype = self.genotype.loc[self.cov_df.IID]
         self.cov_df['FID'] = self.cov_df['FID'].astype(int)
         self.cov_df['IID'] = self.cov_df['IID'].astype(int)
         self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov!='PHENOTYPE']
         self.n_cov = len(self.cov_ids) + 1 ## +1 for sex cov
         self.genotype = self.genotype.loc[self.cov_df['IID'].map(str)]
+        self.genotype = self.genotype[snp_sorted]
         self.has_phenotype = False
         if 'PHENOTYPE' in self.cov_df.columns:
             self.has_phenotype = True
-        '''
-        if 'AGE' in self.cov_ids:
-            self.n_cov += 1 # +1 for age^2
-            if age_mean is None:
-                self.age_mean = self.cov_df['AGE'].mean()
-            else:
-                self.age_mean = age_mean
-            if age_std is None:
-                self.age_std = self.cov_df['AGE'].std()
-            else:
-                self.age_std = age_std
-        '''
-
         if cov_mean_dict is None:
             self.cov_mean_dict = dict()
             self.cov_std_dict = dict()
@@ -160,19 +158,11 @@ class PLINKDataset(Dataset):
         covariates_tensor = [0]*self.n_cov
         sex = covariates['SEX']
         i_cov = 0
-        if int(sex)==-9:
+        if (int(sex)==-1) or (int(sex)==-9):
             pass
         else:
             covariates_tensor[int(sex)] = 1
         i_cov += 2
-        '''
-        if 'AGE' in self.cov_ids:
-            age = covariates['AGE']
-            age_sq = age ** 2
-            covariates_tensor[2] = (age - self.age_mean)/self.age_std
-            covariates_tensor[3] = (age_sq - self.age_mean**2)/(self.age_std**2)
-            i_cov += 2
-        '''
         for cov_id in self.cov_ids:
             if cov_id=='SEX':
                 continue

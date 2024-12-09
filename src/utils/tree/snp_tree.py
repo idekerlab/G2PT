@@ -11,6 +11,27 @@ class SNPTreeParser(TreeParser):
         print("%d in gene2sys mask" % self.gene2sys_mask.sum())
         #self.snp2gene_df = self.ontology.loc[self.ontology['interaction'] == 'snp']
         self.snp2gene_df = pd.read_csv(snp2gene, sep='\t', names=['snp', 'gene', 'chr'])
+        genes = self.snp2gene_df.gene.unique()
+        genes_not_in_sys2gene = [gene for gene in genes if gene not in self.gene2ind.keys()]
+        gene_max_ind = max(self.gene2ind.values())
+        # Adding Genes not in Ontology
+        for gene in genes_not_in_sys2gene:
+            gene_max_ind += 1
+            self.gene2ind[gene] = gene_max_ind
+            self.ind2gene[gene_max_ind] = gene
+        self.n_genes = len(self.gene2ind.keys())
+        self.gene2sys_mask = np.zeros((len(self.sys2ind), len(self.gene2ind)))
+        self.sys2gene_dict = {self.sys2ind[system]: [] for system in self.sys2ind.keys()}
+        self.gene2sys_dict = {gene: [] for gene in range(self.n_genes)}
+        for system, gene in zip(self.gene2sys_df['parent'], self.gene2sys_df['child']):
+            #print(system, gene)
+            self.gene2sys_mask[self.sys2ind[system], self.gene2ind[gene]] = 1.
+            self.sys2gene_dict[self.sys2ind[system]].append(self.gene2ind[gene])
+            self.gene2sys_dict[self.gene2ind[gene]].append(self.sys2ind[system])
+        print("Total %d Gene-System interactions are queried"%self.gene2sys_mask.sum())
+        self.sys2gene_mask = self.gene2sys_mask.T
+        self.subtree_types = self.system_df['interaction'].unique()
+
 
         snps2gene_df_group_by_snps = self.snp2gene_df.groupby('snp')
         snps2gene_df_group_by_genes = self.snp2gene_df.groupby('gene')
@@ -96,7 +117,7 @@ class SNPTreeParser(TreeParser):
     def get_snp2gene_embeddings(self, snp_indices):
         snp_embedding_indices = sorted(list(set(sum([[snp]*len(self.snp2gene_dict[snp]) for snp in snp_indices], []))))
         gene_embedding_indices = sorted(list(set(sum([self.snp2gene_dict[snp] for snp in snp_indices], []))))
-        return {"snp":torch.tensor(snp_embedding_indices), "gene":torch.tensor(gene_embedding_indices)}
+        return {"snp":torch.tensor(snp_embedding_indices, dtype=torch.int), "gene":torch.tensor(gene_embedding_indices, dtype=torch.int)}
 
     def get_snp2gene_indices(self, snp_indices):
         return sorted(list(set(sum([self.snp2gene_dict[snp] for snp in snp_indices], []))))

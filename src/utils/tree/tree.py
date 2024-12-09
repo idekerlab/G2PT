@@ -188,46 +188,46 @@ class TreeParser(object):
 
     def get_subtree_mask(self, interaction_type, direction='forward', return_indices=False):
         sub_tree = self.subtree_graphs[interaction_type]
-        #
-
         sub_tree_roots = set([node for node in sub_tree.nodes() if sub_tree.in_degree(node)==0])
         cur_subtree_dfs = self.subtree_dfs[interaction_type]
-        cur_parents = sub_tree_roots
+        #cur_parents = sub_tree_roots
         result_masks = []
-        result_indices = []
-        while True:
-            parent_subtree_dfs = cur_subtree_dfs.loc[cur_subtree_dfs['parent'].map(lambda a: a in cur_parents)]
+        #result_indices = []
+        cur_parents = set(sub_tree_roots)
+        while cur_parents:
             mask = np.zeros((len(self.sys2ind), len(self.sys2ind)))
             queries = []
             keys = []
-            for parent, child in zip(parent_subtree_dfs['parent'], parent_subtree_dfs['child']):
-                if direction=='forward':
-                    mask[self.sys2ind[parent], self.sys2ind[child]] = 1
-                    if return_indices:
-                        queries.append(self.sys2ind[parent])
-                        keys.append(self.sys2ind[child])
-                elif direction=='backward':
-                    mask[self.sys2ind[child], self.sys2ind[parent]] = 1
-                    if return_indices:
-                        queries.append(self.sys2ind[child])
-                        keys.append(self.sys2ind[parent])
-            cur_subtree_dfs = cur_subtree_dfs.loc[cur_subtree_dfs['parent'].map(lambda a: a not in cur_parents)]
-            cur_parents = set(parent_subtree_dfs['child'])
+            new_parents = set()
 
-            #print(queries, keys)
+            for parent in cur_parents:
+                children = list(
+                    sub_tree.successors(parent) if direction == 'forward' else sub_tree.predecessors(parent))
+                for child in children:
+                    if direction == 'forward':
+                        mask[self.sys2ind[parent], self.sys2ind[child]] = 1
+                        if return_indices:
+                            queries.append(self.sys2ind[parent])
+                            keys.append(self.sys2ind[child])
+                    elif direction == 'backward':
+                        mask[self.sys2ind[child], self.sys2ind[parent]] = 1
+                        if return_indices:
+                            queries.append(self.sys2ind[child])
+                            keys.append(self.sys2ind[parent])
+                    new_parents.add(child)
+
             if return_indices:
                 result_mask = mask[queries, :]
                 result_mask = result_mask[:, keys]
                 result_mask = torch.tensor(result_mask, dtype=torch.float32)
-                result_masks.append({"query": torch.tensor(queries), "key": torch.tensor(keys), 'mask': result_mask})
+                result_masks.append({"query": torch.tensor(queries, dtype=torch.long), "key": torch.tensor(keys, dtype=torch.long), 'mask': result_mask})
             else:
-                #result_mask = mask[sys_inds, :]
-                #result_mask = result_mask[:, sys_inds]
                 result_mask = torch.tensor(mask, dtype=torch.float32)
                 result_masks.append(result_mask)
-            if cur_subtree_dfs.empty:
-                break
-        if direction=='forward':
+
+            cur_parents = new_parents
+
+        if direction == 'forward':
             result_masks.reverse()
         return result_masks
 

@@ -68,7 +68,7 @@ to run the training scripts:
 3. Training, validation, test covariates files
    * Training, validation, test file include FID, IID, phenotype value, and covariates.
    * same as `.cov` in [PLINK](https://www.cog-genomics.org/plink/1.9/formats#cov)
-   * (Future work) If you do not put `.cov` while you put PLINK bfiles. Covariates will be generated from `.fam` file.  
+     * If you do not put `.cov` while you put PLINK bfiles, covariates will be generated from `.fam` file.  
    * You should include `PHENOTYPE` in training and validation covariate file 
 
 | FID      | IID   | PHENOTYPE | SEX | AGE | COV1 | COV2 | ... | COVN |
@@ -163,4 +163,4 @@ you can train model with sample data by using [train_model.sh](train_model.sh)
 
 - [x] Applying [Differential Transformer](https://github.com/microsoft/unilm/tree/master/Diff-Transformer) to genetic factor translation
 - [x] Build data loader for `plink` binary file using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/) 
-- [ ] Inferring covariates from `.fam`
+- [x] Inferring covariates from `.fam`
