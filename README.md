@@ -27,9 +27,9 @@ to run the training scripts:
 
 1. Participant Genotype files:
     * You can put [PLINK binary file](https://www.cog-genomics.org/plink/1.9/input#bed) 
-    * Or you can put tab-delimited file containing personal genotype data to reduce memory usage 
+    * Alternatively, you can use a tab-delimited file containing personal genotype data to reduce memory usage. 
       * Index will indicate Sample ID. 
-      * `homozygous_a0`, `heterozygous`, `homozygous_a1` contain index of SNP by the allele   
+      * `homozygous_a0`, `heterozygous`, `homozygous_a1` contain indices of SNP by the allele   
 
 |         | homozygous_a0 | heterozygous | homozygous_a1 |
 |---------|---------------|--------------|---------------|
@@ -156,7 +156,34 @@ usage: train_snp2p_model.py \
 ```
 
 
-you can train model with sample data by using [train_model.sh](train_model.sh)
+## Predict Phenotypes and Get Attention Values from a Cohort
+
+We provide code to predict phenotypes for a cohort and retrieve attention values for them.
+
+```shell
+python \
+      predict_attention.py \
+  --onto ONTO \
+  --snp2gene SNP2Gene \
+  --cpu 8 --cuda 0 --batch 8 \
+  --model G2PT_output \
+  --bfile cohort_bfile \
+  --cov cohort_cov   \
+  --out output_dir \
+  --system_annot sys_annot_file
+```
+
+`--system_annot` is an optional argument. Its first column should contain system IDs, and the second column should contain the corresponding descriptions of the systems.
+
+This script generates the following outputs in CSV format:
+
+* Attention Matrix:
+  * Size: `n_samples × (n_functions + n_genes)`
+  * File: `output_dir.attention.csv`
+* System Importance Scores:
+  * File: `output_dir.sys_corr.csv`
+* Gene Importance Scores:
+  * File: `output_dir.gene_corr.csv`
 
 
 ## Future Works
