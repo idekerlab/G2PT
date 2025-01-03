@@ -5,8 +5,9 @@ import torch
 
 class TreeParser(object):
 
-    def __init__(self, ontology, sys_annot_file=None):
+    def __init__(self, ontology, dense_attention=False, sys_annot_file=None):
         self.ontology = pd.read_csv(ontology, sep='\t', names=['parent', 'child', 'interaction'])
+        self.dense_attention = dense_attention
         #gene2ind = pd.read_csv(gene2ind, sep='\t', names=['index', 'gene'])
         self.system_df = self.ontology.loc[self.ontology['interaction'] != 'gene']
         self.gene2sys_df = self.ontology.loc[self.ontology['interaction'] == 'gene']
@@ -46,6 +47,8 @@ class TreeParser(object):
             self.sys2gene_dict[self.sys2ind[system]].append(self.gene2ind[gene])
             self.gene2sys_dict[self.gene2ind[gene]].append(self.sys2ind[system])
         print("Total %d Gene-System interactions are queried"%self.gene2sys_mask.sum())
+        if self.dense_attention:
+            self.gene2sys_mask = torch.ones_like(torch.tensor(self.gene2sys_mask))
         self.sys2gene_mask = self.gene2sys_mask.T
         self.subtree_types = self.system_df['interaction'].unique()
         self.system_graph = nx.from_pandas_edgelist(self.system_df, create_using=nx.DiGraph(), source='parent',
@@ -186,7 +189,7 @@ class TreeParser(object):
         return system2mut_mask.float()
 
 
-    def get_subtree_mask(self, interaction_type, direction='forward', return_indices=False):
+    def get_subtree_mask(self, interaction_type, direction='forward', format='indices'):
         sub_tree = self.subtree_graphs[interaction_type]
         sub_tree_roots = set([node for node in sub_tree.nodes() if sub_tree.in_degree(node)==0])
         cur_subtree_dfs = self.subtree_dfs[interaction_type]
@@ -201,28 +204,32 @@ class TreeParser(object):
             new_parents = set()
 
             for parent in cur_parents:
-                children = list(
-                    sub_tree.successors(parent) if direction == 'forward' else sub_tree.predecessors(parent))
+                children = list(sub_tree.successors(parent))
                 for child in children:
                     if direction == 'forward':
                         mask[self.sys2ind[parent], self.sys2ind[child]] = 1
-                        if return_indices:
+                        if format == 'indices':
                             queries.append(self.sys2ind[parent])
                             keys.append(self.sys2ind[child])
                     elif direction == 'backward':
                         mask[self.sys2ind[child], self.sys2ind[parent]] = 1
-                        if return_indices:
+                        if format == 'indices':
                             queries.append(self.sys2ind[child])
                             keys.append(self.sys2ind[parent])
                     new_parents.add(child)
-
-            if return_indices:
+            if mask.sum() == 0:
+                break
+            if format == 'indices':
                 result_mask = mask[queries, :]
                 result_mask = result_mask[:, keys]
                 result_mask = torch.tensor(result_mask, dtype=torch.float32)
+                if self.dense_attention:
+                    result_mask = torch.ones_like(result_mask)
                 result_masks.append({"query": torch.tensor(queries, dtype=torch.long), "key": torch.tensor(keys, dtype=torch.long), 'mask': result_mask})
             else:
                 result_mask = torch.tensor(mask, dtype=torch.float32)
+                if self.dense_attention:
+                    result_mask = torch.ones_like(result_mask)
                 result_masks.append(result_mask)
 
             cur_parents = new_parents
@@ -231,8 +238,8 @@ class TreeParser(object):
             result_masks.reverse()
         return result_masks
 
-    def get_nested_subtree_mask(self, subtree_order, direction='forward', return_indices=False, sys_list=None):
-        nested_subtrees = [self.get_subtree_mask(subtree_type, direction=direction, return_indices=return_indices) for subtree_type in subtree_order]
+    def get_nested_subtree_mask(self, subtree_order, direction='forward', format='indices', sys_list=None):
+        nested_subtrees = [self.get_subtree_mask(subtree_type, direction=direction, format=format) for subtree_type in subtree_order]
         return nested_subtrees
 
     def mask_subtree_mask_by_mut(self, tree_mask, mut_vector):

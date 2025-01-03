@@ -8,8 +8,9 @@ from src.model.hierarchical_transformer import HierarchicalTransformer
 
 class Genotype2PhenotypeTransformer(nn.Module):
 
-    def __init__(self, tree_parser, hidden_dims, subtree_order=('default', ), dropout=0.2, activation='softmax'):
+    def __init__(self, tree_parser, hidden_dims, subtree_order=('default', ), dropout=0.2, activation='softmax', input_format='indices'):
         super(Genotype2PhenotypeTransformer, self).__init__()
+        self.input_format = input_format
         self.hidden_dims = hidden_dims
         self.tree_parser = tree_parser
         self.n_systems = self.tree_parser.n_systems
@@ -69,11 +70,12 @@ class Genotype2PhenotypeTransformer(nn.Module):
         system_effect = self.sys2gene.forward(gene_embedding_input, system_embedding_input, sys2gene_mask)
         return gene_embedding,  system_effect
 
-    def get_sys2sys(self, system_embedding, nested_hierarchical_masks, direction='forward', return_updates = True, with_indices=False, update_tensor=None):
+    def get_sys2sys(self, system_embedding, nested_hierarchical_masks, direction='forward', return_updates=True, input_format='indices', update_tensor=None):
         batch_size = system_embedding.size(0)
         feature_size = system_embedding.size(2)
         system_embedding_output = torch.clone(system_embedding)
-
+        if input_format == 'binary':
+            system_embedding_output = system_embedding_output + update_tensor
         update_result = torch.zeros_like(system_embedding)
         if direction=='forward':
             sys2sys = self.sys2env
@@ -81,7 +83,7 @@ class Genotype2PhenotypeTransformer(nn.Module):
             sys2sys = self.env2sys
         for hierarchical_masks, hitr in zip(nested_hierarchical_masks, sys2sys):
             for hierarchical_mask in hierarchical_masks:
-                if with_indices:
+                if input_format == 'indices':
                     system_embedding_queries = self.system_embedding(hierarchical_mask['query']).unsqueeze(0).expand(batch_size, -1, -1)
                     system_embedding_keys = self.system_embedding(hierarchical_mask['key']).unsqueeze(0).expand(batch_size, -1, -1)
                     system_effect_queries = torch.index_select(update_tensor, 1,
@@ -100,7 +102,7 @@ class Genotype2PhenotypeTransformer(nn.Module):
 
                 hitr_result = hitr.forward(system_embedding_queries, system_embedding_keys, mask)
 
-                if with_indices:
+                if input_format == 'indices':
                     results = []
                     for b, value in enumerate(update_tensor):
                         results.append(
@@ -120,7 +122,7 @@ class Genotype2PhenotypeTransformer(nn.Module):
             return system_embedding, update_result
         else:
             # return original system embeddings + update
-            if with_indices:
+            if input_format == 'indices':
                 return system_embedding + update_tensor
             else:
                 return system_embedding_output

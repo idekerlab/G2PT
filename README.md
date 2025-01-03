@@ -27,9 +27,10 @@ to run the training scripts:
 
 1. Participant Genotype files:
     * You can put [PLINK binary file](https://www.cog-genomics.org/plink/1.9/input#bed) 
-    * Alternatively, you can use a tab-delimited file containing personal genotype data to reduce memory usage. 
+      * _--flip_ argument will flip alt and ref SNP
+    * Or you can put tab-delimited file containing personal genotype data to reduce memory usage 
       * Index will indicate Sample ID. 
-      * `homozygous_a0`, `heterozygous`, `homozygous_a1` contain indices of SNP by the allele   
+      * `homozygous_a0`, `heterozygous`, `homozygous_a1` contain index of SNP by the allele
 
 |         | homozygous_a0 | heterozygous | homozygous_a1 |
 |---------|---------------|--------------|---------------|
@@ -66,10 +67,11 @@ to run the training scripts:
 
 
 3. Training, validation, test covariates files
-   * Training, validation, test file include FID, IID, phenotype value, and covariates.
+   * Training, validation, test file include sample ID, response value, and covariates.
    * same as `.cov` in [PLINK](https://www.cog-genomics.org/plink/1.9/formats#cov)
-     * If you do not put `.cov` while you put PLINK bfiles, covariates will be generated from `.fam` file.  
-   * You should include `PHENOTYPE` in training and validation covariate file 
+     * If you want to use subset of covariates, you can put _--cov-ids_ (i.e. with `--cov-ids SEX AGE`, model will use only SEX and AGE as covaritates)
+   * If you do not put `.cov` while you put PLINK bfiles. Covariates will be generated from `.fam` file.  
+   * If you do not put `.pheno`, you should include `PHENOTYPE` in training and validation covariate file 
 
 | FID      | IID   | PHENOTYPE | SEX | AGE | COV1 | COV2 | ... | COVN |
 |----------|-------|-----------|-----|-----|------|--------| --- |--------| 
@@ -82,18 +84,22 @@ There are several optional parameters that you can provide in addition to the in
    * _--sys2env_ : determines whether model will do Sys2Env propagation
    * _--env2sys_ : determines whether model will do Env2Sys propagation
    * _--sys2gene_ : determines whether model will do Gene2Sys propagation
-2. Model parameter:
+2. Translation option:
+   * _--sys2pheno_ : Updated system embeddings are used to predict phenotype
+   * _--gene2pheno_ : Updated gene embeddings are used to predict phenotype
+   * _--snp2pheno_ : SNP embeddings are used to predict phenotype
+3. Model parameter:
    * _--hiddens-dims_: embedding and hierarchical transformer dimension size
-3. Training parameters: 
+4. Training parameters: 
    * _--epochs_ : the number of epoch to run during the training phase. The default is set to 256.
-   * _--val-step_: Validation step to measure performance on validation dataset during training
+   * _--val-step_: Validation step
    * _--batch-size_ : the size of each batch to process at a time. The default is set to 5000.
 You may increase this number to speed up the training process within the memory capacity
-   * _--z-weight_ : for the continuous phenotype, with high `z-weight` will be more sampled  
+   * _--z-weight_ : for the continuous phenotype, with high `z_weight` will be more sampled  
    * _--dropout_: dropout option. Default is set 0.2
    * _--lr_ : Learning rate. Default is set 0.001.
    * _--wd_ : Weight decay. Default is set 0.001.
-4. GPU option:
+5. GPU option:
    * Single GPU option
      * _--cuda_ : the ID of GPU unit that you want to use for the model training. The default setting
      is to use GPU 0.
@@ -104,8 +110,8 @@ You may increase this number to speed up the training process within the memory 
      * _--local-rank_ : local rank, default is 0
      * _--dist-url_ : distribute url, `tcp://127.0.0.1:2222`
      * _--dist_backend_ : distribute backend default is `nccl`
-5. Model input and output:
-   * _--model_: if you have trained model to load, put the path to the trained model.
+6. Model input and output:
+   * _--model_: if you have trained model, put the path to the trained model.
    * _--out_: a name of directory where you want to store the trained models.
 
 
@@ -115,18 +121,17 @@ You may increase this number to speed up the training process within the memory 
 usage: train_snp2p_model.py \
                       --onto ONTO \
                       --snp2gene SNP2Gene \
-                      --train-bfile train  --train-cov train.cov \
-                      --val-bfile val  --val-cov val.cov \
-                      --test-bfile train  --test-cov test.cov \
+                      --genotype genotype_file_dir \
+                      --train TRAIN --val VAL --test TEST \
                       --epochs EPOCHS \
                       --lr LR \
                       --wd WD \
-                      --batch-size BATCH_SIZE \
+                      --batch_size BATCH_SIZE \
                       --dropout DROPOUT \
-                      --val-step VAL_STEP \
+                      --val_step VAL_STEP \
                       --jobs JOBS \
                       --cuda 0 \
-                      --hidden-dims HIDDEN_DIMS \
+                      --hidden_dims HIDDEN_DIMS \
                       --out OUT
 ```
 
@@ -136,58 +141,31 @@ usage: train_snp2p_model.py \
 usage: train_snp2p_model.py \
                       --onto ONTO \
                       --snp2gene SNP2Gene \
-                      --train-bfile train  --train-cov train.cov \
-                      --val-bfile val  --val-cov val.cov \
-                      --test-bfile train  --test-cov test.cov \
+                      --genotype genotype_file_dir \
+                      --train TRAIN --val VAL --test TEST \
                       --epochs EPOCHS \
                       --lr LR \
                       --wd WD \
                       --batch_size BATCH_SIZE \
                       --dropout DROPOUT \
-                      --val-step VAL-STEP \
+                      --val_step VAL_STEP \
                       --jobs JOBS \    
                       --dist-backend 'nccl' \
                       --dist-url 'tcp://127.0.0.1:2222' \ 
                       --multiprocessing-distributed \ 
                       --world-size 1 \ 
                       --rank 0 \
-                      --hidden-dims HIDDEN_DIMS \
+                      --hidden_dims HIDDEN_DIMS \
                       --out OUT
 ```
 
 
-## Predict Phenotypes and Get Attention Values from a Cohort
-
-We provide code to predict phenotypes for a cohort and retrieve attention values for them.
-
-```shell
-python \
-      predict_attention.py \
-  --onto ONTO \
-  --snp2gene SNP2Gene \
-  --cpu 8 --cuda 0 --batch 8 \
-  --model G2PT_output \
-  --bfile cohort_bfile \
-  --cov cohort_cov   \
-  --out output_dir \
-  --system_annot sys_annot_file
-```
-
-`--system_annot` is an optional argument. Its first column should contain system IDs, and the second column should contain the corresponding descriptions of the systems.
-
-This script generates the following outputs in CSV format:
-
-* Attention Matrix:
-  * Size: `n_samples × (n_functions + n_genes)`
-  * File: `output_dir.attention.csv`
-* System Importance Scores:
-  * File: `output_dir.sys_corr.csv`
-* Gene Importance Scores:
-  * File: `output_dir.gene_corr.csv`
+you can train model with sample data by using [train_model.sh](train_model.sh)
 
 
 ## Future Works
 
 - [x] Applying [Differential Transformer](https://github.com/microsoft/unilm/tree/master/Diff-Transformer) to genetic factor translation
 - [x] Build data loader for `plink` binary file using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/) 
-- [x] Inferring covariates from `.fam`
+- [x] Adding `.cov` and `.pheno` for input
+

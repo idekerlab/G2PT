@@ -17,7 +17,8 @@ from torch.nn import functional as F
 
 class DrugResponseTrainer(object):
 
-    def __init__(self, drug_response_model, drug_response_dataloader_drug, drug_response_dataloader_cellline, device, args, validation_dataloader=None, fix_embedding=False):
+    def __init__(self, drug_response_model, drug_response_dataloader_drug, drug_response_dataloader_cellline,
+                 device, args, validation_dataloader=None, fix_embedding=False):
         self.device = device
         self.drug_response_model = drug_response_model.to(self.device)
         '''

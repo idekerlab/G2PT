@@ -6,8 +6,8 @@ from . import TreeParser
 
 class SNPTreeParser(TreeParser):
 
-    def __init__(self, ontology, snp2gene, sys_annot_file=None, by_chr=False):
-        super(SNPTreeParser, self).__init__(ontology, sys_annot_file=sys_annot_file)
+    def __init__(self, ontology, snp2gene, dense_attention=False, sys_annot_file=None, by_chr=False):
+        super(SNPTreeParser, self).__init__(ontology, dense_attention=dense_attention, sys_annot_file=sys_annot_file)
         print("%d in gene2sys mask" % self.gene2sys_mask.sum())
         #self.snp2gene_df = self.ontology.loc[self.ontology['interaction'] == 'snp']
         self.snp2gene_df = pd.read_csv(snp2gene, sep='\t', names=['snp', 'gene', 'chr'])
@@ -86,19 +86,24 @@ class SNPTreeParser(TreeParser):
         snps = sum(snps, [])
         return snps
 
-    def get_snp2gene_mask(self, gene_indices, snp_indices, type_indices=None, CHR=None):
+    def get_snp2gene_mask(self, type_indices=None):
+        if type_indices is not None:
+            snp2gene_mask = np.copy(self.snp2gene_mask)
+            for key, value in type_indices.items():
+                type_mask = np.zeros_like(self.snp2gene_mask)
+                type_mask[:, value] = key
+                snp2gene_mask *= type_mask
+        else:
+            snp2gene_mask = np.copy(self.snp2gene_mask)
+
+        return snp2gene_mask
+
+    def get_snp2gene_sub_mask(self, gene_indices, snp_indices, type_indices=None, CHR=None):
 
         if len(gene_indices)==0:
             return torch.zeros((self.n_genes, self.n_snps))
         else:
-            if type_indices is not None:
-                snp2gene_mask = np.copy(self.snp2gene_mask)
-                for key, value in type_indices.items():
-                    type_mask = np.zeros_like(self.snp2gene_mask)
-                    type_mask[:, value] = key
-                    snp2gene_mask *= type_mask
-            else:
-                snp2gene_mask = np.copy(self.snp2gene_mask)
+            snp2gene_mask = self.get_snp2gene_mask(type_indices)
             snp2gene_mask =  torch.tensor(snp2gene_mask)[gene_indices, :]
             snp2gene_mask = snp2gene_mask[:, snp_indices]
             if CHR:
@@ -127,8 +132,8 @@ class SNPTreeParser(TreeParser):
             return self.get_snp2gene_by_chromosome(snp_indices, type_indices=type_indices)
         else:
             embeddings = self.get_snp2gene_embeddings(snp_indices)
-            mask = self.get_snp2gene_mask(embeddings['gene'], embeddings['snp'], type_indices=type_indices)
-            return {"snp":embeddings['snp'], 'gene':embeddings['gene'], 'mask':mask}
+            mask = self.get_snp2gene_sub_mask(embeddings['gene'], embeddings['snp'], type_indices=type_indices)
+            return {"snp": embeddings['snp'], 'gene': embeddings['gene'], 'mask': mask}
 
     def get_snp2gene_by_chromosome(self, snp_indices, type_indices=None):
         embeddings = {CHR: self.get_snp2gene_embeddings([snp for snp in snp_indices if snp in self.chr2snp[CHR]])  for CHR in self.chromosomes}

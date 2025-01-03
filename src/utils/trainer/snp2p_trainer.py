@@ -17,6 +17,7 @@ import copy
 class SNP2PTrainer(object):
 
     def __init__(self, snp2p_model, snp2p_dataloader, device, args, validation_dataloader=None, fix_system=False):
+        self.args = args
         self.device = device
         self.snp2p_model = snp2p_model.to(self.device)
         self.ccc_loss = CCCLoss()
@@ -35,15 +36,15 @@ class SNP2PTrainer(object):
             self.snp2p_dataloader) * args.epochs  # + len(self.drug_response_dataloader_cellline)*args.epochs
         #self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
         self.nested_subtrees_forward = self.snp2p_dataloader.dataset.tree_parser.get_nested_subtree_mask(
-            args.subtree_order, direction='forward', return_indices=True)
+            args.subtree_order, direction='forward', format=self.args.input_format)
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
         self.nested_subtrees_backward = snp2p_dataloader.dataset.tree_parser.get_nested_subtree_mask(
-            args.subtree_order, direction='backward', return_indices=True)
+            args.subtree_order, direction='backward', format=self.args.input_format)
         self.nested_subtrees_backward = move_to(self.nested_subtrees_backward, device)
         self.sys2gene_mask = move_to(
             torch.tensor(self.snp2p_dataloader.dataset.tree_parser.sys2gene_mask, dtype=torch.bool), device)
         self.gene2sys_mask = self.sys2gene_mask.T
-        self.args = args
+
         self.fix_system = fix_system
 
     def train(self, epochs, output_path=None):
@@ -182,7 +183,8 @@ class SNP2PTrainer(object):
     def train_epoch(self, epoch, ccc=False, sex=False):
         self.snp2p_model.train()
         if self.args.multiprocessing_distributed:
-            self.snp2p_dataloader.sampler.set_epoch(epoch)
+            if self.args.z_weight!=0:
+                self.snp2p_dataloader.sampler.set_epoch(epoch)
         self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", ccc=ccc, sex=False)
 
     def iter_minibatches(self, dataloader, epoch, name="", ccc=False, sex=False):
