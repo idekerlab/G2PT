@@ -72,7 +72,7 @@ def main():
     parser.add_argument('--sys2env', action='store_true', default=False)
     parser.add_argument('--env2sys', action='store_true', default=False)
     parser.add_argument('--sys2gene', action='store_true', default=False)
-    parser.add_argument('--sys2pheno', action='store_true', default=True)
+    parser.add_argument('--sys2pheno', action='store_true', default=False)
     parser.add_argument('--gene2pheno', action='store_true', default=False)
     parser.add_argument('--snp2pheno', action='store_true', default=False)
 
@@ -188,13 +188,24 @@ def main_worker(rank, ngpus_per_node, args):
 
     snp2p_collator = SNP2PCollator(tree_parser, input_format=args.input_format)
 
-    print("Summary of trainable parameters")
+    print("Summary of Model")
     if args.sys2env:
-        print("Model will use Sys2Env")
+        print("Model will use Sys2Env Propagation")
     if args.env2sys:
-        print("Model will use Env2Sys")
+        print("Model will use Env2Sys Propagation")
     if args.sys2gene:
-        print("Model will use Sys2Gene")
+        print("Model will use Sys2Gene Propagation")
+
+    if args.sys2pheno:
+        print("Model will use Sys2Pheno Translation")
+    if args.gene2pheno:
+        print("Model will use Gene2Pheno Translation")
+    if args.snp2pheno:
+        print("Model will use SNP2Pheno Translation")
+    if sum([args.sys2pheno, args.gene2pheno, args.snp2pheno]) == 0:
+        print("No Translation option is set, Sys2Pheno Translation is automatically set on")
+        args.sys2pheno = True
+
     if args.model is not None:
         snp2p_model_dict = torch.load(args.model, map_location=device)
         print(args.model, 'loaded')

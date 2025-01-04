@@ -27,18 +27,33 @@ to run the training scripts:
 
 1. Participant Genotype files:
     * You can put [PLINK binary file](https://www.cog-genomics.org/plink/1.9/input#bed) 
-      * _--flip_ argument will flip alt and ref SNP
+      * _--flip_ argument will flip ref. and alt. allele (sometime `--flip` argument increase performance)
     * Or you can put tab-delimited file containing personal genotype data to reduce memory usage 
       * Index will indicate Sample ID. 
       * `homozygous_a0`, `heterozygous`, `homozygous_a1` contain index of SNP by the allele
+
+* Example of tab-delimited genotype file
 
 |         | homozygous_a0 | heterozygous | homozygous_a1 |
 |---------|---------------|--------------|---------------|
 | 1000909 | 0,1,3,5,7,9   | 2,4,5        | 6,8           |
 | 1000303 | 1,3,6,7,8,9   | 2,5          | 4             |
 
-2. Ontology (hierarchy) file: _--onto_ :
-    * A tab-delimited file that contains the ontology (hierarchy) that defines the structure of a branch
+2. Covariates files
+   * File including covariates and phenotypes.
+   * same as `.cov` and `.pheno` in [PLINK](https://www.cog-genomics.org/plink/1.9/formats#cov)
+     * If you want to use subset of covariates, you can put _--cov-ids_ (i.e. with `--cov-ids SEX AGE`, model will use only SEX and AGE as covaritates)
+   * If you do not put `.cov` while you put PLINK bfiles. Covariates will be generated from `.fam` file (Sex only)  
+   * If you do not put `.pheno`, you should include `PHENOTYPE` in training and validation covariate file 
+
+* Example of covariates file 
+
+| FID      | IID   | PHENOTYPE | SEX | AGE | PC1 | PC2 | ... | PC10 |
+|----------|-------|-----------|-----|-----|-----|-----| --- |------| 
+| 10008090 | 10008090 | 1.2       | 1   | 48  | 3   | 0.3 | ... | 0.5  |
+
+3. Ontology (hierarchy) file: 
+    * _--onto_ : A tab-delimited file that contains the ontology (hierarchy) that defines the structure of a branch
     of a G2TP model that encodes the genotypes. The first column is always a term (subsystem or pathway),
     and the second column is a term or a gene.
     The third column should be set to "default" when the line represents a link between terms, (if you have nested subtree, you can put some name except 'gene').
@@ -46,6 +61,9 @@ to run the training scripts:
     The following is an example describing a sample hierarchy.
 
         ![Ontology](./Figures/ontology.png)
+      * * _--subtree_order_ : if you have nested subtrees in ontology, you can set this option default is `['default']` (no subtree inside)
+
+* Example of ontology file
 
 | parent     | child      | interaction_type |
 |------------|------------|------------------|
@@ -54,7 +72,11 @@ to run the training scripts:
 | GO:0045923 | AKT2       | gene             |
 | GO:0045923 | IL1B       | gene             |
 | GO:0043552 | PIK3R4     | gene             |
+
   * _--snp2gene_ : A tab-delimited file for mapping SNPs to genes. The first column indicates SNP, second column for gene, and third for chromosome
+
+  
+* Example of snp2gene file
 
 | SNP_ID           | Gene       | Chromosome |
 |------------------|------------|------------|
@@ -62,20 +84,6 @@ to run the training scripts:
 |8:126482077:G:A	| TRIB1	| 8 |
 |19:45416178:T:G	| APOC1	| 19 |
 |2:27752463:A:G	| GCKR	| 2 |
-
-  * _--subtree_order_ : if you have nested subtrees in ontology, you can set this option default is `['default']` (no subtree inside)
-
-
-3. Training, validation, test covariates files
-   * Training, validation, test file include sample ID, response value, and covariates.
-   * same as `.cov` in [PLINK](https://www.cog-genomics.org/plink/1.9/formats#cov)
-     * If you want to use subset of covariates, you can put _--cov-ids_ (i.e. with `--cov-ids SEX AGE`, model will use only SEX and AGE as covaritates)
-   * If you do not put `.cov` while you put PLINK bfiles. Covariates will be generated from `.fam` file.  
-   * If you do not put `.pheno`, you should include `PHENOTYPE` in training and validation covariate file 
-
-| FID      | IID   | PHENOTYPE | SEX | AGE | COV1 | COV2 | ... | COVN |
-|----------|-------|-----------|-----|-----|------|--------| --- |--------| 
-| 10008090 | 10008090 | 1.2       | 1   | 48  | 3    | 0.3    | ... | 0.5    |
 
 
 There are several optional parameters that you can provide in addition to the input files:
@@ -88,14 +96,14 @@ There are several optional parameters that you can provide in addition to the in
    * _--sys2pheno_ : Updated system embeddings are used to predict phenotype
    * _--gene2pheno_ : Updated gene embeddings are used to predict phenotype
    * _--snp2pheno_ : SNP embeddings are used to predict phenotype
+   * if you don't put any translation option, `sys2pheno` will be automatically set 
 3. Model parameter:
    * _--hiddens-dims_: embedding and hierarchical transformer dimension size
 4. Training parameters: 
    * _--epochs_ : the number of epoch to run during the training phase. The default is set to 256.
    * _--val-step_: Validation step
-   * _--batch-size_ : the size of each batch to process at a time. The default is set to 5000.
-You may increase this number to speed up the training process within the memory capacity
-   * _--z-weight_ : for the continuous phenotype, with high `z_weight` will be more sampled  
+   * _--batch-size_ : the size of each batch to process at a time. The default is set to 256.
+   * _--z-weight_ : for the continuous phenotype, individual with high absolute Z-score will be more sampled. if set as 0 (default), all population will be sampled in one training epoch   
    * _--dropout_: dropout option. Default is set 0.2
    * _--lr_ : Learning rate. Default is set 0.001.
    * _--wd_ : Weight decay. Default is set 0.001.
@@ -159,8 +167,6 @@ usage: train_snp2p_model.py \
                       --out OUT
 ```
 
-
-you can train model with sample data by using [train_model.sh](train_model.sh)
 
 
 ## Future Works
