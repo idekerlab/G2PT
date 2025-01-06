@@ -57,10 +57,10 @@ def main():
     parser.add_argument('--subtree_order', help='Subtree cascading order', nargs='+', default=['default'])
     parser.add_argument('--bfile', help='Training genotype dataset', type=str, default=None)
     parser.add_argument('--cov', help='Training covariates dataset', type=str, default=None)
-    parser.add_argument('--system_embedding', default=None)
-    parser.add_argument('--gene_embedding', default=None)
+    parser.add_argument('--pheno', help='Training covariates dataset', type=str, default=None)
+    parser.add_argument('--input-format', default='indices', choices=["indices", "binary"])
     parser.add_argument('--snp', help='Mutation information for cell lines', type=str)
-    parser.add_argument('--batch_size', type=int)
+    parser.add_argument('--batch-size', type=int)
     parser.add_argument('--snp2gene', help='Gene to ID mapping file', type=str)
     parser.add_argument('--snp2id', help='Gene to ID mapping file', type=str)
     parser.add_argument('--cuda', type=int)
@@ -75,6 +75,7 @@ def main():
 
 
     g2p_model_dict = torch.load(args.model)
+    print(g2p_model_dict.keys())
     #g2p_model = g2p_model_dict
     
     #train_df = pd.read_csv(args.train, sep='\t', header=None)
@@ -83,29 +84,32 @@ def main():
 
     cov_df = pd.read_csv(args.cov, sep='\t')
 
-    age_mean = cov_df['AGE'].mean()
-    age_std = cov_df['AGE'].std()
 
     #genotypes = pd.read_csv(args.snp, index_col=0, sep='\t')
-    dataset = PLINKDataset(tree_parser, args.bfile, args.cov)
+    dataset = PLINKDataset(tree_parser, args.bfile, args.cov, cov_ids=g2p_model_dict['arguments'].cov_ids,
+                           cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict,
+                           cov_std_dict=g2p_model_dict['arguments'].cov_std_dict)
     #dataset = SNP2PDataset(whole_df, genotypes, tree_parser, n_cov=args.n_cov, age_mean=age_mean, age_std=age_std)
     device = torch.device("cuda:%d"%args.cuda)
     whole_collator = SNP2PCollator(tree_parser)
     whole_dataloader = DataLoader(dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.cpu, collate_fn=whole_collator)
 
-    nested_subtrees_forward = tree_parser.get_nested_subtree_mask(args.subtree_order, direction='forward', return_indices=True)
+    nested_subtrees_forward = tree_parser.get_nested_subtree_mask(args.subtree_order, direction='forward', format=g2p_model_dict['arguments'].input_format)
     nested_subtrees_forward = move_to(nested_subtrees_forward, device)
 
-    nested_subtrees_backward = tree_parser.get_nested_subtree_mask(args.subtree_order, direction='backward', return_indices=True)
+    nested_subtrees_backward = tree_parser.get_nested_subtree_mask(args.subtree_order, direction='backward', format=g2p_model_dict['arguments'].input_format)
     nested_subtrees_backward = move_to(nested_subtrees_backward, device)
 
     sys2gene_mask = move_to(torch.tensor(tree_parser.sys2gene_mask, dtype=torch.bool), device)
     gene2sys_mask = sys2gene_mask.T
 
-    g2p_model = SNP2PhenotypeModel(tree_parser, hidden_dims=64,
-                                         dropout=0.0, n_covariates=args.n_cov,
-                                         binary=True, activation='softmax')
+    g2p_model = SNP2PhenotypeModel(tree_parser, hidden_dims=g2p_model_dict['arguments'].hidden_dims,
+                                         dropout=0.0, n_covariates=dataset.n_cov,
+                                         binary=(not g2p_model_dict['arguments'].regression), activation='softmax',
+                                   snp2pheno=g2p_model_dict['arguments'].snp2pheno,
+                                   gene2pheno=g2p_model_dict['arguments'].gene2pheno,
+                                   sys2pheno=g2p_model_dict['arguments'].sys2pheno, input_format=g2p_model_dict['arguments'].input_format)
 
     g2p_model.load_state_dict(g2p_model_dict['state_dict'])
     g2p_model = g2p_model.to(device)
@@ -124,9 +128,9 @@ def main():
                                             nested_subtrees_backward,
                                             gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
                                             sys2gene_mask=sys2gene_mask,
-                                            sys2env=True,
-                                            env2sys=True,
-                                            sys2gene=True, 
+                                            sys2env=g2p_model_dict['arguments'].sys2env,
+                                            env2sys=g2p_model_dict['arguments'].env2sys,
+                                            sys2gene=g2p_model_dict['arguments'].sys2gene,
                                             attention=True)
         phenotypes.append(phenotype_predicted.detach().cpu().numpy())
         sys_attentions.append(sys_attention.detach().cpu().numpy())

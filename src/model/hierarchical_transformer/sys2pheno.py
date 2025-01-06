@@ -7,7 +7,8 @@ from src.model.hierarchical_transformer import PositionWiseFeedForward, MultiHea
 
 class System2Phenotype(nn.Module):
 
-    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, transform=True, activation='softmax'):
+    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2,
+                 transform=True, activation='softmax', poincare=False):
         super().__init__()
         self.attn_heads = attn_heads
         #self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, activation=activation,

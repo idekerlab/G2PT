@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import torch
 import math
 from torch import nn
-from src.model.utils import RMSNorm
+from src.model.utils import RMSNorm, poincare_exp_map_zero
 
 
 class MultiHeadedAttention(nn.Module):
@@ -11,7 +11,8 @@ class MultiHeadedAttention(nn.Module):
     Take in model size and number of heads.
     """
 
-    def __init__(self, h, d_model, dropout=0.1, activation='softmax', top_k=0, transform=True, n_type=1):
+    def __init__(self, h, d_model, dropout=0.1, activation='softmax', transform=True, n_type=1,
+                 poincare=False):
         super().__init__()
         assert d_model % h == 0
 
@@ -26,9 +27,9 @@ class MultiHeadedAttention(nn.Module):
             self.key_linears = nn.ModuleList([nn.Linear(d_model, d_model, bias=False) for i in range(self.n_type)])
             self.value_linear = nn.Linear(d_model, d_model, bias=False)
         self.output_linear = nn.Linear(d_model, d_model, bias=False)
-        self.attention = Attention(n_heads=h, activation=activation, top_k=top_k)
+        self.attention = Attention(n_heads=h, activation=activation, poincare=poincare)
         self.transform = transform
-
+        self.poincare = poincare
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, query, key, value, mask=None, dropout=True):
@@ -75,9 +76,11 @@ class Attention(nn.Module):
     Compute 'Scaled Dot Product Attention
     """
 
-    def __init__(self, n_heads=1, activation='softmax', top_k=0):
-        self.n_heads = n_heads
+    def __init__(self, n_heads=1, activation='softmax', poincare=False):
         super().__init__()
+        self.n_heads = n_heads
+        self.poincare = poincare
+
         self.activation_type = activation
         if activation=='softmax':
             self.activation = nn.Softmax(dim=-1)
@@ -88,6 +91,41 @@ class Attention(nn.Module):
         else:
             self.activation = None
         #self.top_k = top_k
+
+    def poincare_distance(self, x, y, eps=1e-5):
+        """
+        Compute pairwise Poincaré distances between x and y.
+        x: (batch_size, seq_len, d_model)
+        y: (batch_size, seq_len, d_model)  or  (batch_size, seq_len, d_model)
+
+        We'll broadcast them to shape (batch_size, seq_len, seq_len, d_model)
+        and compute distance for each pair.
+        """
+        # x, y => (batch_size, seq_len, 1, d_model), (batch_size, 1, seq_len, d_model)
+        # so we can broadcast differences across pairs
+        x = x * (0.999 / (torch.norm(x, dim=-1, keepdim=True) + 1e-7))
+        y = y * (0.999 / (torch.norm(y, dim=-1, keepdim=True) + 1e-7))
+        x_expanded = x.unsqueeze(3)  # (B, L, 1, d_model)
+        y_expanded = y.unsqueeze(2)  # (B, 1, L, d_model)
+
+
+        # Norm-squared
+        x_norm_sq = torch.sum(x_expanded ** 2, dim=-1, keepdim=True)  # (B, L, 1, 1)
+        y_norm_sq = torch.sum(y_expanded ** 2, dim=-1, keepdim=True)  # (B, 1, L, 1)
+        # Euclidean difference
+        diff = x_expanded - y_expanded  # (B, L, L, d_model)
+        diff_norm_sq = torch.sum(diff ** 2, dim=-1)  # (B, L, L)
+
+        # Poincaré distance formula:
+        # d(x,y) = arcosh( 1 + 2 ||x - y||^2 / ((1 - ||x||^2)(1 - ||y||^2)) )
+        # clamp denominators to avoid zero division
+        denom = (1.0 - x_norm_sq) * (1.0 - y_norm_sq)  # (B, L, L, 1)
+        denom = torch.clamp(denom, min=eps)
+
+        arg = 1.0 + 2.0 * diff_norm_sq / denom.squeeze(-1)  # (B, L, L)
+        arg = torch.clamp(arg, min=1.0 + eps)  # ensure >= 1 for arcosh
+
+        return torch.acosh(arg)
 
     def forward(self, query, key, value, mask=None, dropout=None):
         if type(key)==list:
@@ -110,8 +148,13 @@ class Attention(nn.Module):
             else:
                 scores = sum(scores)
         else:
-            scores = torch.matmul(query, key.transpose(-2, -1)) \
-                     / torch.sqrt(torch.tensor(query.size(-1)))
+            if self.poincare:
+                #query = poincare_exp_map_zero(query)
+                #key = poincare_exp_map_zero(key)
+                scores = - self.poincare_distance(query, key)
+            else:
+                scores = torch.matmul(query, key.transpose(-2, -1)) \
+                         / torch.sqrt(torch.tensor(query.size(-1)))
             if mask is not None:
                 mask = mask == 0
                 mask = mask.unsqueeze(1).expand(-1, self.n_heads, - 1, -1)
@@ -196,11 +239,12 @@ def lambda_init_fn(depth):
 
 
 class MultiheadDiffAttn(nn.Module):
-    def __init__(self, h, d_model, depth):
+    def __init__(self, h, d_model, depth, poincare=False):
         '''
         Multi-head Diff Attn for special case with one-head
         '''
         super().__init__()
+        self.poincare = poincare
         self.embed_dim = d_model
         # num_heads set to half of Transformer's #heads
         self.num_heads = h #// args.model_parallel_size
@@ -223,6 +267,42 @@ class MultiheadDiffAttn(nn.Module):
 
         self.subln = RMSNorm(2 * self.head_dim, eps=1e-5, elementwise_affine=False)
 
+    def poincare_distance(self, x, y, eps=1e-5):
+        """
+        Compute pairwise Poincaré distances between x and y.
+        x: (batch_size, seq_len, d_model)
+        y: (batch_size, seq_len, d_model)  or  (batch_size, seq_len, d_model)
+
+        We'll broadcast them to shape (batch_size, seq_len, seq_len, d_model)
+        and compute distance for each pair.
+        """
+        # x, y => (batch_size, seq_len, 1, d_model), (batch_size, 1, seq_len, d_model)
+        # so we can broadcast differences across pairs
+        #print(x.size(), y.size())
+        x = x * (0.999 / (torch.norm(x, dim=-1, keepdim=True) + 1e-7))
+        y = y * (0.999 / (torch.norm(y, dim=-1, keepdim=True) + 1e-7))
+        x_expanded = x.unsqueeze(3)  # (B, L, 1, d_model)
+        y_expanded = y.unsqueeze(2)  # (B, 1, L, d_model)
+        #print(x_expanded.size(), y_expanded.size())
+        # Norm-squared
+        x_norm_sq = torch.sum(x_expanded ** 2, dim=-1, keepdim=True)  # (B, L, 1, 1)
+        y_norm_sq = torch.sum(y_expanded ** 2, dim=-1, keepdim=True)  # (B, 1, L, 1)
+
+        # Euclidean difference
+        diff = x_expanded - y_expanded  # (B, L, L, d_model)
+        diff_norm_sq = torch.sum(diff ** 2, dim=-1)  # (B, L, L)
+
+        # Poincaré distance formula:
+        # d(x,y) = arcosh( 1 + 2 ||x - y||^2 / ((1 - ||x||^2)(1 - ||y||^2)) )
+        # clamp denominators to avoid zero division
+        denom = (1.0 - x_norm_sq) * (1.0 - y_norm_sq)  # (B, L, L, 1)
+        denom = torch.clamp(denom, min=eps)
+
+        arg = 1.0 + 2.0 * diff_norm_sq / denom.squeeze(-1)  # (B, L, L)
+        arg = torch.clamp(arg, min=1.0 + eps)  # ensure >= 1 for arcosh
+
+        return torch.acosh(arg)
+
     def get_attention(
             self,
             q, k, v,
@@ -242,7 +322,10 @@ class MultiheadDiffAttn(nn.Module):
         k = repeat_kv(k.transpose(1, 2), self.n_rep)
         #v = repeat_kv(v.transpose(1, 2), self.n_rep)
         q *= self.scaling
-        attn_weights = torch.matmul(q, k.transpose(-1, -2))
+        if self.poincare:
+            attn_weights = - self.poincare_distance(q, k)
+        else:
+            attn_weights = torch.matmul(q, k.transpose(-1, -2))
         '''
         if mask is None:
             mask = torch.triu(

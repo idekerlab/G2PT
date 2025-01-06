@@ -1,4 +1,4 @@
-#import torch.nn as nn
+import torch.nn as nn
 import torch
 from torch import Tensor, Size
 from typing import Union, List, Tuple
@@ -12,6 +12,57 @@ import numbers
 
 _shape_t = Union[int, List[int], Size]
 
+
+def poincare_log_map_zero(x, eps=1e-15):
+    """
+    Log map from the Poincaré ball to the tangent space at 0.
+    x: (..., d)
+    Returns: (..., d), the log-space representation in R^d.
+    """
+    # Euclidean norm of x
+    norm_x = torch.norm(x, dim=-1, keepdim=True)  # (..., 1)
+
+    # Handle zero vector separately to avoid division by zero
+    # if norm_x < eps, then x is effectively 0 => log_0(0) = 0
+    mask = (norm_x > eps)
+
+    # factor = 2 / (1 - ||x||^2)
+    # We'll clamp 1 - norm_x^2 to avoid division by zero if x is near boundary
+    denom = 1.0 - norm_x.pow(2)
+    denom = torch.clamp(denom, min=eps)
+    factor = 2.0 / denom
+
+    # log_x = factor * x
+    log_x = factor * x
+
+    # Where norm_x <= eps, set log_x = 0
+    log_x = torch.where(mask, log_x, torch.zeros_like(log_x))
+    return log_x
+
+
+def poincare_exp_map_zero(v, eps=1e-15):
+    """
+    Exp map from the tangent space at 0 to the Poincaré ball.
+    v: (..., d)
+    Returns: (..., d), the point in the Poincaré ball.
+    """
+    norm_v = torch.norm(v, dim=-1, keepdim=True)  # (..., 1)
+
+    # For v=0 => exp_0(0) = 0
+    mask = (norm_v > eps)
+
+    # alpha = tanh(||v|| / 2) / ||v||
+    # clamp norm_v to avoid dividing by zero
+    half_norm = 0.5 * norm_v
+    scale = torch.tanh(torch.clamp(half_norm, max=15.0)) / (norm_v + eps)
+
+    # x = alpha * v
+    exp_x = scale * v
+
+    # Where norm_v <= eps, set exp_x=0
+    exp_x = torch.where(mask, exp_x, torch.zeros_like(exp_x))
+
+    return exp_x
 
 class LayerNormNormedScaleOnly(Module):
     r"""Applies Layer Normalization over a mini-batch of inputs as described in
@@ -139,3 +190,48 @@ class RMSNorm(Module):
 
     def extra_repr(self) -> str:
         return f'dim={self.dim}, eps={self.eps}, elementwise_affine={self.elementwise_affine}'
+
+
+class PoincareNorm(Module):
+    """
+    Rescales vectors so their Euclidean norm is below `max_norm` (< 1).
+    """
+
+    def __init__(self, d_model, eps=1e-5, max_norm=0.999):
+        super().__init__()
+        self.eps = eps
+
+        # Learnable parameters like standard LayerNorm
+        self.gamma = nn.Parameter(torch.ones(d_model))
+        self.beta = nn.Parameter(torch.zeros(d_model))
+        self.max_norm = max_norm
+        self.desired = (self.max_norm - self.eps)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: shape (..., d_model)
+
+        # 1) compute mean & variance along the last dim
+
+        x_log = poincare_log_map_zero(x, eps=self.eps)
+        mean = x_log.mean(dim=-1, keepdim=True)
+        var = x_log.var(dim=-1, keepdim=True, unbiased=False)
+
+        # 2) standard LN transform
+        x_hat = (x_log - mean) / torch.sqrt(var + self.eps)
+        x_hat = x_hat * self.gamma + self.beta
+
+        norms = x_hat.norm(p=2, dim=-1, keepdim=True)
+        exceed_mask = norms > (self.max_norm - self.eps)
+
+        # Avoid division by zero by clamping norms to a small minimum
+        norms_safe = torch.clamp(norms, min=1e-12)
+        scale_factors = self.desired / norms_safe
+        scale_factors = torch.where(exceed_mask, scale_factors, torch.ones_like(norms))
+        # Multiply x by the scale factors
+        x_hat = x_hat * scale_factors
+
+        # 3) exp-map back
+        x_out = poincare_exp_map_zero(x_hat, eps=self.eps)
+
+        return x_out
+

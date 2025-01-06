@@ -24,7 +24,8 @@ class HierarchicalTransformerUpdate(nn.Module):
     Transformer = MultiHead_Attention + Feed_Forward with sublayer connection
     """
 
-    def __init__(self, hidden, attn_heads, feed_forward_hidden, norm, dropout=0.2, norm_channel_first=False, n_type=1, transform=True, activation='softmax'):
+    def __init__(self, hidden, attn_heads, feed_forward_hidden, norm, dropout=0.2, norm_channel_first=False,
+                 n_type=1, transform=True, activation='softmax', poincare=False):
         """
         :param hidden: hidden size of transformer
         :param attn_heads: head sizes of multi-head attention
@@ -35,7 +36,8 @@ class HierarchicalTransformerUpdate(nn.Module):
 
         super(HierarchicalTransformerUpdate, self).__init__()
         self.attn_heads = attn_heads
-        self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, transform=transform, n_type=n_type, activation=activation)
+        self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, transform=transform,
+                                              n_type=n_type, activation=activation, poincare=poincare)
         #self.layer_norm = nn.LayerNorm(hidden)
         self.norm = norm
         self.feed_forward = PositionWiseFeedForward(d_model=hidden, d_ff=feed_forward_hidden, dropout=dropout)
@@ -61,7 +63,7 @@ class HierarchicalTransformerUpdate(nn.Module):
 
 class HierarchicalTransformer(nn.Module):
     def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, conv_type='system',
-                 norm_channel_first=False, transform=True, n_type=1, activation='softmax'):
+                 norm_channel_first=False, transform=True, n_type=1, activation='softmax', poincare=False):
         """
         :param hidden: hidden size of transformer
         :param attn_heads: head sizes of multi-head attention
@@ -72,8 +74,8 @@ class HierarchicalTransformer(nn.Module):
 
         super(HierarchicalTransformer, self).__init__()
         self.hierarchical_transformer_update = HierarchicalTransformerUpdate(hidden, attn_heads, feed_forward_hidden, inner_norm,
-                                                                     dropout, norm_channel_first=norm_channel_first, transform=transform
-                                                                             , n_type=n_type, activation=activation)
+                                                                     dropout, norm_channel_first=norm_channel_first, transform=transform,
+                                                                             n_type=n_type, activation=activation, poincare=poincare)
         self.norm = outer_norm
         self.conv_type = conv_type
         self.dropout = nn.Dropout(dropout)
