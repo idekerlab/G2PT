@@ -64,6 +64,62 @@ def poincare_exp_map_zero(v, eps=1e-15):
 
     return exp_x
 
+
+def euclidian_to_poincare(x: torch.Tensor, eps: float = 1e-15) -> torch.Tensor:
+    """
+    Maps a Euclidean vector x to the Poincaré disk in the same direction,
+    with hyperbolic 'length' = Euclidean norm of x.
+
+    Args:
+        x: (batch_size, d) or (d,) shape in Euclidean space.
+        eps: small constant for numerical stability.
+
+    Returns:
+        y: same shape as x, with ||y|| < 1, so y is in the open unit ball.
+           The hyperbolic distance from 0 to y is ||x|| (Euclidean).
+    """
+    # Euclidean norm of x
+    norm_x = x.norm(dim=-1, keepdim=True)  # shape (..., 1)
+
+    # For nonzero x: y = tanh(||x||/2) * (x / ||x||)
+    # For x = 0: y = 0
+    scale = torch.tanh(norm_x / 2) / (norm_x + eps)  # shape (..., 1)
+
+    y = x * scale  # shape (..., d)
+
+    # Where ||x|| is effectively 0, set y to 0
+    mask = (norm_x > eps).type_as(x)
+    y = y * mask  # broadcast multiplication, zero out if norm_x <= eps
+
+    return y
+
+
+def feature_clipping(
+        x: torch.Tensor,
+        r: float=2.0) -> torch.Tensor:
+    """
+    Clips the Euclidean norm of x to be at most r.
+
+    x: shape (..., d)
+    r: scalar, the effective radius for clipping.
+
+    Returns:
+        x_clipped: shape (..., d), same shape as x,
+                   with ||x_clipped|| <= r.
+    """
+    # Norm along the last dimension
+    norm_x = torch.norm(x, p=2, dim=-1, keepdim=True)  # (..., 1)
+
+    # scale_factor = min(1, r / norm_x)
+    # In PyTorch: elementwise minimum
+    scale_factor = r / (norm_x + 1e-15)  # avoid /0
+    scale_factor = torch.clamp(scale_factor, max=1.0)  # => <= 1
+
+    # x_clipped
+    x_clipped = x * scale_factor
+
+    return x_clipped
+
 class LayerNormNormedScaleOnly(Module):
     r"""Applies Layer Normalization over a mini-batch of inputs as described in
     the paper `Layer Normalization <https://arxiv.org/abs/1607.06450>`__

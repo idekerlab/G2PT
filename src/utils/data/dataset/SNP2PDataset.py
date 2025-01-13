@@ -84,11 +84,22 @@ class SNP2PDataset(Dataset):
 
 class PLINKDataset(Dataset):
 
-    def __init__(self, tree_parser, bfile, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None, flip=False,
-                 input_format='indices', cov_ids=None):
+    def __init__(self, tree_parser : SNPTreeParser, bfile, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None, flip=False,
+                 input_format='indices', cov_ids=()):
+        """
+        tree_parser: SNP tree parser object
+        bfile: PLINK bfile prefix
+        cov: covariates tab-delimited text file. If None, covariates will be inferred from bfile.fam file
+        pheno: phenotype tab-delimited text file. If None, phenotype will be inferred from bfile.fam file
+        cov_mean_dict: dictionary of covariates mean, {cov_id: mean_value}. If None, mean of covariates will be calculated from cov file
+        cov_std_dict: dictionary of covariates standard deviation, {cov_id: std_value}. If None, standard deviation of covariates will be calculated from cov file
+        flip: If True, it will flip reference and altered allele
+        input_format: input data format for model, indices or binary
+        cov_ids: If you want to use specific covariates, you can put list of covariate ids. If None, dataset will return all covariates from cov file
+        """
         self.tree_parser = tree_parser
+        self.bfile = bfile
         print('Loading PLINK data at %s'%bfile)
-        print('Covariates for prediction %s' % ", ".join(cov_ids))
         plink_data = plink.read_plink(path=bfile)
         self.genotype = pd.DataFrame(plink_data.call_genotype.as_numpy().sum(axis=-1).T)
         self.genotype.index = plink_data.sample_id.values
@@ -97,6 +108,7 @@ class PLINKDataset(Dataset):
         if flip:
             self.genotype = 2 - self.genotype
             print("Swapping Ref and Alt!")
+        self.flip = flip
         print("From PLINK %d variants with %d samples are queried" % (self.genotype.shape[1], self.genotype.shape[0]))
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
         if cov is not None:
@@ -110,6 +122,10 @@ class PLINKDataset(Dataset):
             self.cov_df = self.cov_df.loc[self.cov_df.PHENOTYPE!=-1]
             self.cov_df['PHENOTYPE'] = self.cov_df['PHENOTYPE'] - 1
             self.genotype = self.genotype.loc[self.cov_df.IID]
+
+        self.cov_df['FID'] = self.cov_df['FID'].astype(str)
+        self.cov_df['IID'] = self.cov_df['IID'].astype(str)
+
         if pheno is not None:
             self.pheno_df = pd.read_csv(pheno, sep='\t')
             if 'PHENOTYPE' not in self.cov_df.columns:
@@ -117,14 +133,13 @@ class PLINKDataset(Dataset):
                 self.genotype = self.genotype.loc[self.cov_df.IID]
         else:
             self.pheno_df = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
-        self.cov_df['FID'] = self.cov_df['FID'].astype(int)
-        self.cov_df['IID'] = self.cov_df['IID'].astype(int)
+
         if len(cov_ids) != 0:
             self.cov_ids = cov_ids
         else:
             self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov != 'PHENOTYPE']
         self.n_cov = len(self.cov_ids) + 1 ## +1 for sex cov
-        self.genotype = self.genotype.loc[self.cov_df['IID'].map(str)]
+        self.genotype = self.genotype.loc[self.cov_df['IID']]
         self.genotype = self.genotype[snp_sorted]
         self.has_phenotype = False
         if 'PHENOTYPE' in self.cov_df.columns:
@@ -140,16 +155,29 @@ class PLINKDataset(Dataset):
             self.cov_mean_dict = cov_mean_dict
             self.cov_std_dict = cov_std_dict
 
-        print("Model will use %d Covariates"%self.n_cov)
-        print("Covariates: ", ", ".join(self.cov_ids))
-
-
-
     def __len__(self):
         return self.cov_df.shape[0]
 
+    def summary(self):
+        print('PLINK data from %s'%self.bfile)
+        print('Covariates for prediction %s' % ", ".join(self.cov_ids))
+        print("Covariates: ", ", ".join(self.cov_ids))
+        if self.flip:
+            print("Ref. and Alt. are flipped")
+        print("%d of participant with %d of variants"%(self.genotype.shape[0], self.genotype.shape[1]))
+
     def is_binary(self, array):
         return np.isin(array, [0, 1]).all()
+
+    def sample_population(self, n=100, inplace=False):
+        if not inplace:
+            sampled_individual = self.cov_df.IID.sample(n=n).tolist()
+            return sampled_individual
+        else:
+            self.genotype = self.genotype.sample(n=n)
+            self.cov_df = self.cov_df.set_index("IID").loc[self.genotype.index].reset_index().rename(columns={'index':"IID"})
+            self.pheno_df = self.pheno_df.set_index("IID").loc[self.genotype.index].reset_index().rename(columns={'index':"IID"})
+
 
     def __getitem__(self, index):
         start = time.time()
@@ -170,12 +198,6 @@ class PLINKDataset(Dataset):
             snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
             snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
         sample2snp_dict['embedding'] = snp_type_dict
-        #heterozygous_gene_indices = torch.unique(snp_type_dict['heterozygous']['gene']).tolist()
-        #homozygous_a1_gene_indices = torch.unique(snp_type_dict['homozygous_a1']['gene']).tolist()
-        #gene2sys_mask_for_gene = torch.zeros((self.tree_parser.n_systems, self.tree_parser.n_genes), dtype=torch.bool)
-        #gene2sys_mask_for_gene[:, homozygous_a1_gene_indices] = 1
-        #gene2sys_mask_for_gene[:, heterozygous_gene_indices] = 1
-        #result_dict["gene2sys_mask"] = torch.tensor(self.tree_parser.gene2sys_mask, dtype=torch.bool) & gene2sys_mask_for_gene
         if self.has_phenotype:
             result_dict['phenotype'] = covariates['PHENOTYPE']
         covariates_tensor = [0]*self.n_cov

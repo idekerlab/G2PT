@@ -55,14 +55,9 @@ class Genotype2PhenotypeTransformer(nn.Module):
                                                       self.sys2gene_update_norm_inner, self.sys2gene_update_norm_outer,
                                                       dropout, norm_channel_first=self.norm_channel_first,
                                                       conv_type='system', activation='softmax', poincare=poincare)
-        if poincare:
-            self.gene_norm = PoincareNorm(hidden_dims)
-            self.sys_norm = PoincareNorm(hidden_dims)
-            self.effect_norm = PoincareNorm(hidden_dims)
-        else:
-            self.gene_norm = nn.LayerNorm(hidden_dims)
-            self.sys_norm = nn.LayerNorm(hidden_dims)
-            self.effect_norm = nn.LayerNorm(hidden_dims)
+        self.gene_norm = nn.LayerNorm(hidden_dims)
+        self.sys_norm = nn.LayerNorm(hidden_dims)
+        self.effect_norm = nn.LayerNorm(hidden_dims)
 
         self.dropout = nn.Dropout(dropout)
         self.activation = nn.GELU()
@@ -114,12 +109,9 @@ class Genotype2PhenotypeTransformer(nn.Module):
                                                          hierarchical_mask['query'].to(torch.int64))
                     system_effect_keys = torch.index_select(update_tensor, 1,
                                                       hierarchical_mask['key'].to(torch.int64))
-                    if self.poincare:
-                        system_embedding_queries = self.moebius_add(system_embedding_queries, system_effect_queries)
-                        system_embedding_keys = self.moebius_add(system_embedding_keys, system_effect_keys)
-                    else:
-                        system_embedding_queries = system_embedding_queries + system_effect_queries
-                        system_embedding_keys = system_embedding_keys + system_effect_keys
+
+                    system_embedding_queries = system_embedding_queries + system_effect_queries
+                    system_embedding_keys = system_embedding_keys + system_effect_keys
                     system_embedding_queries = self.sys_norm(system_embedding_queries)
                     system_embedding_keys = self.sys_norm(system_embedding_keys)
                     mask = hierarchical_mask['mask']
@@ -129,26 +121,24 @@ class Genotype2PhenotypeTransformer(nn.Module):
                     mask = hierarchical_mask
 
                 hitr_result = hitr.forward(system_embedding_queries, system_embedding_keys, mask)
-
+                hitr_result = self.effect_norm(hitr_result)
                 if input_format == 'indices':
+                    '''
                     results = []
+
                     for b, value in enumerate(update_tensor):
                         results.append(
                             update_tensor[b].index_add(0, hierarchical_mask['query'], hitr_result[b]))
                     system_effect = torch.stack(results, dim=0)
-
-                    #update_tensor = update_tensor + system_effect
-                    #update_result = update_result + system_effect
-                    if self.poincare:
-                        update_tensor = self.moebius_add(update_tensor, self.effect_norm(system_effect))
-                        update_result = self.moebius_add(update_result, self.effect_norm(system_effect))
-                    else:
-                        update_tensor = update_tensor + self.effect_norm(system_effect)
-                        update_result = update_result + self.effect_norm(system_effect)
+                    system_effect = hitr_result.scatter(hierarchical_mask['query'], hitr_result, 0)
+                    '''
+                    query_indices = hierarchical_mask['query'].unsqueeze(0).expand(batch_size, -1).unsqueeze(-1).expand(-1, -1, self.hidden_dims)
+                    update_tensor = update_tensor.scatter_add(1, query_indices, hitr_result)# + self.effect_norm(system_effect)
+                    update_result = update_result.scatter_add(1, query_indices, hitr_result)# + self.effect_norm(system_effect)
                 else:
-                    system_embedding_output = system_embedding_output + self.effect_norm(hitr_result)
-                    update_tensor = update_tensor + self.effect_norm(hitr_result)
-                    update_result = update_result + self.effect_norm(hitr_result)
+                    system_embedding_output = system_embedding_output + hitr_result
+                    update_tensor = update_tensor + hitr_result
+                    update_result = update_result + hitr_result
         if return_updates:
             # return original system embeddings and update tensor separately
             return system_embedding, update_result

@@ -20,10 +20,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.chromosomes = tree_parser.chromosomes
         self.snp_embedding = nn.Embedding(self.n_snps + 1, hidden_dims, padding_idx=self.n_snps)
         self.gene_embedding = nn.Embedding(self.n_genes + 1, hidden_dims, padding_idx=self.n_genes)
-        if poincare:
-            self.snp_norm = PoincareNorm(hidden_dims)
-        else:
-            self.snp_norm = nn.LayerNorm(hidden_dims)
+        self.snp_norm = nn.LayerNorm(hidden_dims)
 
 
         self.snp2gene_update_norm_inner = nn.LayerNorm(hidden_dims, eps=0.1)
@@ -58,12 +55,6 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.n_covariates = n_covariates
         self.covariate_linear_1 = nn.Linear(self.n_covariates, hidden_dims)
         self.covariate_linear_2 = nn.Linear(hidden_dims, hidden_dims)
-        #if self.poincare:
-        #    self.covariate_norm_1 = PoincareNorm(hidden_dims, eps=0.1)
-        #    self.covariate_norm_2 = PoincareNorm(hidden_dims, eps=0.1)
-        #    self.sys2pheno_norm = PoincareNorm(hidden_dims, eps=0.1)
-        #    self.gene2pheno_norm = PoincareNorm(hidden_dims, eps=0.1)
-        #else:
         self.covariate_norm_1 = nn.LayerNorm(hidden_dims, eps=0.1)
         self.covariate_norm_2 = nn.LayerNorm(hidden_dims, eps=0.1)
         self.sys2pheno_norm = nn.LayerNorm(hidden_dims, eps=0.1)
@@ -120,10 +111,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         batch_size = covariates.size(0)
         gene_embedding, snp_effect_on_gene = self.get_snp2gene(genotype=genotype_dict)
         if self.input_format == 'indices':
-            if self.poincare:
-                gene_embedding = self.moebius_add(gene_embedding[:, :-1, :], self.effect_norm(snp_effect_on_gene[:, :-1, :]))
-            else:
-                gene_embedding = gene_embedding[:, :-1, :] + self.effect_norm(snp_effect_on_gene[:, :-1, :])
+            gene_embedding = gene_embedding[:, :-1, :] + self.effect_norm(snp_effect_on_gene[:, :-1, :])
         else:
             gene_embedding = gene_embedding + self.effect_norm(snp_effect_on_gene)
         #gene_embedding = gene_embedding[:, :-1, :] + snp_effect_on_gene[:, :-1, :]
@@ -138,29 +126,18 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                                                                        direction='forward', return_updates=True,
                                                                        input_format=self.input_format,
                                                                        update_tensor=total_update)
-            if self.poincare:
-                total_update = self.moebius_add(total_update, system_effect_forward)
-            else:
-                total_update = total_update + system_effect_forward
+            total_update = total_update + system_effect_forward
         if env2sys:
             system_embedding, system_effect_backward = self.get_sys2sys(system_embedding,
                                                                         nested_hierarchical_masks_backward,
                                                                         direction='backward', return_updates=True,
                                                                         input_format=self.input_format,
                                                                         update_tensor=total_update)
-            if self.poincare:
-                total_update = self.moebius_add(total_update, system_effect_backward)
-                system_embedding = self.moebius_add(system_embedding, total_update)
-                #total_update = self.moebius_add(total_update + system_effect_backward
-            else:
-                total_update = total_update + system_effect_backward
-                system_embedding = system_embedding + total_update
+            total_update = total_update + system_effect_backward
+            system_embedding = system_embedding + total_update
         if sys2gene:
             gene_embedding, system_effect_on_gene = self.get_sys2gene(gene_embedding, system_embedding, sys2gene_mask)
-            if self.poincare:
-                gene_embedding = self.moebius_add(gene_embedding, self.effect_norm(system_effect_on_gene))
-            else:
-                gene_embedding = gene_embedding + self.effect_norm(system_effect_on_gene)
+            gene_embedding = gene_embedding + self.effect_norm(system_effect_on_gene)
             #gene_embedding = gene_embedding + system_effect_on_gene
         phenotype_vector = self.get_phenotype_vector(covariates)
         prediction = self.prediction(phenotype_vector, system_embedding, gene_embedding, genotype=genotype_dict['embedding'])
@@ -195,17 +172,19 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                 genotype['embedding']['heterozygous'], self.snp2gene_heterozygous)
             homozygous_gene_indices, homozygous_snp_effect_from_embedding = self.get_snp_effects(
                 genotype['embedding']['homozygous_a1'], self.snp2gene_homozygous)
+            batch_size = homozygous_gene_indices.size(0)
+            snp_effect = torch.zeros_like(self.gene_embedding.weight).unsqueeze(0).expand(batch_size, -1, -1)
+            '''
             gene_indices = torch.cat([heterozygous_gene_indices, homozygous_gene_indices], dim=-1)
             snp_effect_from_embedding = torch.cat(
                 [heterozygous_snp_effect_from_embedding, homozygous_snp_effect_from_embedding], dim=1)
-
-            batch_size = gene_indices.size(0)
-            snp_effect = torch.zeros_like(self.gene_embedding.weight).unsqueeze(0).expand(batch_size, -1, -1)
-            results = []
             for b, value in enumerate(snp_effect):
                 results.append(
                     snp_effect[b].index_add(0, gene_indices[b], snp_effect_from_embedding[b]))
             snp_effect = torch.stack(results, dim=0)
+            '''
+            snp_effect = snp_effect.scatter_add(1, heterozygous_gene_indices.unsqueeze(-1).expand(-1, -1, self.hidden_dims), heterozygous_snp_effect_from_embedding)
+            snp_effect = snp_effect.scatter_add(1, homozygous_gene_indices.unsqueeze(-1).expand(-1, -1, self.hidden_dims), homozygous_snp_effect_from_embedding)
             gene_embedding = self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)
             return gene_embedding,  snp_effect
         else:

@@ -8,9 +8,10 @@ class SNPTreeParser(TreeParser):
 
     def __init__(self, ontology, snp2gene, dense_attention=False, sys_annot_file=None, by_chr=False):
         super(SNPTreeParser, self).__init__(ontology, dense_attention=dense_attention, sys_annot_file=sys_annot_file)
-        print("%d in gene2sys mask" % self.gene2sys_mask.sum())
+
         #self.snp2gene_df = self.ontology.loc[self.ontology['interaction'] == 'snp']
         self.snp2gene_df = pd.read_csv(snp2gene, sep='\t', names=['snp', 'gene', 'chr'])
+        """
         genes = self.snp2gene_df.gene.unique()
         genes_not_in_sys2gene = [gene for gene in genes if gene not in self.gene2ind.keys()]
         gene_max_ind = max(self.gene2ind.values())
@@ -28,10 +29,9 @@ class SNPTreeParser(TreeParser):
             self.gene2sys_mask[self.sys2ind[system], self.gene2ind[gene]] = 1.
             self.sys2gene_dict[self.sys2ind[system]].append(self.gene2ind[gene])
             self.gene2sys_dict[self.gene2ind[gene]].append(self.sys2ind[system])
-        print("Total %d Gene-System interactions are queried"%self.gene2sys_mask.sum())
         self.sys2gene_mask = self.gene2sys_mask.T
         self.subtree_types = self.system_df['interaction'].unique()
-
+        """
 
         snps2gene_df_group_by_snps = self.snp2gene_df.groupby('snp')
         snps2gene_df_group_by_genes = self.snp2gene_df.groupby('gene')
@@ -65,10 +65,8 @@ class SNPTreeParser(TreeParser):
                 else:
                     self.snp2sys[snp] = [sys]
 
-        print("%d SNPs are queried" % self.n_snps)
-        print(self.snp2ind)
-        if by_chr:
-            print("Embedding will feed by chromosome")
+
+
         self.by_chr = by_chr
         self.snp2gene_mask = np.zeros((self.n_genes, self.n_snps))
         self.gene2snp_dict = {ind:[] for gene, ind in self.gene2ind.items()}
@@ -78,7 +76,19 @@ class SNPTreeParser(TreeParser):
             self.gene2snp_dict[self.gene2ind[gene]].append(self.snp2ind[snp])
             self.snp2gene_dict[self.snp2ind[snp]].append(self.gene2ind[gene])
         self.gene2snp_mask = self.snp2gene_mask.T
-        print("%d in snp2gene mask" % self.snp2gene_mask.sum())
+
+
+    def summary(self, system=True, gene=True, snp=True):
+        super(SNPTreeParser, self).summary(system=system, gene=gene)
+        if snp:
+            print("SNP Index: ")
+            if self.by_chr:
+                print("Embedding will feed by chromosome")
+            print("The number of SNP-Gene connections: %d" % self.snp2gene_mask.sum())
+            for i in range(len(self.ind2snp)):
+                print(i, ":", self.ind2snp[i], " -> ", ",".join(self.snp2gene))
+            print(" ")
+
 
     def get_sys2snp(self, sys):
         genes = self.sys2gene_full[sys]

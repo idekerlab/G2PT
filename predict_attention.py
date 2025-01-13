@@ -155,6 +155,7 @@ def main():
 
     phenotypes = np.concatenate(phenotypes)[:, 0]
     cov_df["prediction"] = phenotypes
+    cov_df.to_csv(args.out + '.prediction.csv', index=False)
 
     whole_dataset_with_attentions = pd.concat([cov_df, sys_attention_df, gene_attention_df], axis=1)
     whole_dataset_with_attentions = whole_dataset_with_attentions[whole_dataset_with_attentions.columns[1:]]

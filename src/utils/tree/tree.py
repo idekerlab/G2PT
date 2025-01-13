@@ -30,9 +30,8 @@ class TreeParser(object):
         self.n_systems = len(self.sys2ind)
         self.n_genes = len(self.gene2ind)
         print("%d Systems are queried"%self.n_systems)
-        print(self.sys2ind)
         print("%d Genes are queried"%self.n_genes)
-        print(self.gene2ind)
+
         self.system2system_mask = np.zeros((len(self.sys2ind), len(self.sys2ind)))
 
         for parent_system, child_system in zip(self.system_df['parent'], self.system_df['child']):
@@ -53,6 +52,9 @@ class TreeParser(object):
         self.subtree_types = self.system_df['interaction'].unique()
         self.system_graph = nx.from_pandas_edgelist(self.system_df, create_using=nx.DiGraph(), source='parent',
                                                     target='child')
+        #self.system_graph_revered = nx.from_pandas_edgelist(self.system_df, create_using=nx.DiGraph(), source='child',
+        #                                            target='parent')
+        self.node_height_dict = self.compute_node_heights()
 
         for sys in systems:
             if sys in sys2gene_dict.keys():
@@ -107,10 +109,24 @@ class TreeParser(object):
                     for child_j in children_genes:
                         self.gene2gene_mask[self.gene2ind[child_i], self.gene2ind[child_j]] = 1
 
-
-
-        #self.subtree_depths = {len(nx.dag_longest_path(self.subtree_graphs[subtree_type]))
-        #                       for subtree_type in self.subtree_types}
+    def summary(self, system=True, gene=True):
+        if system:
+            print("The number of systems : %d"%self.n_systems)
+            print(" ")
+            print("System Index: ")
+            for i in range(len(self.ind2sys)):
+                if self.sys_annot_dict:
+                    print(i, ":", self.ind2sys[i], self.sys_annot_dict[self.ind2sys[i]])
+                else:
+                    print(i, ":", self.ind2sys[i])
+            print(" ")
+        if gene:
+            print("The number of genes   : %d" % self.n_genes)
+            print("The number of gene-system connections: %d" % self.gene2sys_mask.sum())
+            print("Gene Index: ")
+            for i in range(len(self.ind2gene)):
+                print(i, ":", self.ind2gene[i], ' -> ', ",".join(self.gene2sys[self.ind2gene[i]]))
+            print(" ")
 
     def add_child_genes_to_parents(self, tree, node, gene_dict):
         """
@@ -135,6 +151,33 @@ class TreeParser(object):
         # Update the gene set for the current node
         gene_dict[node] = genes
         return genes
+
+    def compute_node_heights(self):
+        # Ensure the graph is a tree (i.e., has a single root)
+        if not nx.is_directed_acyclic_graph(self.system_graph):
+            raise ValueError("The input graph must be a directed acyclic graph (DAG).")
+
+        # Start by identifying leaf nodes
+        leaf_nodes = [node for node in self.system_graph.nodes if self.system_graph.out_degree(node) == 0]
+
+        # Dictionary to store node heights
+        heights = {node: 0 for node in leaf_nodes}  # Leaf nodes have height 0
+
+        # Process nodes in reverse topological order
+        for node in reversed(list(nx.topological_sort(self.system_graph))):
+            if node not in heights:  # Non-leaf nodes
+                # Height is 1 + max height of its children
+                heights[node] = 1 + max(heights[child] for child in self.system_graph.successors(node))
+        return heights
+
+    def get_descendants_sorted_by_height(self, node):
+        # Compute the height of all nodes
+        node_heights = self.compute_node_heights()
+        # Get all descendants of the given node
+        descendants = nx.descendants(self.system_graph, node)
+        # Sort descendants by height (ascending or descending)
+        sorted_descendants = sorted(descendants, key=lambda x: node_heights[x])
+        return sorted_descendants
 
     def write_gmt(self, output_path):
         f = open(output_path, 'w')
