@@ -151,3 +151,22 @@ class SNPTreeParser(TreeParser):
         mask = {CHR: self.get_snp2gene_mask(embeddings[CHR]['gene'], embeddings[CHR]['snp'], type_indices=type_indices, CHR=CHR) for CHR in self.chromosomes}
         return {CHR: {"snp":embeddings[CHR]['snp'], "gene":embeddings[CHR]['gene'], 'mask':mask[CHR] } for CHR in self.chromosomes}
 
+    def get_target_indices(self, target_gos, target_genes, target_snps):
+        """Fetch integer indices from parser for the target GO, gene, and SNP lists."""
+        target_go_inds = [self.sys2ind[go] for go in target_gos]
+        target_gene_inds = [self.gene2ind[g] for g in target_genes]
+        target_snp_inds = [self.snp2ind[s] for s in target_snps]
+        return target_go_inds, target_gene_inds, target_snp_inds
+
+    def get_target_components(self, target_go):
+        if self.node_height_dict[target_go] != 0:
+            target_gos = self.get_descendants_sorted_by_height(target_go) + [target_go]
+        else:
+            target_gos = [target_go]
+
+        target_genes = self.sys2gene_full[target_go]
+        target_snps = self.sys2snp[target_go]
+        return target_gos, target_genes, target_snps
+
+
+

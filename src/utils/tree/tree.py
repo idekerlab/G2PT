@@ -295,5 +295,46 @@ class TreeParser(object):
                 result_mask[x, y] =1
         return torch.tensor(result_mask, dtype=torch.float32)
 
+    def get_target_components(self, target_go):
+        if self.tree_parser.node_height_dict[target_go] != 0:
+            target_gos = self.tree_parser.get_descendants_sorted_by_height(target_go) + [target_go]
+        else:
+            target_gos = [target_go]
 
+        target_genes = self.tree_parser.sys2gene_full[target_go]
+        return target_gos, target_genes
 
+    def get_target_indices(self, target_gos, target_genes):
+        """Fetch integer indices from parser for the target GO, gene"""
+        target_go_inds = [self.sys2ind[go] for go in target_gos]
+        target_gene_inds = [self.gene2ind[g] for g in target_genes]
+        return target_go_inds, target_gene_inds
+
+    def get_partial_sys2sys_masks(self, target_gos):
+        """Build partial adjacency masks and edges from GO subgraph."""
+        sys2ind_partial = {go: i for i, go in enumerate(target_gos)}
+        all_paths = self.get_paths_from_node_to_leaves(self.system_graph, target_gos[-1])
+        all_edges_forward = self.get_edges_from_paths(all_paths)
+
+        sys2sys_forward_partial = torch.zeros(size=(len(target_gos), len(target_gos)))
+        sys2sys_backward_partial = torch.zeros(size=(len(target_gos), len(target_gos)))
+
+        for target, source in all_edges_forward:
+            sys2sys_forward_partial[sys2ind_partial[target], sys2ind_partial[source]] = 1
+            sys2sys_backward_partial[sys2ind_partial[source], sys2ind_partial[target]] = 1
+
+        return sys2sys_forward_partial, sys2sys_backward_partial, sys2ind_partial, all_edges_forward
+
+    def get_paths_from_node_to_leaves(self, G, start_node):
+        all_paths = []
+        for node in G.nodes:
+            if G.out_degree(node) == 0:  # If it's a leaf node
+                paths = list(nx.all_simple_paths(G, start_node, node))
+                all_paths.extend(paths)
+        return all_paths
+
+    def get_edges_from_paths(self, paths):
+        edges = set()
+        for path in paths:
+            edges.update([(path[i], path[i + 1]) for i in range(len(path) - 1)])
+        return list(edges)
