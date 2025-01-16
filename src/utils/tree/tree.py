@@ -2,15 +2,26 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 import torch
+import copy
+from itertools import product
 
 class TreeParser(object):
 
     def __init__(self, ontology, dense_attention=False, sys_annot_file=None):
-        self.ontology = pd.read_csv(ontology, sep='\t', names=['parent', 'child', 'interaction'])
+        ontology = pd.read_csv(ontology, sep='\t', names=['parent', 'child', 'interaction'])
         self.dense_attention = dense_attention
-        #gene2ind = pd.read_csv(gene2ind, sep='\t', names=['index', 'gene'])
-        self.system_df = self.ontology.loc[self.ontology['interaction'] != 'gene']
-        self.gene2sys_df = self.ontology.loc[self.ontology['interaction'] == 'gene']
+        if sys_annot_file:
+            sys_descriptions = pd.read_csv(sys_annot_file, header=None, names=['Term', 'Term_Description'], index_col=0, sep='\t')
+
+            self.sys_annot_dict = sys_descriptions.to_dict()["Term_Description"]
+        else:
+            self.sys_annot_dict = None
+        self._init_ontology(ontology)
+
+    def _init_ontology(self, ontology_df):
+        self.ontology = ontology_df
+        self.system_df = ontology_df.loc[ontology_df['interaction'] != 'gene']
+        self.gene2sys_df = ontology_df.loc[ontology_df['interaction'] == 'gene']
         sys2gene_grouped_by_sys = self.gene2sys_df.groupby('parent')
         sys2gene_grouped_by_gene = self.gene2sys_df.groupby('child')
         sys2gene_dict = {sys: sys2gene_grouped_by_sys.get_group(sys)['child'].values.tolist() for sys in
@@ -33,10 +44,8 @@ class TreeParser(object):
         print("%d Genes are queried"%self.n_genes)
 
         self.system2system_mask = np.zeros((len(self.sys2ind), len(self.sys2ind)))
-
         for parent_system, child_system in zip(self.system_df['parent'], self.system_df['child']):
             self.system2system_mask[self.sys2ind[parent_system], self.sys2ind[child_system]] = 1
-
         self.gene2sys_mask = np.zeros((len(self.sys2ind), len(self.gene2ind)))
         self.sys2gene_dict = {self.sys2ind[system]: [] for system in systems}
         self.gene2sys_dict = {gene: [] for gene in range(self.n_genes)}
@@ -72,13 +81,6 @@ class TreeParser(object):
                     self.gene2sys_full[gene].append(sys)
                 else:
                     self.gene2sys_full[gene] = [sys]
-
-        if sys_annot_file:
-            sys_descriptions = pd.read_csv(sys_annot_file, header=None, names=['Term', 'Term_Description'], index_col=0, sep='\t')
-
-            self.sys_annot_dict = sys_descriptions.to_dict()["Term_Description"]
-        else:
-            self.sys_annot_dict = None
 
 
         print("Building descendant dict")
@@ -151,6 +153,112 @@ class TreeParser(object):
         # Update the gene set for the current node
         gene_dict[node] = genes
         return genes
+
+    def delete_parent_genes_from_child(self, tree, node, gene_dict):
+        """
+        Recursively removes parent genes from child nodes.
+
+        :param tree: NetworkX DiGraph representing the tree.
+        :param node: Current node to process.
+        :param gene_dict: Dictionary mapping nodes to their gene sets.
+        """
+        # Base case: if the node is a leaf, return its genes
+        if tree.out_degree(node) == 0:
+            return gene_dict[node]
+
+        # Initialize the set of genes for the current node with its own genes
+        genes = set(gene_dict[node])
+
+        # Recurse for all children
+        for child in tree.successors(node):
+            # Recursively process the child's genes
+            child_genes = self.delete_parent_genes_from_child(tree, child, gene_dict)
+
+            # Remove parent genes from the child's genes
+            child_genes.difference_update(genes)
+
+            # Update the child's gene set in the dictionary
+            gene_dict[child] = child_genes
+
+        # Update the gene set for the current node in the dictionary
+        gene_dict[node] = genes
+        return genes
+
+    def collapse(self, to_keep=None, min_term_size=2, verbose=True):
+        """Remove redundant and empty terms. When a term T is removed,
+        hierarchical relations are preserved by connecting every child
+        of T with every parent of T. This removal operation has the
+        nice property of being commutative, i.e. the order of removal
+        does not matter.
+
+        Parameters
+        -----------
+        to_keep : list
+
+            Systems to keep
+
+        min_term_size : int
+
+            Remove terms that are below this size.
+
+        """
+        ont_full = copy.copy(self.sys2gene_full)
+        term_hash = {t: hash(tuple(g_list)) for t, g_list in ont_full.items()}
+        to_collapse = set()
+        for p in self.sys2ind.keys():
+            for c in self.system_graph[p]:
+                if term_hash[p] == term_hash[c]:
+                    to_collapse.add(p)
+
+        systems = list(self.sys2ind.keys())
+        system_sizes = [len(self.sys2gene_full[system]) for system in systems]
+
+        if min_term_size is not None:
+            to_collapse = to_collapse | set([t for t, s in zip(systems, system_sizes) if s < min_term_size])
+
+        if to_keep is not None:
+            to_collapse = to_collapse - set(to_keep)
+
+        print('The number of node to collapse:', len(sorted(to_collapse)))
+        to_collapse = list(to_collapse)
+        to_collapse = sorted(to_collapse, key=lambda a: self.node_height_dict[a])
+        sys_graph_copied = copy.copy(self.system_graph)
+        sys2gene_copied = copy.copy(self.sys2gene)
+        sys_graph_collapsed, sys2gene_collapsed = self.delete_systems(to_collapse, sys_graph_copied, sys2gene_copied)
+        collapsed_ontology = self.sys_graph_to_ontology_table(sys_graph_collapsed, sys2gene_collapsed)
+        #print([node for node in sys_graph_collapsed.nodes if (sys_graph_collapsed.in_degree(node)==0) & (sys_graph_collapsed.out_degree(node)==0)])
+        self._init_ontology(collapsed_ontology)
+
+    def delete_systems(self, systems, sys_graph, sys2gene_dict):
+        for system in systems:
+            parents = [parent for parent, node in sys_graph.in_edges(system)]
+            children = [child for node, child in sys_graph.out_edges(system)]
+            #print(system, self.node_height_dict[system], parents, children, sys_graph.out_edges(system))
+            for parent, child in product(parents, children):
+                #print('\t',parent, system, child)
+                sys_graph.add_edge(parent, child)
+            sys_graph.remove_node(system)
+            for parent in parents:
+                if parent in sys2gene_dict.keys():
+                    parent_genes = list(sys2gene_dict[parent])
+                else:
+                    parent_genes = []
+                if system in sys2gene_dict.keys():
+                    system_genes = list(sys2gene_dict[system])
+                else:
+                    system_genes = []
+                sys2gene_dict[parent] = parent_genes + system_genes
+            if system in sys2gene_dict.keys():
+                del sys2gene_dict[system]
+        return sys_graph, sys2gene_dict
+
+    def sys_graph_to_ontology_table(self, sys_graph, sys2gene):
+        interactions = [(parent, child, 'default') for parent, child in sys_graph.edges]
+        for sys, genes in sys2gene.items():
+            for gene in genes:
+                interactions.append((sys, gene, 'gene'))
+        ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
+        return  ontology_df
 
     def compute_node_heights(self):
         # Ensure the graph is a tree (i.e., has a single root)
