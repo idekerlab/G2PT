@@ -29,6 +29,8 @@ class EpistasisFinder(object):
             self.genotype = self.genotype.loc[self.cov_df.IID]
         self.cov_df['FID'] = self.cov_df['FID'].astype(str)
         self.cov_df['IID'] = self.cov_df['IID'].astype(str)
+        self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov != 'PHENOTYPE']
+
         if type(attention_results) == str:
             self.attention_results = pd.read_csv(attention_results)
         elif type(attention_results) == pd.DataFrame:
@@ -67,6 +69,9 @@ class EpistasisFinder(object):
         sig_snp_pairs = self.get_significant_pairs_from_fisher(p_df, verbose=verbose)
         n = sig_snp_df.shape[1]
         print(f'\t From {(n*(n-1)/2)} significant pairs, {len(sig_snp_pairs)} pairs pass Fisher test')
+
+        print('Calculating statistical Interaction p-value ')
+        sig_snp_pairs = self.get_statistical_epistatic_significance(sig_snp_pairs, attention_results.IID.map(str), verbose=verbose)
         return sig_snp_pairs
 
     def get_snp_chi_sqaure(self, snp_df, risky_samples, target_snp):
@@ -124,11 +129,35 @@ class EpistasisFinder(object):
             queried_epistasis.append((snp_1, snp_2))#[key][(row, col)] = df.loc[row, col]  # += tuples
         return queried_epistasis
 
-    def calculate_epistatic_significance(self, snp_df, pairs):
+    def get_statistical_epistatic_significance(self, pairs, cohort, verbose=0):
         sig_snps = list(set(element for tup in pairs for element in tup))
-        partial_genotype =
+        partial_genotype = self.genotype.loc[cohort, sig_snps]
+        partial_genotype.columns = map(self.rename_snp, partial_genotype.columns.tolist())
+        partial_genotype_cov_merged = partial_genotype.merge(self.cov_df, left_index=True, right_on='IID')
         significant_epistasis = []
+
         for snp_1, snp_2 in pairs:
+            snp_1_renamed = self.rename_snp(snp_1)
+            snp_2_renamed = self.rename_snp(snp_2)
+            formula_no_epistasis = 'PHENOTYPE ~ ' + ' + '.join(self.cov_ids) + " + %s + %s"%(snp_1_renamed, snp_2_renamed)
+            formula_epistasis = formula_no_epistasis + " + %s:%s"%(snp_1_renamed, snp_2_renamed)
+            md_reduced = smf.ols(formula_no_epistasis, data=partial_genotype_cov_merged).fit()
+            md_full = smf.ols(formula_epistasis, data=partial_genotype_cov_merged).fit()
+            ll_full = md_full.llf
+            ll_reduced = md_reduced.llf
+            lr_stat = 2 * (ll_full - ll_reduced)
+            df_diff = md_full.df_model - md_reduced.df_model
+            combinatory_pvalue = stats.chi2.sf(lr_stat, df_diff)
+            if combinatory_pvalue * len(pairs) < 0.05 :
+                if verbose==1:
+                    print(f'\t\tEpistatic interaction between {snp_1} and {snp_2} has significant epistatic interaction coefficient with p-value of {combinatory_pvalue}')
+                significant_epistasis.append((snp_1, snp_2))
+            else:
+                if verbose==1:
+                    print(f'\t\tEpistatic interaction between {snp_1} and {snp_2} has insignificant epistatic interaction coefficient with p-value of {combinatory_pvalue}')
+
+        return significant_epistasis
+
 
 
     def rename_snp(self, snp):
