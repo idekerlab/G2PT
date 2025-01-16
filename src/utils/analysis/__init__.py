@@ -1,1 +1,1 @@
-from .score import ScoreAnalyzer
+from .epistasis import EpistasisFinder
