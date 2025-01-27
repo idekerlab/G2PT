@@ -66,8 +66,10 @@ def main():
     parser.add_argument('--cuda', type=int)
     parser.add_argument('--model', help='trained model')
     parser.add_argument('--cpu', type=int)
+    parser.add_argument('--prediction-only', action='store_true')
     parser.add_argument('--out', help='output csv')
     parser.add_argument('--system_annot', type=str, default=None)
+
 
     args = parser.parse_args()
 
@@ -75,7 +77,7 @@ def main():
 
 
     g2p_model_dict = torch.load(args.model)
-    print(g2p_model_dict.keys())
+    print(g2p_model_dict['arguments'])
     #g2p_model = g2p_model_dict
     
     #train_df = pd.read_csv(args.train, sep='\t', header=None)
@@ -88,10 +90,10 @@ def main():
     #genotypes = pd.read_csv(args.snp, index_col=0, sep='\t')
     dataset = PLINKDataset(tree_parser, args.bfile, args.cov, cov_ids=g2p_model_dict['arguments'].cov_ids,
                            cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict,
-                           cov_std_dict=g2p_model_dict['arguments'].cov_std_dict)
+                           cov_std_dict=g2p_model_dict['arguments'].cov_std_dict, input_format=g2p_model_dict['arguments'].input_format)
     #dataset = SNP2PDataset(whole_df, genotypes, tree_parser, n_cov=args.n_cov, age_mean=age_mean, age_std=age_std)
     device = torch.device("cuda:%d"%args.cuda)
-    whole_collator = SNP2PCollator(tree_parser)
+    whole_collator = SNP2PCollator(tree_parser, input_format=g2p_model_dict['arguments'].input_format)
     whole_dataloader = DataLoader(dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.cpu, collate_fn=whole_collator)
 
@@ -123,21 +125,38 @@ def main():
     for i, batch in enumerate(tqdm(whole_dataloader)):
         batch = move_to(batch, device)
         with torch.no_grad():
-            phenotype_predicted, sys_attention, gene_attention = g2p_model(batch['genotype'], batch['covariates'],
-                                            nested_subtrees_forward,
-                                            nested_subtrees_backward,
-                                            gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
-                                            sys2gene_mask=sys2gene_mask,
-                                            sys2env=g2p_model_dict['arguments'].sys2env,
-                                            env2sys=g2p_model_dict['arguments'].env2sys,
-                                            sys2gene=g2p_model_dict['arguments'].sys2gene,
-                                            attention=True)
-        phenotypes.append(phenotype_predicted.detach().cpu().numpy())
-        sys_attentions.append(sys_attention.detach().cpu().numpy())
-        gene_attentions.append(gene_attention.detach().cpu().numpy())
+            if args.prediction_only:
+                phenotype_predicted = g2p_model(batch['genotype'], batch['covariates'],
+                                                nested_subtrees_forward,
+                                                nested_subtrees_backward,
+                                                gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
+                                                sys2gene_mask=sys2gene_mask,
+                                                sys2env=g2p_model_dict['arguments'].sys2env,
+                                                env2sys=g2p_model_dict['arguments'].env2sys,
+                                                sys2gene=g2p_model_dict['arguments'].sys2gene,
+                                                attention=False)
+                phenotypes.append(phenotype_predicted.detach().cpu().numpy())
+            else:
+                phenotype_predicted, sys_attention, gene_attention = g2p_model(batch['genotype'], batch['covariates'],
+                                                nested_subtrees_forward,
+                                                nested_subtrees_backward,
+                                                gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
+                                                sys2gene_mask=sys2gene_mask,
+                                                sys2env=g2p_model_dict['arguments'].sys2env,
+                                                env2sys=g2p_model_dict['arguments'].env2sys,
+                                                sys2gene=g2p_model_dict['arguments'].sys2gene,
+                                                attention=True)
+                phenotypes.append(phenotype_predicted.detach().cpu().numpy())
+                sys_attentions.append(sys_attention.detach().cpu().numpy())
+                gene_attentions.append(gene_attention.detach().cpu().numpy())
         #phenotypes.append(prediction.detach().cpu().numpy())  
     
-
+    phenotypes = np.concatenate(phenotypes)[:, 0]
+    cov_df["prediction"] = phenotypes
+    cov_df.to_csv(args.out + '.prediction.csv', index=False)
+    if args.prediction_only:
+        print("Prediction-only, prediction done")
+        quit()
     sys_attentions = np.concatenate(sys_attentions)
     gene_attentions = np.concatenate(gene_attentions)
 
@@ -152,11 +171,6 @@ def main():
 
     sys_attention_df.columns = sys_score_cols
     gene_attention_df.columns = gene_score_cols
-
-    phenotypes = np.concatenate(phenotypes)[:, 0]
-    cov_df["prediction"] = phenotypes
-    cov_df.to_csv(args.out + '.prediction.csv', index=False)
-
     whole_dataset_with_attentions = pd.concat([cov_df, sys_attention_df, gene_attention_df], axis=1)
     whole_dataset_with_attentions = whole_dataset_with_attentions[whole_dataset_with_attentions.columns[1:]]
     whole_dataset_with_attentions.to_csv(args.out+'.attention.csv', index=False)

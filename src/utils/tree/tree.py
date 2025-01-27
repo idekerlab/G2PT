@@ -112,6 +112,16 @@ class TreeParser(object):
                         self.gene2gene_mask[self.gene2ind[child_i], self.gene2ind[child_j]] = 1
 
     def summary(self, system=True, gene=True):
+        """
+        Print a summary of the systems and genes in the ontology.
+
+        Parameters:
+        ----------
+        system : bool, optional
+            Whether to include system summary. Default is True.
+        gene : bool, optional
+            Whether to include gene summary. Default is True.
+        """
         if system:
             print("The number of systems : %d"%self.n_systems)
             print(" ")
@@ -185,74 +195,119 @@ class TreeParser(object):
         return genes
 
     def collapse(self, to_keep=None, min_term_size=2, verbose=True):
-        """Remove redundant and empty terms. When a term T is removed,
-        hierarchical relations are preserved by connecting every child
-        of T with every parent of T. This removal operation has the
-        nice property of being commutative, i.e. the order of removal
-        does not matter.
+        """
+        Remove redundant and empty terms while preserving hierarchical relations. Each child of a removed term T is
+        connected to every parent of T. This operation is commutative, meaning the order of removal does not matter.
 
         Parameters
-        -----------
-        to_keep : list
-
-            Systems to keep
-
-        min_term_size : int
-
-            Remove terms that are below this size.
-
+        ----------
+        to_keep : list, optional
+            Systems to retain. Default is None.
+        min_term_size : int, optional
+            Minimum term size to retain. Default is 2.
+        verbose : bool, optional
+            Whether to print progress messages. Default is True.
         """
-        ont_full = copy.copy(self.sys2gene_full)
-        term_hash = {t: hash(tuple(g_list)) for t, g_list in ont_full.items()}
-        to_collapse = set()
-        for p in self.sys2ind.keys():
-            for c in self.system_graph[p]:
-                if term_hash[p] == term_hash[c]:
-                    to_collapse.add(p)
+        # Copy the current sys2gene mapping to preserve the original
+        ont_full = copy.deepcopy(self.sys2gene_full)
+        term_hash = {term: hash(tuple(genes)) for term, genes in ont_full.items()}
 
-        systems = list(self.sys2ind.keys())
-        system_sizes = [len(self.sys2gene_full[system]) for system in systems]
+        # Identify terms to collapse based on redundancy and size
+        to_collapse = {
+            parent
+            for parent in self.sys2ind
+            for child in self.system_graph[parent]
+            if term_hash[parent] == term_hash[child]
+        }
 
+        # Add terms below the minimum size to the collapse set
         if min_term_size is not None:
-            to_collapse = to_collapse | set([t for t, s in zip(systems, system_sizes) if s < min_term_size])
+            small_terms = {
+                term for term, size in zip(self.sys2ind, [len(self.sys2gene_full[sys]) for sys in self.sys2ind])
+                if size < min_term_size
+            }
+            to_collapse.update(small_terms)
 
-        if to_keep is not None:
-            to_collapse = to_collapse - set(to_keep)
+        # Exclude terms specified in `to_keep`
+        if to_keep:
+            to_collapse.difference_update(to_keep)
 
-        print('The number of node to collapse:', len(sorted(to_collapse)))
-        to_collapse = list(to_collapse)
-        to_collapse = sorted(to_collapse, key=lambda a: self.node_height_dict[a])
-        sys_graph_copied = copy.copy(self.system_graph)
-        sys2gene_copied = copy.copy(self.sys2gene)
+        if verbose:
+            print(f'The number of nodes to collapse: {len(to_collapse)}')
+
+        # Sort terms to collapse by node height
+        to_collapse = sorted(to_collapse, key=lambda term: self.node_height_dict[term])
+
+        # Copy system graph and sys2gene for modification
+        sys_graph_copied = copy.deepcopy(self.system_graph)
+        sys2gene_copied = copy.deepcopy(self.sys2gene)
+
+        # Perform collapse
         sys_graph_collapsed, sys2gene_collapsed = self.delete_systems(to_collapse, sys_graph_copied, sys2gene_copied)
+
+        # Generate the collapsed ontology
         collapsed_ontology = self.sys_graph_to_ontology_table(sys_graph_collapsed, sys2gene_collapsed)
-        #print([node for node in sys_graph_collapsed.nodes if (sys_graph_collapsed.in_degree(node)==0) & (sys_graph_collapsed.out_degree(node)==0)])
+
+        # Reinitialize ontology with the collapsed data
         self._init_ontology(collapsed_ontology)
 
-    def delete_systems(self, systems, sys_graph, sys2gene_dict):
+    def delete_systems(self, systems, sys_graph, sys2gene):
+        """
+        Delete specified systems from the graph and update mappings.
+
+        Parameters:
+        ----------
+        systems : list
+            List of systems to delete.
+        sys_graph : NetworkX DiGraph
+            Graph representing the system relationships.
+        sys2gene : dict
+            Dictionary mapping systems to their genes.
+
+        Returns:
+        -------
+        tuple
+            Updated graph and system-to-gene dictionary.
+        """
         for system in systems:
-            parents = [parent for parent, node in sys_graph.in_edges(system)]
-            children = [child for node, child in sys_graph.out_edges(system)]
-            #print(system, self.node_height_dict[system], parents, children, sys_graph.out_edges(system))
-            for parent, child in product(parents, children):
-                #print('\t',parent, system, child)
-                sys_graph.add_edge(parent, child)
+            # Get parents and children of the current system
+            parents = list(sys_graph.predecessors(system))
+            children = list(sys_graph.successors(system))
+
+            # Connect every parent of the system to every child
+            sys_graph.add_edges_from((parent, child) for parent, child in product(parents, children))
+
+            # Remove the system node
             sys_graph.remove_node(system)
+
+            # Update sys2gene mappings for parents
+            parent_genes = {parent: sys2gene.get(parent, []) for parent in parents}
+            system_genes = sys2gene.get(system, [])
             for parent in parents:
-                if parent in sys2gene_dict.keys():
-                    parent_genes = list(sys2gene_dict[parent])
-                else:
-                    parent_genes = []
-                if system in sys2gene_dict.keys():
-                    system_genes = list(sys2gene_dict[system])
-                else:
-                    system_genes = []
-                sys2gene_dict[parent] = parent_genes + system_genes
-            if system in sys2gene_dict.keys():
-                del sys2gene_dict[system]
-        return sys_graph, sys2gene_dict
+                parent_genes[parent].extend(system_genes)
+                sys2gene[parent] = parent_genes[parent]
+
+            # Remove the system from sys2gene if it exists
+            sys2gene.pop(system, None)
+
+        return sys_graph, sys2gene
 
     def sys_graph_to_ontology_table(self, sys_graph, sys2gene):
+        """
+        Convert a system graph and system-to-gene mapping to an ontology DataFrame.
+
+        Parameters:
+        ----------
+        sys_graph : NetworkX DiGraph
+            Graph representing the system relationships.
+        sys2gene : dict
+            Dictionary mapping systems to their genes.
+
+        Returns:
+        -------
+        DataFrame
+            Ontology table containing parent-child interactions.
+        """
         interactions = [(parent, child, 'default') for parent, child in sys_graph.edges]
         for sys, genes in sys2gene.items():
             for gene in genes:
@@ -261,6 +316,14 @@ class TreeParser(object):
         return  ontology_df
 
     def compute_node_heights(self):
+        """
+        Compute the heights of nodes in the ontology graph.
+
+        Returns:
+        -------
+        dict
+            Dictionary mapping nodes to their heights.
+        """
         # Ensure the graph is a tree (i.e., has a single root)
         if not nx.is_directed_acyclic_graph(self.system_graph):
             raise ValueError("The input graph must be a directed acyclic graph (DAG).")
@@ -279,6 +342,19 @@ class TreeParser(object):
         return heights
 
     def get_descendants_sorted_by_height(self, node):
+        """
+        Get descendants of a node sorted by their height.
+
+        Parameters:
+        ----------
+        node : str
+            Node for which to retrieve sorted descendants.
+
+        Returns:
+        -------
+        list
+            List of descendants sorted by height.
+        """
         # Compute the height of all nodes
         node_heights = self.compute_node_heights()
         # Get all descendants of the given node
@@ -288,6 +364,14 @@ class TreeParser(object):
         return sorted_descendants
 
     def write_gmt(self, output_path):
+        """
+        Write the ontology to a GMT file format.
+
+        Parameters:
+        ----------
+        output_path : str
+            Path to the output GMT file.
+        """
         f = open(output_path, 'w')
         for sys, genes in self.sys2gene_full.items():
             if self.sys_annot_dict is not None:

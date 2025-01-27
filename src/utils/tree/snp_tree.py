@@ -93,7 +93,7 @@ class SNPTreeParser(TreeParser):
     def get_sys2snp(self, sys):
         genes = self.sys2gene_full[sys]
         snps = [self.gene2snp[gene] for gene in genes if gene in self.gene2snp.keys()]
-        snps = sum(snps, [])
+        snps = list(set(sum(snps, [])))
         return snps
 
     def get_snp2gene_mask(self, type_indices=None):

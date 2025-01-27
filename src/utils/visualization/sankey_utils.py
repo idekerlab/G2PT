@@ -2,23 +2,26 @@ import matplotlib
 import numpy as np
 
 
-def factorize_snp_attention(tree_parser, attention_mean_df, target_gene, weight):
+def factorize_genotype_attention(tree_parser, attention_mean_df, target_gene, weight, genotypes=('homozygous', 'heterozygous')):
     for snp in tree_parser.gene2snp[target_gene]:
-        attention_mean_df.loc[(target_gene, snp, 'homozygous')]['Value'] = attention_mean_df.loc[(target_gene, snp, 'homozygous')]['Value'] * weight
-        attention_mean_df.loc[(target_gene, snp, 'heterozygous')]['Value'] = attention_mean_df.loc[(target_gene, snp, 'heterozygous')]['Value'] * weight
+        for genotype in genotypes:
+            try:
+                attention_mean_df.at[(target_gene, snp, genotype), 'Value'] *= weight
+            except:
+                continue
     return attention_mean_df
 
 
-def factorize_attention_recursively(tree_parser, attention_mean_df, target, weight, direction='forward'):
+def factorize_attention_recursively(tree_parser, attention_mean_df, target, weight, direction='forward', genotypes=('homozygous', 'heterozygous')):
     for gene in tree_parser.sys2gene[target]:
         if direction == 'forward':
             module = 'gene2sys'
         else:
             module = 'sys2gene'
-        attention_mean_df.loc[(target, gene, module)]['Value'] = attention_mean_df.loc[(target, gene, module)]['Value'] * weight
+        attention_mean_df.at[(target, gene, module), 'Value']  *= weight
         if direction == 'forward':
             snp_weight = attention_mean_df.loc[(target, gene, module)]['Value']
-            attention_mean_df = factorize_snp_attention(tree_parser, attention_mean_df, gene, snp_weight)
+            attention_mean_df = factorize_genotype_attention(tree_parser, attention_mean_df, gene, snp_weight, genotypes=genotypes)
     if len(tree_parser.system_graph.out_edges(target))!=0:
         total_value = 0
         for node, child in tree_parser.system_graph.out_edges(target):
@@ -26,9 +29,9 @@ def factorize_attention_recursively(tree_parser, attention_mean_df, target, weig
                 module = 'sys2env'
             else:
                 module = 'env2sys'
-            attention_mean_df.loc[(target, child)]['Value'] = attention_mean_df.loc[(target, child)]['Value'] * weight
+            attention_mean_df.at[(target, child, module), 'Value'] *= weight
             sys2env_value = attention_mean_df.loc[(target, child, module)]['Value']
-            attention_mean_df = factorize_attention_recursively(tree_parser, attention_mean_df, child, sys2env_value, direction)
+            attention_mean_df = factorize_attention_recursively(tree_parser, attention_mean_df, child, sys2env_value, direction, genotypes=genotypes)
     return attention_mean_df
 
 
