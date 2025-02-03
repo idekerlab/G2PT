@@ -106,8 +106,9 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
                 return prediction
 
     def get_mut2gene(self, genotype_dict, with_indices=False, batch_size=1):
-        mutation_embedding = self.mut_norm(self.mutation_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :])
-        gene_embedding = self.gene_norm(self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :])
+        mutation_embedding = self.mutation_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :]
+        gene_embedding = self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :]
+        mut_effect_dict = {}
         if with_indices:
             gene_indices = {}
             for genotype in self.genotypes:
@@ -118,22 +119,29 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
                     effect = mut_effect[b].index_add(0, gene_indices_genotype[b], mut_effects_genotype[b])
                     results.append(effect)
                 mut_effect = torch.stack(results, dim=0)
-                gene_embedding = gene_embedding + self.effect_norm(mut_effect)
+                mut_effect_dict[genotype] = mut_effect
+            for genotype in self.genotypes:
+                gene_embedding = gene_embedding + self.effect_norm(mut_effect_dict[genotype])
 
             return gene_embedding
         else:
             gene_mask = self.dropout(torch.ones_like(genotype_dict[self.genotypes[0]].sum(0).sum(0)))
             gene_mask = gene_mask.unsqueeze(0).unsqueeze(1).expand(batch_size, self.n_genes, -1)
+            mutation_embedding_input =  self.mut_norm(mutation_embedding)
+            gene_embedding_input = self.gene_norm(gene_embedding)
             for genotype in self.genotypes:
-                mut_effect = self.mut2gene[genotype].forward(gene_embedding, mutation_embedding,
+                mut_effect = self.mut2gene[genotype].forward(gene_embedding_input, mutation_embedding_input,
                                                              genotype_dict[genotype]*gene_mask, dropout=False)
-                gene_embedding = gene_embedding + self.effect_norm(mut_effect)
+                mut_effect_dict[genotype] = mut_effect
+            for genotype in self.genotypes:
+                gene_embedding = gene_embedding + self.effect_norm(mut_effect_dict[genotype])
             
             return gene_embedding
 
     def get_mut2system(self, genotype_dict, with_indices=False, batch_size=1):
-        gene_embedding = self.gene_norm(self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :])
-        system_embedding = self.sys_norm(self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :])
+        gene_embedding = self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :]
+        system_embedding = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :]
+        mut_effect_dict = {}
         if with_indices:
             sys_indices = {}
             for genotype in self.genotypes:
@@ -144,16 +152,22 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
                     effect = mut_effect[b].index_add(0, sys_indices_genotype[b], mut_effects_genotype[b])
                     results.append(effect)
                 mut_effect = torch.stack(results, dim=0)
-                system_embedding = system_embedding + self.effect_norm(mut_effect)
+                mut_effect_dict[genotype] = mut_effect
+            for genotype in self.genotypes:
+                system_embedding = system_embedding + self.effect_norm(mut_effect_dict[genotype])
 
             return system_embedding
         else:
             gene_mask = self.dropout(torch.ones_like(genotype_dict[self.genotypes[0]].sum(0).sum(0)))
             gene_mask = gene_mask.unsqueeze(0).unsqueeze(1).expand(batch_size, self.n_systems, -1)
+            gene_embedding_input = self.gene_norm(gene_embedding)
+            system_embedding_input = self.sys_norm(system_embedding)
             for genotype in self.genotypes:
-                mut_effect = self.mut2sys[genotype].forward(system_embedding, gene_embedding, 
+                mut_effect = self.mut2sys[genotype].forward(system_embedding_input, gene_embedding_input, 
                                                             genotype_dict[genotype]*gene_mask, dropout=False)
-                system_embedding = system_embedding + self.effect_norm(mut_effect)
+                mut_effect_dict[genotype] = mut_effect
+            for genotype in self.genotypes:
+                system_embedding = system_embedding + self.effect_norm(mut_effect_dict[genotype])
         
             return system_embedding
     
