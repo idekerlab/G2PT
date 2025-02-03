@@ -28,20 +28,17 @@ class CompoundEncoder(object):
         self.tokenizer = tokenizer
         self.dataset = dataset
         self.out = out
-
-        if isinstance(self.dataset, pd.DataFrame):
-            self.drugs = list(self.dataset.groupby(1).groups)
-            self.smiles2ind = {k: v for v, k in enumerate(self.drugs)}
-
-            dir = self.out.split("/")[0]
-            with open(dir+'/smiles2ind.pkl', 'wb') as handle:
-                pickle.dump(self.smiles2ind, handle)
+        self.drugs = list(self.dataset.groupby(1).groups)
+        self.smiles2ind = {k: v for v, k in enumerate(self.drugs)}
             
     def get_type(self):
         return self.feature
 
     def num_drugs(self):
         return len(self.drugs)
+
+    def get_smiles2ind(self):
+        return(self.smiles2ind)
 
     def mol_to_morgan(self, mol):
         fp = AllChem.GetMorganFingerprintAsBitVect(mol, self.radius, nBits=self.n_bits)

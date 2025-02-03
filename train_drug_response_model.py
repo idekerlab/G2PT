@@ -268,9 +268,9 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.sys2gene:
         print("Model will use Sys2Gene")
     if args.gene2drug:
-        print("Model will predict with gene2drug")
+        print("Model will predict with Gene2Drug")
     if args.diff_transformer:
-        print("Model will train with differential attention")
+        print("Model will train using Differential Transformer")
 
     drug_response_dataset = DrugResponseDataset(train_dataset, args.cell2id, args.genotypes, compound_encoder,
                                                 tree_parser, mut2gene=args.mut2gene, with_indices=args.with_indices)
