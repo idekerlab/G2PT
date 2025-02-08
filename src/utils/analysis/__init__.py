@@ -1,1 +1,2 @@
 from .epistasis import EpistasisFinder
+from .llm_explainer import EpistaticInteractionExplainer

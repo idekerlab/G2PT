@@ -19,8 +19,6 @@ conda env create python==3.6 --name envname --file=environment.yml
 
 ## Usage
 
-The usage of G2TP is similar to [DrugCell](https://github.com/idekerlab/DrugCell) and [NeST-VNN](https://github.com/idekerlab/nest_vnn)
-
 To train a new model using a custom data set, first make sure that you have
 a proper virtual environment set up. Also make sure that you have all the required files
 to run the training scripts:
@@ -122,6 +120,11 @@ There are several optional parameters that you can provide in addition to the in
    * _--model_: if you have trained model, put the path to the trained model.
    * _--out_: a name of directory where you want to store the trained models.
 
+# Overall Pipeline for G2PT training and Analysis
+
+## 1. Prune Gene Ontology with your GWAS results
+
+## 2. Train model
 
 ### Model Training Example (Single GPU) 
 
@@ -167,7 +170,15 @@ usage: train_snp2p_model.py \
                       --out OUT
 ```
 
+## 3. Predict with Trained Model
 
+
+## 4. Analyze Attention, Epistasis
+
+
+## 4.2 Search Epistasis and Visualize 
+
+[Epistais Search and Visualization Example](Epistasis_pipeline.ipynb)
 
 ## Future Works
 

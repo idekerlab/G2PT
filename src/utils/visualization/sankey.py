@@ -12,8 +12,11 @@ warnings.filterwarnings("ignore")
 
 class SankeyVisualizer(object):
 
-    def __init__(self, tree_parser):
+    def __init__(self, tree_parser, genotype_annot_dict={}, gene_annot_dict={}, system_annot_dict={}):
         self.tree_parser = tree_parser
+        self.genotype_annot_dict = genotype_annot_dict
+        self.gene_annot_dict = gene_annot_dict
+        self.system_annot_dict = system_annot_dict
 
 
     def get_sankey_app_from_g2pt(self, target_go, attention_collector):
@@ -72,11 +75,9 @@ class SankeyVisualizer(object):
         def display_sankey(head, selected_go, direction):
             coords_dict, sankey_dict, target_gos, gene_sorted, snp_sorted, total_order = self.get_sankey_components(
                 attention_df, selected_go, factorize=factorize, direction=direction, genotypes=genotypes, sort_by_chr=sort_by_chr)
-            i = 0
-            print(len(snp_sorted), len(gene_sorted), len(target_gos))
-            for x, y, e in zip(coords_dict[1][0], coords_dict[1][1], snp_sorted+gene_sorted+target_gos):
-                print(i, e, x, y)
-                i += 1
+            total_order_reversed = {value: key for key, value in total_order.items()}
+            sankey_customdata = [(total_order_reversed[s], total_order_reversed[t], m) for s, t, m in
+                                zip(sankey_dict[head][0], sankey_dict[head][1], sankey_dict[head][4])]
             if len(snp_sorted)==0:
                 height = 50 * len(gene_sorted)
             else:
@@ -87,7 +88,11 @@ class SankeyVisualizer(object):
                     thickness=100,
                     line=None,  # dict(color = "white", width = 0.25),
                     label=snp_sorted + gene_sorted + target_gos,  # [""]*len(snp_sorted)
-                    color = ["aqua"]*len(snp_sorted) + ['magenta'] * len(gene_sorted) + ['blue'] * len(target_gos),
+                    color=["aqua"]*len(snp_sorted) + ['magenta'] * len(gene_sorted) + ['blue'] * len(target_gos),
+                    customdata=[self.genotype_annot_dict[snp] if snp in self.genotype_annot_dict.keys() else '' for snp in snp_sorted] +
+                               [self.gene_annot_dict[gene] if gene in self.gene_annot_dict.keys() else '' for gene in gene_sorted] +
+                               [self.system_annot_dict[sys] if sys in self.system_annot_dict.keys() else '' for sys in target_gos],
+                    hovertemplate='%{customdata}<extra></extra>',
                     x=coords_dict[head][0],
                     y=coords_dict[head][1]
                 ),
@@ -97,11 +102,11 @@ class SankeyVisualizer(object):
                     target=sankey_dict[head][1],
                     value=sankey_dict[head][2],
                     color=sankey_dict[head][3],
-                    customdata = sankey_dict[head][4],
-                    hovertemplate='Link from node %{source}<br />' +
-                                  'to node%{target}<br />has value %{value}' +
-                                  '<br />and module %{customdata}<extra></extra>',
-                    line=dict(color="black", width=0.25),
+                    customdata=sankey_customdata,
+                    hovertemplate='Link from %{customdata[0]}<br />' +
+                                  'to %{customdata[1]}<br />has value %{value}' +
+                                  '<br />and module %{customdata[2]}<extra></extra>',
+                    line=None#dict(color="black", width=0.25),
                 )))
             # print(sankey_dict[head])
             # for value in zip(*sankey_dict[head]):
@@ -115,18 +120,32 @@ class SankeyVisualizer(object):
             return figure
         return app
 
-    def display_sankey(self, coords_dict, sankey_dict, head, target_gos, gene_sorted, snp_sorted, width=1000, height=1000):
+    def display_sankey(self, coords_dict, sankey_dict, head, target_gos, gene_sorted, snp_sorted, total_order, width=1000, height=1000):
         i = 0
         # for x, y, e in zip(coords_dict[1][0], coords_dict[1][1], total_order):
         #    print(i, e, x, y)
         #    i += 1
+        total_order_reversed = {value: key for key, value in total_order.items()}
+        sankey_customdata = [(total_order_reversed[s], total_order_reversed[t], m) for s, t, m in
+                             zip(sankey_dict[head][0], sankey_dict[head][1], sankey_dict[head][4])]
+        if len(snp_sorted) == 0:
+            height = 50 * len(gene_sorted)
+        else:
+            height = 20 * len(snp_sorted)
         figure = go.Figure(go.Sankey(
             node=dict(
                 pad=300,
-                thickness=10,
+                thickness=100,
                 line=None,  # dict(color = "white", width = 0.25),
                 label=snp_sorted + gene_sorted + target_gos,  # [""]*len(snp_sorted)
-                color=["aqua"] * len(snp_sorted) + ['magenta'] * len(gene_sorted) + ['blue'] * len(target_gos) ,
+                color=["aqua"] * len(snp_sorted) + ['magenta'] * len(gene_sorted) + ['blue'] * len(target_gos),
+                customdata=[self.genotype_annot_dict[snp] if snp in self.genotype_annot_dict.keys() else '' for snp in
+                            snp_sorted] +
+                           [self.gene_annot_dict[gene] if gene in self.gene_annot_dict.keys() else '' for gene in
+                            gene_sorted] +
+                           [self.system_annot_dict[sys] if sys in self.system_annot_dict.keys() else '' for sys in
+                            target_gos],
+                hovertemplate='%{customdata}<extra></extra>',
                 x=coords_dict[head][0],
                 y=coords_dict[head][1]
             ),
@@ -136,11 +155,11 @@ class SankeyVisualizer(object):
                 target=sankey_dict[head][1],
                 value=sankey_dict[head][2],
                 color=sankey_dict[head][3],
-                customdata =sankey_dict[head][4],
-                hovertemplate='Link from node %{source}<br />' +
-                              'to node%{target}<br />has value %{value}' +
-                              '<br />and module %{customdata}<extra></extra>',
-                line=dict(color="black", width=0.25)
+                customdata=sankey_customdata,
+                hovertemplate='Link from %{customdata[0]}<br />' +
+                              'to %{customdata[1]}<br />has value %{value}' +
+                              '<br />and module %{customdata[2]}<extra></extra>',
+                line=None  # dict(color="black", width=0.25),
             )))
         # print(sankey_dict[head])
         # for value in zip(*sankey_dict[head]):
@@ -155,16 +174,25 @@ class SankeyVisualizer(object):
 
     def get_g2pt_attention_collection(self, target_go, attention_collector):
         target_gos, target_genes, target_snps = self.tree_parser.get_target_components(target_go)
-        print(len(target_gos), len(target_genes), len(target_snps))
+
         attention_result_df = attention_collector.forward(target_gos, target_genes, target_snps)
+        return attention_result_df
+
+    def marginalize_attention_collection(self, target_go, attention_result_df, n_softmax=1, normalize=False):
+        target_gos, target_genes, target_snps = self.tree_parser.get_target_components(target_go)
         for head in range(4):
             attention_result_df[head] = attention_result_df[head].fillna(-1e9)
-            for go in target_gos:
-                attention_result_df[head][('forward', go,)] = attention_result_df[head][('forward', go,)].apply(softmax, axis=1)
-                attention_result_df[head][('backward', go,)] = attention_result_df[head][('backward', go,)].apply(softmax, axis=1)
-            for gene in target_genes:
-                attention_result_df[head][('forward', gene,)] = attention_result_df[head][('forward', gene,)].apply(softmax, axis=1)
-
+            for k in range(n_softmax):
+                for go in target_gos:
+                    if normalize:
+                        attention_result_df[head][('forward', go,)] = attention_result_df[head][('forward', go,)] / attention_result_df[head][('forward', go,)].shape[0]
+                        attention_result_df[head][('backward', go,)] = attention_result_df[head][('backward', go,)] / attention_result_df[head][('forward', go,)].shape[0]
+                    attention_result_df[head][('forward', go,)] = attention_result_df[head][('forward', go,)].apply(softmax, axis=1)
+                    attention_result_df[head][('backward', go,)] = attention_result_df[head][('backward', go,)].apply(softmax, axis=1)
+                for gene in target_genes:
+                    if normalize:
+                        attention_result_df[head][('forward', gene,)] = attention_result_df[head][('forward', gene,)] / attention_result_df[head][('forward', gene,)].shape[0]
+                    attention_result_df[head][('forward', gene,)] = attention_result_df[head][('forward', gene,)].apply(softmax, axis=1)
         attention_mean_df_dict = {i: pd.DataFrame(attention_result_df[i].mean(axis=0)).rename(columns={0: 'Value'}) for i
                                   in range(4)}
         return attention_mean_df_dict
@@ -197,6 +225,9 @@ class SankeyVisualizer(object):
 
         gene_sorted, snp_sorted, total_order = self.get_component_orders(target_gos, gene2chr=sort_by_chr)
         print(len(target_gos), len(gene_sorted), len(snp_sorted))
+        print(target_gos)
+        print(gene_sorted)
+        print(snp_sorted)
         nested_gos = self.get_nested_systems_by_heights(target_gos)
         if direction=='backward':
             snp_sorted = []
@@ -217,18 +248,18 @@ class SankeyVisualizer(object):
 
         for go in target_gos:
             if gene2chr:
-                genes = list(sorted(self.tree_parser.sys2gene[go], key=lambda gene: gene2chr_dict[gene]))
+                genes = list(sorted(list(self.tree_parser.sys2gene[go]), key=lambda gene: gene2chr_dict[gene]))
             else:
-                genes = list(sorted(self.tree_parser.sys2gene[go]))
+                genes = list(sorted(list(self.tree_parser.sys2gene[go])))
             for gene in genes:
                 if gene not in gene_sorted:
                     gene_sorted.append(gene)
         snp_sorted = []
         for gene in gene_sorted:
             if gene2chr:
-                snps = sorted(self.tree_parser.gene2snp[gene], key=lambda a: (int(a.split(":")[0]), int(a.split(":")[1])))
+                snps = sorted(list(self.tree_parser.gene2snp[gene]), key=lambda a: (int(a.split(":")[0]), int(a.split(":")[1])))
             else:
-                snps = sorted(self.tree_parser.gene2snp[gene])
+                snps = sorted(list(self.tree_parser.gene2snp[gene]))
             for snp in snps:
                 if snp not in snp_sorted:
                     snp_sorted.append(snp)
@@ -270,10 +301,10 @@ class SankeyVisualizer(object):
             x_gap = (0.90 - 0.05) / (max([len(path) for path in all_paths]) + 1)
 
         x = [0.05] * len(snp_sorted) + [0.1 + x_gap] * len(gene_sorted)
-        print(system_nested)
+
         for i, systems in enumerate(system_nested[:-1]):
             x = x + [0.05 + x_gap * (i+2)] * (len(systems))
-        x = x + [0.95]
+        x = x + [0.90]
         y = [0.05 + (i * 0.90 / len(snp_sorted)) for i in range(len(snp_sorted))]
         y_gap = 0.1 / (len(gene_sorted) - 1)
         gene_y_gap_total = 0.1
@@ -281,7 +312,7 @@ class SankeyVisualizer(object):
         gene_y_max = 0.85
         y_temp = gene_y_min
         y_normalizing_factor = (gene_y_max - gene_y_min - gene_y_gap_total)
-        print(y_normalizing_factor)
+
         #snp_y_dict = {snp: snp_y for snp, snp_y in zip(snp_sorted, y)}
 
         #for i, gene in enumerate(gene_sorted):
@@ -302,7 +333,7 @@ class SankeyVisualizer(object):
                 y.append(go_y)
 
                 y_temp += (go_y_max-go_y_min) / n_sys #(attention_mean_df_factorized.loc[system]['Value'] + y_gap) * y_normalizing_factor
-                print(system, y_temp)
+                #print(system, y_temp)
         y = y + [0.5]
         return x, y
 
@@ -313,18 +344,18 @@ class SankeyVisualizer(object):
         values = []
         colors = []
         types = []
+        genotype2color_dict = {genotype: c for genotype, c in zip(genotypes, ['red', 'yellow', 'orange'])}
         for key, value in attention_mean_df_factorized.iterrows():
             #print(key, value)
             if key[0] in target_genes:
                 sources.append(total_ind[key[1]])
                 targets.append(total_ind[key[0]])
-                values.append(value['Value']+1e-8)
+                values.append(value['Value'])
                 types.append(key[2])
-                for genotype, c in zip(genotypes, ['red', 'yellow', 'orange']):
-                    color = list(matplotlib.colors.to_rgba(c))
-                    color[-1] = 0.5
-                    color = 'rgba(%s)'%(",".join([str(c) for c in color]))
-                    colors.append(color)
+                color = list(matplotlib.colors.to_rgba(genotype2color_dict[key[2]]))
+                color[-1] = 0.5
+                color = 'rgba(%s)'%(",".join([str(c) for c in color]))
+                colors.append(color)
 
             elif key[0] in target_gos:
                 sources.append(total_ind[key[1]])

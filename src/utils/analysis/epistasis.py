@@ -9,6 +9,10 @@ import statsmodels.api as sm
 import numpy as np
 from scipy.stats import chi2
 from statsmodels.stats.multitest import multipletests
+import seaborn as sns
+import matplotlib.pyplot as plt
+plt.rcParams['svg.fonttype'] = 'none'
+
 
 class EpistasisFinder(object):
     """
@@ -263,7 +267,7 @@ class EpistasisFinder(object):
                 continue
             # queried_epistasis[key][(row, col)] = df.loc[row, col]#+= tuples
             if verbose == 1:
-                print(f"\t\tEpistatic interaction between {snp_1} -> {self.tree_parser.snp2gene[snp_1]} and {snp_2} -> {self.tree_parser.snp2gene[snp_2]} is detected ")
+                print(f"\t\tEpistatic interaction between {snp_1} -> {self.tree_parser.snp2gene[snp_1]} and {snp_2} -> {self.tree_parser.snp2gene[snp_2]} is detected, p-value: {fisher_df_results.loc[snp_1, snp_2]} ")
             queried_epistasis.append((snp_1, snp_2))#[key][(row, col)] = df.loc[row, col]  # += tuples
         return queried_epistasis
 
@@ -298,7 +302,7 @@ class EpistasisFinder(object):
         print(f"\tTesting {len(target_snps)} SNPs on {partial_genotype.shape[0]} individuals, SNPs in system {snps_in_system}")
 
         raw_results = []
-        #significant_epistasis = []
+        significant_epistasis = []
 
 
         for snp_1, snp_2 in pairs:
@@ -430,5 +434,48 @@ class EpistasisFinder(object):
             print(f'{target_snp} is {best_model}, BIC: {model_bics}')
         return best_model
 
+    def merge_cov_df(self, new_cov_df, left_on=None, right_on=None):
+        self.cov_df = self.cov_df.merge(new_cov_df, left_on=left_on, right_on=right_on)
+
+    def draw_epistasis(self, target_snp_0, target_snp_1, phenotype, sex=None, figsize=(22, 5), out_dir=None):
+        genotype_partial = self.genotype[[target_snp_0, target_snp_1]]
+        target_snps_0_a0_index = genotype_partial.loc[(genotype_partial[target_snp_0] == 0)].index
+        target_snps_0_hetero_index = genotype_partial[(genotype_partial[target_snp_0] == 1)].index
+        target_snps_0_a1_index = genotype_partial.loc[(genotype_partial[target_snp_0] == 2)].index
+
+        target_snps_1_a0_index = genotype_partial.loc[(genotype_partial[target_snp_1] == 0)].index
+        target_snps_1_hetero_index = genotype_partial.loc[(genotype_partial[target_snp_1] == 1)].index
+        target_snps_1_a1_index = genotype_partial.loc[(genotype_partial[target_snp_1] == 2)].index
+
+        cov_df_partial = self.cov_df[['IID', 'SEX', phenotype]]
+        cov_df_partial = cov_df_partial.set_index('IID')
+
+        cov_df_partial.loc[target_snps_0_a0_index, target_snp_0] = 'Homozygous ref.'
+        cov_df_partial.loc[target_snps_0_hetero_index, target_snp_0] = 'Heterozygous'
+        cov_df_partial.loc[target_snps_0_a1_index, target_snp_0] = 'Homozygous alt.'
+
+        cov_df_partial.loc[target_snps_1_a0_index, target_snp_1] = 'Homozygous ref.'
+        cov_df_partial.loc[target_snps_1_hetero_index, target_snp_1] = 'Heterozygous'
+        cov_df_partial.loc[target_snps_1_a1_index, target_snp_1] = 'Homozygous alt.'
+
+        fig, axes = plt.subplots(1, 4, figsize=figsize)
+        axes = axes.ravel()
+        if sex is None:
+            cov_df_partial = cov_df_partial
+        elif sex == 0:
+            cov_df_partial = cov_df_partial.loc[cov_df_partial.SEX == 0]
+        elif sex == 1:
+            cov_df_partial = cov_df_partial.loc[cov_df_partial.SEX == 1]
+
+        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_0, ax=axes[0])
+        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_1, ax=axes[1])
+
+        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_0, hue=target_snp_1,
+                      hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'], ax=axes[2])
+        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_1, hue=target_snp_0,
+                      hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'], ax=axes[3])
+        if out_dir is not None:
+            plt.savefig(out_dir)
+        plt.show()
 
 
