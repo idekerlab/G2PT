@@ -208,6 +208,8 @@ adding argument `--prediction-only` will make this script to predict only (no at
 
 You can visualize attention flow from trained G2PT model.
 
+[Draw Sankey from Model Attention](Draw_Sankey.ipynb)
+
 ## 4.2 Search Visualize, and Analyze Epistasis in system
 
 You can search epistasis within system and visualize, and analyze. Please pass through example notebook
