@@ -118,15 +118,20 @@ class EpistasisFinder(object):
 
 
         print("System: %s, Sex: %d"%(system, sex))
-        print("Running Chi-Square Test...")
 
         if check_inheritance:
+            print("Check Inheritance")
             genotype_merged_with_covs = self.genotype.merge(self.cov_df, left_index=True, right_on='IID')
             for target_snp in target_snps:
                 if target_snp not in snp_inheritance_dict.keys():
                     genotype_for_ineritance_model = genotype_merged_with_covs[[target_snp, 'PHENOTYPE']+self.cov_ids]
-                    target_snp_type = self.determine_inheritance_model(genotype_for_ineritance_model[[target_snp]+self.cov_ids], genotype_merged_with_covs['PHENOTYPE'].values, target_snp, verbose=verbose)
+                    if sex!=2:
+                        genotype_for_ineritance_model = genotype_for_ineritance_model.loc[genotype_for_ineritance_model.SEX==sex]
+                    target_snp_type = self.determine_inheritance_model(genotype_for_ineritance_model[[target_snp]+self.cov_ids], genotype_for_ineritance_model['PHENOTYPE'].values, target_snp, verbose=verbose)
                     snp_inheritance_dict[target_snp] = target_snp_type
+
+        print("Running Chi-Square Test...")
+
 
 
         if quantile >=0.5:
@@ -424,14 +429,14 @@ class EpistasisFinder(object):
         """
         # Define the model coding functions in a dict
 
-        model_bics = {}
+        model_aics = {}
         for model_name, encoder in self.model_encoders.items():
             coded_g = encoder(genotypes, target_snp)
             ols_model = sm.OLS(phenotype, coded_g.values).fit()
-            model_bics[model_name] = ols_model.bic
-        best_model = min(model_bics, key=model_bics.get)
+            model_aics[model_name] = ols_model.aic
+        best_model = min(model_aics, key=model_aics.get)
         if verbose == 1:
-            print(f'{target_snp} is {best_model}, BIC: {model_bics}')
+            print(f'{target_snp} is {best_model}, AIC: {model_aics}')
         return best_model
 
     def merge_cov_df(self, new_cov_df, left_on=None, right_on=None):

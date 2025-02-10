@@ -22,16 +22,8 @@ class TreeParser(object):
         self.ontology = ontology_df
         self.system_df = ontology_df.loc[ontology_df['interaction'] != 'gene']
         self.gene2sys_df = ontology_df.loc[ontology_df['interaction'] == 'gene']
-        sys2gene_grouped_by_sys = self.gene2sys_df.groupby('parent')
-        sys2gene_grouped_by_gene = self.gene2sys_df.groupby('child')
-        sys2gene_dict = {sys: sys2gene_grouped_by_sys.get_group(sys)['child'].values.tolist() for sys in
-                         sys2gene_grouped_by_sys.groups.keys()}
-
-        self.sys2gene = {sys: sys2gene_grouped_by_sys.get_group(sys)['child'].values.tolist() for sys in
-                         sys2gene_grouped_by_sys.groups.keys()}
-        self.gene2sys = {gene: sys2gene_grouped_by_gene.get_group(gene)['parent'].values.tolist() for gene in
-                         sys2gene_grouped_by_gene.groups.keys()}
-
+        self.system_graph = nx.from_pandas_edgelist(self.system_df, create_using=nx.DiGraph(), source='parent',
+                                                    target='child')
         genes = self.gene2sys_df['child'].unique()
         self.gene2ind = {gene: index for index, gene in enumerate(genes)}
         self.ind2gene = {index: gene for index, gene in enumerate(genes)}
@@ -42,6 +34,26 @@ class TreeParser(object):
         self.n_genes = len(self.gene2ind)
         print("%d Systems are queried"%self.n_systems)
         print("%d Genes are queried"%self.n_genes)
+
+        sys2gene_grouped_by_sys = self.gene2sys_df.groupby('parent')
+        sys2gene_grouped_by_gene = self.gene2sys_df.groupby('child')
+        sys2gene_dict = {sys: sys2gene_grouped_by_sys.get_group(sys)['child'].values.tolist() for sys in
+                         sys2gene_grouped_by_sys.groups.keys()}
+
+        # delete genes in child system
+        for sys in list(sys2gene_dict.keys()):
+            self.delete_parent_genes_from_child(self.system_graph, sys, sys2gene_dict)
+
+        self.sys2gene = copy.deepcopy(sys2gene_dict)
+        self.gene2sys = {}
+        for sys, genes in self.gene2sys.items():
+            for gene in genes:
+                if gene in self.gene2sys.keys():
+                    self.gene2sys[gene].append(sys)
+                else:
+                    self.gene2sys[gene] = [sys]
+
+
 
         self.system2system_mask = np.zeros((len(self.sys2ind), len(self.sys2ind)))
         for parent_system, child_system in zip(self.system_df['parent'], self.system_df['child']):
@@ -59,8 +71,7 @@ class TreeParser(object):
             self.gene2sys_mask = torch.ones_like(torch.tensor(self.gene2sys_mask))
         self.sys2gene_mask = self.gene2sys_mask.T
         self.subtree_types = self.system_df['interaction'].unique()
-        self.system_graph = nx.from_pandas_edgelist(self.system_df, create_using=nx.DiGraph(), source='parent',
-                                                    target='child')
+
         #self.system_graph_revered = nx.from_pandas_edgelist(self.system_df, create_using=nx.DiGraph(), source='child',
         #                                            target='parent')
         self.node_height_dict = self.compute_node_heights()
@@ -173,8 +184,11 @@ class TreeParser(object):
         :param gene_dict: Dictionary mapping nodes to their gene sets.
         """
         # Base case: if the node is a leaf, return its genes
+        if node not in gene_dict.keys():
+            return set()
+
         if tree.out_degree(node) == 0:
-            return gene_dict[node]
+            return set(gene_dict[node])
 
         # Initialize the set of genes for the current node with its own genes
         genes = set(gene_dict[node])
@@ -284,12 +298,15 @@ class TreeParser(object):
             parent_genes = {parent: sys2gene.get(parent, []) for parent in parents}
             system_genes = sys2gene.get(system, [])
             for parent in parents:
+                parent_genes[parent] = list(parent_genes[parent])
                 parent_genes[parent].extend(system_genes)
                 sys2gene[parent] = parent_genes[parent]
 
             # Remove the system from sys2gene if it exists
             sys2gene.pop(system, None)
 
+        # remove duplicated genes
+        sys2gene = {sys: list(set(genes)) for sys, genes in sys2gene.items()}
         return sys_graph, sys2gene
 
     def sys_graph_to_ontology_table(self, sys_graph, sys2gene):
@@ -314,6 +331,19 @@ class TreeParser(object):
                 interactions.append((sys, gene, 'gene'))
         ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
         return  ontology_df
+
+    def retain_genes(self, gene_list):
+        """
+        retain genes in input gene list and rebuild ontology
+
+        Parameters:
+        ----------
+        gene_list : list, tuple
+            list of genes to retain
+        """
+        gene2sys_to_keep = self.gene2sys_df.loc[self.gene2sys_df.child.isin(gene_list)]
+        ontology_df_new = pd.concat([self.system_df, gene2sys_to_keep])
+        self._init_ontology(ontology_df_new)
 
     def compute_node_heights(self):
         """
@@ -341,6 +371,7 @@ class TreeParser(object):
                 heights[node] = 1 + max(heights[child] for child in self.system_graph.successors(node))
         return heights
 
+
     def get_descendants_sorted_by_height(self, node):
         """
         Get descendants of a node sorted by their height.
@@ -363,7 +394,7 @@ class TreeParser(object):
         sorted_descendants = sorted(descendants, key=lambda x: node_heights[x])
         return sorted_descendants
 
-    def write_gmt(self, output_path):
+    def save_ontology(self, out_dir):
         """
         Write the ontology to a GMT file format.
 
@@ -372,7 +403,18 @@ class TreeParser(object):
         output_path : str
             Path to the output GMT file.
         """
-        f = open(output_path, 'w')
+        self.ontology.to_csv(out_dir, sep='\t', index=False, header=None)
+
+    def write_gmt(self, out_dir):
+        """
+        Write the ontology to a GMT file format.
+
+        Parameters:
+        ----------
+        out_dir : str
+            Path to the output GMT file.
+        """
+        f = open(out_dir, 'w')
         for sys, genes in self.sys2gene_full.items():
             if self.sys_annot_dict is not None:
                 lines = "\t".join([sys, self.sys_annot_dict[sys]] + list(genes))

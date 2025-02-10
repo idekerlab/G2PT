@@ -201,38 +201,40 @@ class SankeyVisualizer(object):
         target_gos, target_genes, target_snps = self.tree_parser.get_target_components(target_go)
         if direction =='forward':
             attention_mean_df_dict = {head:df.loc['forward'] for head, df in attention_mean_df_dict.items()}
-        else:
+        elif direction == 'backward':
             attention_mean_df_dict = {head: df.loc['backward'] for head, df in attention_mean_df_dict.items()}
+        else:
+            attention_mean_df_dict = {head: pd.concat([df.loc['forward'], df.loc['backward']]) for head, df in attention_mean_df_dict.items()}
         query_list = list(target_gos)+list(target_genes)
         attention_mean_df_dict = {head: df#.loc[df.index.get_level_values(0).isin(query_list)]
                                    for head, df in attention_mean_df_dict.items()}
-        #print(attention_mean_df_dict[0])
-        '''
-        attention_mean_forward_factorized_df_dict = {
-            j: factorize_attention_recursively(self.tree_parser, attention_mean_df_dict[j].loc['forward'], target_go, 1) for j in
-            range(4)}
-        attention_mean_backward_factorized_df_dict = {
-            j: factorize_attention_recursively(self.tree_parser, attention_mean_df_dict[j].loc['backward'], target_go, 1,
-                                               direction='backward') for j in range(4)}
-        '''
+
         if factorize:
             if direction == 'forward':
                 attention_mean_df_dict = {j: factorize_attention_recursively(self.tree_parser, attention_mean_df_dict[j], target_go, 1,
                                                    direction='forward', genotypes=genotypes) for j in range(4)}
-            else:
+            elif direction == 'backward':
                 attention_mean_df_dict = {j: factorize_attention_recursively(self.tree_parser, attention_mean_df_dict[j], target_go, 1,
                                                    direction='backward', genotypes=genotypes) for j in range(4)}
+            else:
+                attention_mean_df_dict_forward = {
+                    j: factorize_attention_recursively(self.tree_parser, attention_mean_df_dict[j],
+                                                       target_go, 1,
+                                                       direction='forward', genotypes=genotypes) for j in range(4)}
+                attention_mean_df_dict_backward = {
+                    j: factorize_attention_recursively(self.tree_parser, attention_mean_df_dict[j],
+                                                       target_go, 1,
+                                                       direction='backward', genotypes=genotypes) for j in range(4)}
+                attention_mean_df_dict = {j: pd.concat([attention_mean_df_dict_forward[j], attention_mean_df_dict_backward[j]]) for j in range(4)}
+
 
         gene_sorted, snp_sorted, total_order = self.get_component_orders(target_gos, gene2chr=sort_by_chr)
-        print(len(target_gos), len(gene_sorted), len(snp_sorted))
-        print(target_gos)
-        print(gene_sorted)
-        print(snp_sorted)
+
         nested_gos = self.get_nested_systems_by_heights(target_gos)
         if direction=='backward':
             snp_sorted = []
         total_inds = self.get_sankey_component_inds(target_gos, gene_sorted, snp_sorted)
-        print(len(total_inds))
+
         coords_dict = {
             i: self.get_sankey_coords(attention_mean_df_dict[i], nested_gos, gene_sorted, snp_sorted) for i
             in range(4)}
@@ -348,6 +350,7 @@ class SankeyVisualizer(object):
         for key, value in attention_mean_df_factorized.iterrows():
             #print(key, value)
             if key[0] in target_genes:
+                #print(key, value)
                 sources.append(total_ind[key[1]])
                 targets.append(total_ind[key[0]])
                 values.append(value['Value'])

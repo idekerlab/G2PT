@@ -25,7 +25,7 @@ to run the training scripts:
 
 1. Participant Genotype files:
     * You can put [PLINK binary file](https://www.cog-genomics.org/plink/1.9/input#bed) 
-      * _--flip_ argument will flip ref. and alt. allele (sometime `--flip` argument increase performance)
+      * _--flip_ argument will flip ref. and alt. allele (use to recommend `--flip` argument, which make homozygous alt. as 2)
     * Or you can put tab-delimited file containing personal genotype data to reduce memory usage 
       * Index will indicate Sample ID. 
       * `homozygous_a0`, `heterozygous`, `homozygous_a1` contain index of SNP by the allele
@@ -120,20 +120,28 @@ There are several optional parameters that you can provide in addition to the in
    * _--model_: if you have trained model, put the path to the trained model.
    * _--out_: a name of directory where you want to store the trained models.
 
-# Overall Pipeline for G2PT training and Analysis
+# G2PT Pipeline in Overall
 
 ## 1. Prune Gene Ontology with your GWAS results
 
+You can prune Gene Ontology (Biological Process) based on your GWAS summary statistics
+
+[Prune Gene Ontology based on Your GWAS results](Prune_Gene_Ontology_Based_on_GWAS_results.ipynb)
+
 ## 2. Train model
+
+You can put ontology file made from step 1.
 
 ### Model Training Example (Single GPU) 
 
+
 ```          
-usage: train_snp2p_model.py \
+python train_snp2p_model.py \
                       --onto ONTO \
                       --snp2gene SNP2Gene \
-                      --genotype genotype_file_dir \
-                      --train TRAIN --val VAL --test TEST \
+                      --train-bfile TRAIN --train-cov TRAIN.cov --train-pheno TRAIN.pheno \
+                      --val-bfile VAL --train-cov VAL.cov --val-pheno VAL.pheno \
+                      --test TEST --test-cov VAL.cov --test-pheno TEST.pheno \ 
                       --epochs EPOCHS \
                       --lr LR \
                       --wd WD \
@@ -149,11 +157,12 @@ usage: train_snp2p_model.py \
 ### Model Training Example (Multiple GPUs)
 
 ```          
-usage: train_snp2p_model.py \
+python train_snp2p_model.py \
                       --onto ONTO \
                       --snp2gene SNP2Gene \
-                      --genotype genotype_file_dir \
-                      --train TRAIN --val VAL --test TEST \
+                      --train-bfile TRAIN --train-cov TRAIN.cov --train-pheno TRAIN.pheno \
+                      --val-bfile VAL --train-cov VAL.cov --val-pheno VAL.pheno \
+                      --test TEST --test-cov VAL.cov --test-pheno TEST.pheno \ 
                       --epochs EPOCHS \
                       --lr LR \
                       --wd WD \
@@ -172,11 +181,36 @@ usage: train_snp2p_model.py \
 
 ## 3. Predict with Trained Model
 
+```          
+python predict_attention.py \
+                      --onto ONTO \
+                      --snp2gene SNP2Gene \
+                      --bfile BFILE_prefix --cov COVAR.cov --pheno PHENO.pheno \
+                      --model trained_model_dir
+                      --out output_prefix \ 
+                      --batch_size BATCH_SIZE \
+                      --cpu N_cpu 
+```
+
+This will generate
+
+* Prediction: `{output_prefix}.prediction.csv`, containing only predictions (Good for performance evaluation!) 
+* Attention result: `{output_prefix}.attention.csv`, containing Nx(S+G) system and gene attention results for whole population
+* System importance score: `{output_prefix}.sys_corr.csv`, containing correlation between system attention and prediction
+* Gene importance score: `{output_prefix}.gene_corr.csv`, containing correlation between system attention and prediction
+
+adding argument `--prediction-only` will make this script to predict only (no attention result)
+
 
 ## 4. Analyze Attention, Epistasis
 
+## 4.1 Draw Sankey Plot from Trained Model
 
-## 4.2 Search Epistasis and Visualize 
+You can visualize attention flow from trained G2PT model.
+
+## 4.2 Search Visualize, and Analyze Epistasis in system
+
+You can search epistasis within system and visualize, and analyze. Please pass through example notebook
 
 [Epistais Search and Visualization Example](Epistasis_pipeline.ipynb)
 
