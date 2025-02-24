@@ -203,8 +203,8 @@ class SankeyVisualizer(object):
             attention_mean_df_dict = {head:df.loc['forward'] for head, df in attention_mean_df_dict.items()}
         elif direction == 'backward':
             attention_mean_df_dict = {head: df.loc['backward'] for head, df in attention_mean_df_dict.items()}
-        else:
-            attention_mean_df_dict = {head: pd.concat([df.loc['forward'], df.loc['backward']]) for head, df in attention_mean_df_dict.items()}
+        #else:
+            #attention_mean_df_dict = {head:  for head, df in attention_mean_df_dict.items()}
         query_list = list(target_gos)+list(target_genes)
         attention_mean_df_dict = {head: df#.loc[df.index.get_level_values(0).isin(query_list)]
                                    for head, df in attention_mean_df_dict.items()}
@@ -218,11 +218,11 @@ class SankeyVisualizer(object):
                                                    direction='backward', genotypes=genotypes) for j in range(4)}
             else:
                 attention_mean_df_dict_forward = {
-                    j: factorize_attention_recursively(self.tree_parser, attention_mean_df_dict[j],
+                    j: factorize_attention_recursively(self.tree_parser, attention_mean_df_dict[j].loc['forward'],
                                                        target_go, 1,
                                                        direction='forward', genotypes=genotypes) for j in range(4)}
                 attention_mean_df_dict_backward = {
-                    j: factorize_attention_recursively(self.tree_parser, attention_mean_df_dict[j],
+                    j: factorize_attention_recursively(self.tree_parser, attention_mean_df_dict[j].loc['backward'],
                                                        target_go, 1,
                                                        direction='backward', genotypes=genotypes) for j in range(4)}
                 attention_mean_df_dict = {j: pd.concat([attention_mean_df_dict_forward[j], attention_mean_df_dict_backward[j]]) for j in range(4)}
