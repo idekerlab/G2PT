@@ -120,7 +120,7 @@ class SankeyVisualizer(object):
             return figure
         return app
 
-    def display_sankey(self, coords_dict, sankey_dict, head, target_gos, gene_sorted, snp_sorted, total_order, width=1000, height=1000):
+    def display_sankey(self, coords_dict, sankey_dict, head, target_gos, gene_sorted, snp_sorted, total_order, width=1000, height=None):
         i = 0
         # for x, y, e in zip(coords_dict[1][0], coords_dict[1][1], total_order):
         #    print(i, e, x, y)
@@ -128,10 +128,11 @@ class SankeyVisualizer(object):
         total_order_reversed = {value: key for key, value in total_order.items()}
         sankey_customdata = [(total_order_reversed[s], total_order_reversed[t], m) for s, t, m in
                              zip(sankey_dict[head][0], sankey_dict[head][1], sankey_dict[head][4])]
-        if len(snp_sorted) == 0:
-            height = 50 * len(gene_sorted)
-        else:
-            height = 20 * len(snp_sorted)
+        if height is None:
+            if len(snp_sorted) == 0:
+                height = 50 * len(gene_sorted)
+            else:
+                height = 20 * len(snp_sorted)
         figure = go.Figure(go.Sankey(
             node=dict(
                 pad=300,
@@ -204,7 +205,7 @@ class SankeyVisualizer(object):
         elif direction == 'backward':
             attention_mean_df_dict = {head: df.loc['backward'] for head, df in attention_mean_df_dict.items()}
         #else:
-            #attention_mean_df_dict = {head:  for head, df in attention_mean_df_dict.items()}
+            #attention_mean_df_dict = {head: pd.concat([df.loc['forward'], df.loc['backward']]) for head, df in attention_mean_df_dict.items()}
         query_list = list(target_gos)+list(target_genes)
         attention_mean_df_dict = {head: df#.loc[df.index.get_level_values(0).isin(query_list)]
                                    for head, df in attention_mean_df_dict.items()}
