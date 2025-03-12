@@ -442,7 +442,7 @@ class EpistasisFinder(object):
     def merge_cov_df(self, new_cov_df, left_on=None, right_on=None):
         self.cov_df = self.cov_df.merge(new_cov_df, left_on=left_on, right_on=right_on)
 
-    def draw_epistasis(self, target_snp_0, target_snp_1, phenotype, sex=None, figsize=(22, 5), estimator='mean',  out_dir=None):
+    def draw_epistasis(self, target_snp_0, target_snp_1, phenotype, sex=None, figsize=(22, 5), estimator='mean', errorbar='ci', out_dir=None):
         genotype_partial = self.genotype[[target_snp_0, target_snp_1]]
         target_snps_0_a0_index = genotype_partial.loc[(genotype_partial[target_snp_0] == 0)].index
         target_snps_0_hetero_index = genotype_partial[(genotype_partial[target_snp_0] == 1)].index
@@ -471,14 +471,15 @@ class EpistasisFinder(object):
             cov_df_partial = cov_df_partial.loc[cov_df_partial.SEX == 0]
         elif sex == 1:
             cov_df_partial = cov_df_partial.loc[cov_df_partial.SEX == 1]
-
-        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_0, ax=axes[0], estimator=estimator)
-        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_1, ax=axes[1], estimator=estimator)
-
+        if errorbar is None:
+            errobar='se'
+        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_0, ax=axes[0], estimator=estimator, errorbar=errorbar)
+        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_1, ax=axes[1], estimator=estimator, errorbar=errorbar)
+        
         sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_0, hue=target_snp_1,
-                      hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'], ax=axes[2], estimator=estimator)
+                      hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'], ax=axes[2], estimator=estimator, errorbar=errorbar)
         sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_1, hue=target_snp_0,
-                      hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'], ax=axes[3], estimator=estimator)
+                      hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'], ax=axes[3], estimator=estimator, errorbar=errorbar)
         if out_dir is not None:
             plt.savefig(out_dir)
         plt.show()
