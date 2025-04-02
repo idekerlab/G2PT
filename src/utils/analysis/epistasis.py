@@ -8,6 +8,7 @@ import statsmodels.formula.api as smf
 import statsmodels.api as sm
 import numpy as np
 from scipy.stats import chi2
+import itertools
 from statsmodels.stats.multitest import multipletests
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -80,8 +81,8 @@ class EpistasisFinder(object):
             'underdominant': self.code_underdominance
         }
 
-    def search_epistasis_on_system(self, system, sex=0, quantile=0.9, return_significant_only=True, check_inheritance=True, verbose=0,
-                                   snp_inheritance_dict = {}):
+    def search_epistasis_on_system(self, system, sex=0, quantile=0.9, fisher=True, return_significant_only=True, check_inheritance=True, verbose=0,
+                                   snp_inheritance_dict = {}, target='PHENOTYPE'):
         """
         Search for epistatic interactions in a specified biological system.
 
@@ -99,15 +100,6 @@ class EpistasisFinder(object):
         if snp_inheritance_dict is None:
             snp_inheritance_dict = {}
 
-        '''
-        n_dominant = len(dominant_snps)
-        n_recessive = len(recessive_snps)
-        n_overdominant = len(recessive_snps)
-        n_underdominant = len(underdominant_snps)
-        n_typical = n_target_snps - n_dominant - n_recessive - n_overdominant - n_underdominant
-
-        print(f'From {n_target_snps}, there are {n_typical} typical SNPs, {n_dominant} dominant SNPs, {n_recessive} recessive SNPs, {n_overdominant} overdominant SNPs, {n_underdominant} underdominant SNPs,')
-        '''
         if sex == 0:
             attention_results = self.attention_results_0
         elif sex == 1:
@@ -131,9 +123,6 @@ class EpistasisFinder(object):
                     snp_inheritance_dict[target_snp] = target_snp_type
 
         print("Running Chi-Square Test...")
-
-
-
         if quantile >=0.5:
             risky_samples = attention_results.loc[attention_results[system] >= thr].IID.map(str)
         else:
@@ -149,24 +138,26 @@ class EpistasisFinder(object):
                 if verbose==1:
                     print(f'\t\t{target_snp} -> {self.tree_parser.snp2gene[target_snp]} passes Chi-Square test with p-value {p_val}')
         print(f'\tFrom {n_target_snps} SNPs, {len(result_chi)} SNPs pass Chi-Square test')
-        print('Running Fisher')
-
-        odd_result, p_df = self.calculate_fisher(risky_samples, result_chi, snp_inheritance_dict=snp_inheritance_dict)
-        sig_snp_pairs = self.get_significant_pairs_from_fisher(p_df, verbose=verbose)
-        n = odd_result.shape[1]
-        print(f'\tFrom {(n*(n-1)/2)} significant pairs, {len(sig_snp_pairs)} pairs pass Fisher test')
+        if fisher:
+            print('Running Fisher')
+            odd_result, p_df = self.calculate_fisher(risky_samples, result_chi, snp_inheritance_dict=snp_inheritance_dict)
+            sig_snp_pairs = self.get_significant_pairs_from_fisher(p_df, verbose=verbose)
+            n = odd_result.shape[1]
+            print(f'\tFrom {(n*(n-1)/2)} significant pairs, {len(sig_snp_pairs)} pairs pass Fisher test')
+        else:
+            sig_snp_pairs = list(itertools.combinations(result_chi, 2))
+            #n = len(result_chi)
+            #print(f'\tFrom {(n * (n - 1) / 2)} significant pairs, {len(sig_snp_pairs)} pairs pass Fisher test')
         print('Filtering Close SNPs')
         distant_snp_pairs = [(snp_1, snp_2) for snp_1, snp_2 in sig_snp_pairs if self.check_distance(snp_1, snp_2)]
         print(f"\tFrom {len(sig_snp_pairs)} pairs, close {len(sig_snp_pairs)-len(distant_snp_pairs)} SNP pairs are removed")
 
         print('Calculating statistical Interaction p-value ')
-
-
-
         sig_snp_pairs = self.get_statistical_epistatic_significance(distant_snp_pairs, attention_results.IID.map(str),
                                                                     snp_inheritance_dict=snp_inheritance_dict,
                                                                     verbose=verbose,
-                                                                    return_significant_only=return_significant_only)
+                                                                    return_significant_only=return_significant_only,
+                                                                    target=target)
         print(f'\tFrom {len(distant_snp_pairs)} pairs, {len(sig_snp_pairs)} significant interaction are queried')
         '''
         if len(sig_snp_pairs)==0:
@@ -279,7 +270,7 @@ class EpistasisFinder(object):
     def get_statistical_epistatic_significance(self, pairs, cohort,
                                                snps_in_system=(),
                                                return_significant_only=True,
-                                               snp_inheritance_dict={}, verbose=0):
+                                               snp_inheritance_dict={}, target='PHENOTYPE', verbose=0):
         """
         Evaluate statistical significance of epistatic interactions using regression models.
 
@@ -316,7 +307,7 @@ class EpistasisFinder(object):
             snps_in_system_renamed = [self.rename_snp(snp) for snp in snps_in_system]
             snp_1_renamed = self.rename_snp(snp_1)
             snp_2_renamed = self.rename_snp(snp_2)
-            formula_no_epistasis = 'PHENOTYPE ~ ' + ' + '.join(self.cov_ids) + " + %s + %s"%(snp_1_renamed, snp_2_renamed)
+            formula_no_epistasis = target+' ~ ' + ' + '.join(self.cov_ids) + " + %s + %s"%(snp_1_renamed, snp_2_renamed)
             combination_name = "%s:%s"%(snp_1_renamed, snp_2_renamed)
             formula_epistasis = formula_no_epistasis + " + " + combination_name
             #md_reduced = smf.ols(formula_no_epistasis, data=partial_genotype_cov_merged).fit()
@@ -408,7 +399,7 @@ class EpistasisFinder(object):
         genotype.loc[:, snp_id] = genotype[snp_id].replace({1: 0, 0: 1, 2: 1})
         return genotype
 
-    def determine_inheritance_model(self, genotypes, phenotype, target_snp, verbose=0):
+    def determine_inheritance_model(self, genotypes, phenotype, target_snp, verbose=0, loss='aic'):
         """
         Determine which inheritance model (among typical/additive, dominant, recessive,
         overdominant, underdominant) best fits a continuous phenotype using AIC.
@@ -433,8 +424,13 @@ class EpistasisFinder(object):
         for model_name, encoder in self.model_encoders.items():
             coded_g = encoder(genotypes, target_snp)
             ols_model = sm.OLS(phenotype, coded_g.values).fit()
-            model_aics[model_name] = ols_model.aic
+            if loss == 'aic':
+                model_aics[model_name] = ols_model.aic
+            else:
+                model_aics[model_name] = ols_model.bic
+
         best_model = min(model_aics, key=model_aics.get)
+
         if verbose == 1:
             print(f'{target_snp} is {best_model}, AIC: {model_aics}')
         return best_model
@@ -442,7 +438,8 @@ class EpistasisFinder(object):
     def merge_cov_df(self, new_cov_df, left_on=None, right_on=None):
         self.cov_df = self.cov_df.merge(new_cov_df, left_on=left_on, right_on=right_on)
 
-    def draw_epistasis(self, target_snp_0, target_snp_1, phenotype, sex=None, figsize=(22, 5), estimator='mean', errorbar='ci', out_dir=None):
+    def draw_epistasis(self, target_snp_0, target_snp_1, phenotype, sex=None, figsize=(22, 5), estimator='mean',
+                           errorbar='ci', out_dir=None, regression=False):
         genotype_partial = self.genotype[[target_snp_0, target_snp_1]]
         target_snps_0_a0_index = genotype_partial.loc[(genotype_partial[target_snp_0] == 0)].index
         target_snps_0_hetero_index = genotype_partial[(genotype_partial[target_snp_0] == 1)].index
@@ -472,10 +469,11 @@ class EpistasisFinder(object):
         elif sex == 1:
             cov_df_partial = cov_df_partial.loc[cov_df_partial.SEX == 1]
         if errorbar is None:
-            errobar='se'
+            errorbar='se'
+
         sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_0, ax=axes[0], estimator=estimator, errorbar=errorbar)
         sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_1, ax=axes[1], estimator=estimator, errorbar=errorbar)
-        
+
         sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_0, hue=target_snp_1,
                       hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'], ax=axes[2], estimator=estimator, errorbar=errorbar)
         sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_1, hue=target_snp_0,

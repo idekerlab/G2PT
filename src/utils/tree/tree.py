@@ -46,7 +46,7 @@ class TreeParser(object):
 
         self.sys2gene = copy.deepcopy(sys2gene_dict)
         self.gene2sys = {}
-        for sys, genes in self.gene2sys.items():
+        for sys, genes in self.sys2gene.items():
             for gene in genes:
                 if gene in self.gene2sys.keys():
                     self.gene2sys[gene].append(sys)

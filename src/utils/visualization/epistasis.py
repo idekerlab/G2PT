@@ -108,9 +108,6 @@ class EpistasisVisualizer:
             edge_obj = sub_G.get_edge(gene1, gene2)
             edge_obj.attr.update(color="red", dir="both", style="dashed")
 
-        # Give rank to gene
-        sub_G.add_subgraph(epistatic_genes, rank="same")
-
         # Layout and return the graph
         sub_G.layout(prog="dot")
         return sub_G
