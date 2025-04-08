@@ -89,7 +89,7 @@ class Attention(nn.Module):
         elif activation=='tanh':
             self.activation = nn.Tanh()
         else:
-            self.activation = None
+            self.activation = lambda a: a
         #self.top_k = top_k
 
     def poincare_distance(self, x, y, eps=1e-5):
@@ -173,8 +173,8 @@ class Attention(nn.Module):
 
             scores = scores.masked_fill(top_k_mask, -1e9)
         '''
-        if self.activation:
-            p_attn = self.activation(scores)
+
+        p_attn = self.activation(scores)
         if dropout is not None:
             p_attn = dropout(p_attn)
         return torch.matmul(p_attn, value), p_attn, scores

@@ -10,7 +10,7 @@ from tqdm import tqdm
 import numpy as np
 import copy
 from src.utils.data import move_to
-from src.utils.trainer import CCCLoss, FocalLoss
+from src.utils.trainer import CCCLoss, FocalLoss, VarianceLoss
 import copy
 
 
@@ -24,6 +24,7 @@ class SNP2PTrainer(object):
         self.beta = 0.1
         if args.regression:
             self.phenotype_loss = nn.MSELoss()
+            self.variance_loss = VarianceLoss()
         else:
             self.phenotype_loss = nn.BCELoss()
         self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=args.lr,
@@ -35,11 +36,11 @@ class SNP2PTrainer(object):
         self.total_train_step = len(
             self.snp2p_dataloader) * args.epochs  # + len(self.drug_response_dataloader_cellline)*args.epochs
         #self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
-        self.nested_subtrees_forward = self.snp2p_dataloader.dataset.tree_parser.get_nested_subtree_mask(
-            args.subtree_order, direction='forward', format=self.args.input_format)
+        self.nested_subtrees_forward = self.snp2p_dataloader.dataset.tree_parser.get_hierarchical_interactions(
+            snp2p_dataloader.dataset.tree_parser.interaction_types, direction='forward', format=self.args.input_format)
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
-        self.nested_subtrees_backward = snp2p_dataloader.dataset.tree_parser.get_nested_subtree_mask(
-            args.subtree_order, direction='backward', format=self.args.input_format)
+        self.nested_subtrees_backward = snp2p_dataloader.dataset.tree_parser.get_hierarchical_interactions(
+            snp2p_dataloader.dataset.tree_parser.interaction_types, direction='backward', format=self.args.input_format)
         self.nested_subtrees_backward = move_to(self.nested_subtrees_backward, device)
         self.sys2gene_mask = move_to(
             torch.tensor(self.snp2p_dataloader.dataset.tree_parser.sys2gene_mask, dtype=torch.bool), device)

@@ -10,7 +10,7 @@ from src.model.hierarchical_transformer import HierarchicalTransformer
 
 class Genotype2PhenotypeTransformer(nn.Module):
 
-    def __init__(self, tree_parser, hidden_dims, subtree_order=('default', ), dropout=0.2, activation='softmax',
+    def __init__(self, tree_parser, hidden_dims, interaction_types=('default', ), dropout=0.2, activation='softmax',
                  input_format='indices', poincare=False):
         super(Genotype2PhenotypeTransformer, self).__init__()
         self.input_format = input_format
@@ -18,6 +18,7 @@ class Genotype2PhenotypeTransformer(nn.Module):
         self.tree_parser = tree_parser
         self.n_systems = self.tree_parser.n_systems
         self.n_genes = self.tree_parser.n_genes
+        self.interaction_types = interaction_types
         print("Model is initialized with %d systems and %d gene mutations" % (self.n_systems, self.n_genes))
         self.poincare = poincare
 
@@ -38,18 +39,20 @@ class Genotype2PhenotypeTransformer(nn.Module):
 
         self.norm_channel_first = False
 
-        self.sys2env = nn.ModuleList([HierarchicalTransformer(hidden_dims, 4, hidden_dims * 4,
+        self.sys2env = nn.ModuleDict({interaction_type:HierarchicalTransformer(hidden_dims, 4, hidden_dims * 4,
                                                               self.sys2env_update_norm_inner,
                                                               self.sys2env_update_norm_outer,
                                                               dropout, norm_channel_first=self.norm_channel_first,
-                                                              conv_type='system', activation='softmax', poincare=poincare) for subtree in
-                                      subtree_order])
-        self.env2sys = nn.ModuleList([HierarchicalTransformer(hidden_dims, 4, hidden_dims * 4,
+                                                              conv_type='system', activation='softmax', poincare=poincare)
+                                      for interaction_type in
+                                      interaction_types})
+        self.env2sys = nn.ModuleDict({interaction_type:HierarchicalTransformer(hidden_dims, 4, hidden_dims * 4,
                                                               self.env2sys_update_norm_inner,
                                                               self.env2sys_update_norm_outer,
                                                               dropout, norm_channel_first=self.norm_channel_first,
-                                                              conv_type='system', activation='softmax', poincare=poincare) for subtree in
-                                      subtree_order])
+                                                              conv_type='system', activation='softmax', poincare=poincare)
+                                      for interaction_type in
+                                      interaction_types})
 
         self.sys2gene = HierarchicalTransformer(hidden_dims, 4, hidden_dims * 4,
                                                       self.sys2gene_update_norm_inner, self.sys2gene_update_norm_outer,
@@ -100,8 +103,12 @@ class Genotype2PhenotypeTransformer(nn.Module):
             sys2sys = self.sys2env
         else:
             sys2sys = self.env2sys
-        for hierarchical_masks, hitr in zip(nested_hierarchical_masks, sys2sys):
-            for hierarchical_mask in hierarchical_masks:
+        for hierarchical_masks in nested_hierarchical_masks:
+            hitr_result = 0.
+            for interaction_type, hierarchical_mask in hierarchical_masks.items():
+
+                hitr = sys2sys[interaction_type]
+                ## Calculate hitr by the propagation independently
                 if input_format == 'indices':
                     system_embedding_queries = self.system_embedding(hierarchical_mask['query']).unsqueeze(0).expand(batch_size, -1, -1)
                     system_embedding_keys = self.system_embedding(hierarchical_mask['key']).unsqueeze(0).expand(batch_size, -1, -1)
@@ -119,19 +126,10 @@ class Genotype2PhenotypeTransformer(nn.Module):
                     system_embedding_queries = self.sys_norm(system_embedding_output)
                     system_embedding_keys = self.sys_norm(system_embedding_output)
                     mask = hierarchical_mask
+                #print(system_embedding_queries.size(), system_embedding_keys.size(), mask.size(), interaction_type)
+                hitr_result = self.effect_norm(hitr.forward(system_embedding_queries, system_embedding_keys, mask))
 
-                hitr_result = hitr.forward(system_embedding_queries, system_embedding_keys, mask)
-                hitr_result = self.effect_norm(hitr_result)
                 if input_format == 'indices':
-                    '''
-                    results = []
-
-                    for b, value in enumerate(update_tensor):
-                        results.append(
-                            update_tensor[b].index_add(0, hierarchical_mask['query'], hitr_result[b]))
-                    system_effect = torch.stack(results, dim=0)
-                    system_effect = hitr_result.scatter(hierarchical_mask['query'], hitr_result, 0)
-                    '''
                     query_indices = hierarchical_mask['query'].unsqueeze(0).expand(batch_size, -1).unsqueeze(-1).expand(-1, -1, self.hidden_dims)
                     update_tensor = update_tensor.scatter_add(1, query_indices, hitr_result)# + self.effect_norm(system_effect)
                     update_result = update_result.scatter_add(1, query_indices, hitr_result)# + self.effect_norm(system_effect)

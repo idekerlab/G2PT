@@ -50,7 +50,7 @@ def main():
     # Hierarchy files
     parser.add_argument('--onto', help='Ontology file used to guide the neural network', type=str)
     parser.add_argument('--snp2gene', help='SNP to gene mapping file', type=str)
-    parser.add_argument('--subtree-order', help='Subtree cascading order', nargs='+', default=['default'])
+    parser.add_argument('--interaction-types', help='Subtree cascading order', nargs='+', default=['default'])
 
     # Train bfile format
     parser.add_argument('--train-bfile', help='Training genotype dataset', type=str, default=None)
@@ -194,7 +194,7 @@ def main_worker(rank, ngpus_per_node, args):
         print(args.model, 'loaded')
         snp2p_model = SNP2PhenotypeModel(tree_parser, args.hidden_dims,
                                          sys2pheno=args.sys2pheno, gene2pheno=args.gene2pheno, snp2pheno=args.snp2pheno,
-                                         subtree_order=args.subtree_order,
+                                         interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          binary=(not args.regression), activation='softmax', input_format=args.input_format)
         print(args.model, 'initialized')
@@ -207,10 +207,11 @@ def main_worker(rank, ngpus_per_node, args):
     else:
         snp2p_model = SNP2PhenotypeModel(tree_parser, args.hidden_dims,
                                          sys2pheno=args.sys2pheno, gene2pheno=args.gene2pheno, snp2pheno=args.snp2pheno,
-                                         subtree_order=args.subtree_order,
+                                         interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          binary=(not args.regression), activation='softmax', input_format=args.input_format,
                                          poincare=args.poincare)
+        #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         args.start_epoch = 0
 
     if not torch.cuda.is_available():

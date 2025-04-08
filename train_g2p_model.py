@@ -148,6 +148,7 @@ def main_worker(gpu, ngpus_per_node, args):
         g2p_model = torch.load(args.model, map_location=device)
     else:
         g2p_model = Genotype2PhenotypeModel(tree_parser, list(args.genotypes.keys()), args.hidden_dims, dropout=args.dropout)
+        g2p_model = torch.compile(g2p_model, fullgraph=True)
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')

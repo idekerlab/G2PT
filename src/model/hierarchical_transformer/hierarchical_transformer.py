@@ -100,11 +100,12 @@ class HierarchicalTransformer(nn.Module):
             result = self.norm(result)
                 #result = (result + result_layer_norm)/2
         #updated_value = updated_value.permute(0, 2, 1)
-        if self.n_type > 1:
-            mask = sum([m[1] for m in mask])
-        node_mask = torch.sum(mask, dim=-1) == 0
-        node_mask = node_mask.unsqueeze(-1).expand(-1, -1, q.size(-1))
-        result = result.masked_fill(node_mask, 0)
+        if mask is not None:
+            if self.n_type > 1:
+                mask = sum([m[1] for m in mask])
+            node_mask = torch.sum(mask, dim=-1) == 0
+            node_mask = node_mask.unsqueeze(-1).expand(-1, -1, q.size(-1))
+            result = result.masked_fill(node_mask, 0)
         return result
 
     def get_attention(self, q, k, mask):

@@ -11,6 +11,7 @@ class SNPTreeParser(TreeParser):
 
         #self.snp2gene_df = self.ontology.loc[self.ontology['interaction'] == 'snp']
         self.snp2gene_df = pd.read_csv(snp2gene, sep='\t', names=['snp', 'gene', 'chr'])
+        self.snp2gene_df = self.snp2gene_df.loc[self.snp2gene_df.gene.isin(self.gene2ind.keys())]
         """
         genes = self.snp2gene_df.gene.unique()
         genes_not_in_sys2gene = [gene for gene in genes if gene not in self.gene2ind.keys()]

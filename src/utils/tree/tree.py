@@ -20,14 +20,16 @@ class TreeParser(object):
 
     def _init_ontology(self, ontology_df):
         self.ontology = ontology_df
-        self.system_df = ontology_df.loc[ontology_df['interaction'] != 'gene']
+        self.sys_df = ontology_df.loc[ontology_df['interaction'] != 'gene']
         self.gene2sys_df = ontology_df.loc[ontology_df['interaction'] == 'gene']
-        self.system_graph = nx.from_pandas_edgelist(self.system_df, create_using=nx.DiGraph(), source='parent',
-                                                    target='child')
+        self.sys_graph = nx.from_pandas_edgelist(self.sys_df, create_using=nx.DiGraph(), source='parent',
+                                                    target='child', edge_attr='interaction')
+        self.interaction_types = self.sys_df['interaction'].unique()
+        self.interaction_dict = {(row['parent'], row['child']):row['interaction'] for i, row in self.sys_df.iterrows()}
         genes = self.gene2sys_df['child'].unique()
         self.gene2ind = {gene: index for index, gene in enumerate(genes)}
         self.ind2gene = {index: gene for index, gene in enumerate(genes)}
-        systems = np.unique(self.system_df[['parent', 'child']].values)
+        systems = np.unique(self.sys_df[['parent', 'child']].values)
         self.sys2ind = {system: i for i, system in enumerate(systems)}
         self.ind2sys = {i:system for system, i in self.sys2ind.items()}
         self.n_systems = len(self.sys2ind)
@@ -42,7 +44,7 @@ class TreeParser(object):
 
         # delete genes in child system
         for sys in list(sys2gene_dict.keys()):
-            self.delete_parent_genes_from_child(self.system_graph, sys, sys2gene_dict)
+            self.delete_parent_genes_from_child(self.sys_graph, sys, sys2gene_dict)
 
         self.sys2gene = copy.deepcopy(sys2gene_dict)
         self.gene2sys = {}
@@ -56,7 +58,7 @@ class TreeParser(object):
 
 
         self.system2system_mask = np.zeros((len(self.sys2ind), len(self.sys2ind)))
-        for parent_system, child_system in zip(self.system_df['parent'], self.system_df['child']):
+        for parent_system, child_system in zip(self.sys_df['parent'], self.sys_df['child']):
             self.system2system_mask[self.sys2ind[parent_system], self.sys2ind[child_system]] = 1
         self.gene2sys_mask = np.zeros((len(self.sys2ind), len(self.gene2ind)))
         self.sys2gene_dict = {self.sys2ind[system]: [] for system in systems}
@@ -70,9 +72,9 @@ class TreeParser(object):
         if self.dense_attention:
             self.gene2sys_mask = torch.ones_like(torch.tensor(self.gene2sys_mask))
         self.sys2gene_mask = self.gene2sys_mask.T
-        self.subtree_types = self.system_df['interaction'].unique()
+        self.subtree_types = self.sys_df['interaction'].unique()
 
-        #self.system_graph_revered = nx.from_pandas_edgelist(self.system_df, create_using=nx.DiGraph(), source='child',
+        #self.sys_graph_revered = nx.from_pandas_edgelist(self.sys_df, create_using=nx.DiGraph(), source='child',
         #                                            target='parent')
         self.node_height_dict = self.compute_node_heights()
 
@@ -82,7 +84,7 @@ class TreeParser(object):
             else:
                 sys2gene_dict[sys] = []
         for sys in systems:
-            self.add_child_genes_to_parents(self.system_graph, sys, sys2gene_dict)
+            self.add_child_genes_to_parents(self.sys_graph, sys, sys2gene_dict)
         self.sys2gene_full = sys2gene_dict
 
         self.gene2sys_full = {}
@@ -95,11 +97,12 @@ class TreeParser(object):
 
 
         print("Building descendant dict")
-        self.descendant_dict = {system: list(nx.descendants(self.system_graph, system))+[system] for system in systems}
+        self.descendant_dict = {system: list(nx.descendants(self.sys_graph, system))+[system] for system in systems}
         self.descendant_dict_ind = {self.sys2ind[key]:[self.sys2ind[descendant] for descendant in value]
                                     for key, value in self.descendant_dict.items()}
         print("Subtree types: ", self.subtree_types)
-        self.subtree_dfs = {subtree_type:self.system_df.loc[self.system_df['interaction']==subtree_type]
+        '''
+        self.subtree_dfs = {subtree_type:self.sys_df.loc[self.sys_df['interaction']==subtree_type]
                             for subtree_type in self.subtree_types}
         self.subtree_graphs = {subtree_type: nx.from_pandas_edgelist(self.subtree_dfs[subtree_type], create_using=nx.DiGraph(),
                                                                      source='parent', target='child')
@@ -111,7 +114,7 @@ class TreeParser(object):
         self.subtree_reverse_roots = {subtree_type:set([node for node in self.subtree_reverse_graphs[subtree_type].nodes()
                                                 if self.subtree_reverse_graphs[subtree_type].out_degree(node)==0])
                               for subtree_type in self.subtree_types}
-
+        '''
         self.gene2gene_mask = np.zeros((len(self.gene2ind), len(self.gene2ind)))
         self.gene2sys_graph = nx.from_pandas_edgelist(self.gene2sys_df, create_using=nx.DiGraph(),
                                                          source='parent', target='child')
@@ -168,6 +171,8 @@ class TreeParser(object):
 
         # Recurse for all children and add their genes
         for child in tree.successors(node):
+            interaction_type = tree.edges[(node, child)]['interaction']
+            #if (interaction_type == 'is_a') | (interaction_type == 'part_of') | (interaction_type == 'default'):
             child_genes = self.add_child_genes_to_parents(tree, child, gene_dict)
             genes.update(child_genes)
 
@@ -196,11 +201,11 @@ class TreeParser(object):
         # Recurse for all children
         for child in tree.successors(node):
             # Recursively process the child's genes
+            interaction_type = tree.edges[(node, child)]['interaction']
+            #if (interaction_type == 'is_a') | (interaction_type == 'part_of') | (interaction_type == 'default'):
             child_genes = self.delete_parent_genes_from_child(tree, child, gene_dict)
-
             # Remove parent genes from the child's genes
             child_genes.difference_update(genes)
-
             # Update the child's gene set in the dictionary
             gene_dict[child] = child_genes
 
@@ -230,7 +235,7 @@ class TreeParser(object):
         to_collapse = {
             parent
             for parent in self.sys2ind
-            for child in self.system_graph[parent]
+            for child in self.sys_graph[parent]
             if term_hash[parent] == term_hash[child]
         }
 
@@ -253,7 +258,7 @@ class TreeParser(object):
         to_collapse = sorted(to_collapse, key=lambda term: self.node_height_dict[term])
 
         # Copy system graph and sys2gene for modification
-        sys_graph_copied = copy.deepcopy(self.system_graph)
+        sys_graph_copied = copy.deepcopy(self.sys_graph)
         sys2gene_copied = copy.deepcopy(self.sys2gene)
 
         # Perform collapse
@@ -289,18 +294,22 @@ class TreeParser(object):
             children = list(sys_graph.successors(system))
 
             # Connect every parent of the system to every child
-            sys_graph.add_edges_from((parent, child) for parent, child in product(parents, children))
-
-            # Remove the system node
-            sys_graph.remove_node(system)
+            for parent, child in product(parents, children):
+                sys_graph.add_edge(parent, child, interaction=sys_graph.edges[(system, child)]['interaction'])
+            #sys_graph.add_edges_from((parent, child) for parent, child in )
 
             # Update sys2gene mappings for parents
             parent_genes = {parent: sys2gene.get(parent, []) for parent in parents}
             system_genes = sys2gene.get(system, [])
             for parent in parents:
+                interaction_type = sys_graph.edges[(parent, system)]['interaction']
+                #if (interaction_type == 'is_a') | (interaction_type == 'part_of') | (interaction_type == 'default'):
                 parent_genes[parent] = list(parent_genes[parent])
                 parent_genes[parent].extend(system_genes)
                 sys2gene[parent] = parent_genes[parent]
+
+            # Remove the system node
+            sys_graph.remove_node(system)
 
             # Remove the system from sys2gene if it exists
             sys2gene.pop(system, None)
@@ -325,7 +334,7 @@ class TreeParser(object):
         DataFrame
             Ontology table containing parent-child interactions.
         """
-        interactions = [(parent, child, 'default') for parent, child in sys_graph.edges]
+        interactions = [(parent, child, sys_graph.edges[(parent, child)]['interaction']) for parent, child in sys_graph.edges]
         for sys, genes in sys2gene.items():
             for gene in genes:
                 interactions.append((sys, gene, 'gene'))
@@ -342,7 +351,7 @@ class TreeParser(object):
             list of genes to retain
         """
         gene2sys_to_keep = self.gene2sys_df.loc[self.gene2sys_df.child.isin(gene_list)]
-        ontology_df_new = pd.concat([self.system_df, gene2sys_to_keep])
+        ontology_df_new = pd.concat([self.sys_df, gene2sys_to_keep])
         self._init_ontology(ontology_df_new)
 
     def compute_node_heights(self):
@@ -355,20 +364,20 @@ class TreeParser(object):
             Dictionary mapping nodes to their heights.
         """
         # Ensure the graph is a tree (i.e., has a single root)
-        if not nx.is_directed_acyclic_graph(self.system_graph):
+        if not nx.is_directed_acyclic_graph(self.sys_graph):
             raise ValueError("The input graph must be a directed acyclic graph (DAG).")
 
         # Start by identifying leaf nodes
-        leaf_nodes = [node for node in self.system_graph.nodes if self.system_graph.out_degree(node) == 0]
+        leaf_nodes = [node for node in self.sys_graph.nodes if self.sys_graph.out_degree(node) == 0]
 
         # Dictionary to store node heights
         heights = {node: 0 for node in leaf_nodes}  # Leaf nodes have height 0
 
         # Process nodes in reverse topological order
-        for node in reversed(list(nx.topological_sort(self.system_graph))):
+        for node in reversed(list(nx.topological_sort(self.sys_graph))):
             if node not in heights:  # Non-leaf nodes
                 # Height is 1 + max height of its children
-                heights[node] = 1 + max(heights[child] for child in self.system_graph.successors(node))
+                heights[node] = 1 + max(heights[child] for child in self.sys_graph.successors(node))
         return heights
 
 
@@ -389,7 +398,7 @@ class TreeParser(object):
         # Compute the height of all nodes
         node_heights = self.compute_node_heights()
         # Get all descendants of the given node
-        descendants = nx.descendants(self.system_graph, node)
+        descendants = nx.descendants(self.sys_graph, node)
         # Sort descendants by height (ascending or descending)
         sorted_descendants = sorted(descendants, key=lambda x: node_heights[x])
         return sorted_descendants
@@ -466,51 +475,54 @@ class TreeParser(object):
         return system2mut_mask.float()
 
 
-    def get_subtree_mask(self, interaction_type, direction='forward', format='indices'):
-        sub_tree = self.subtree_graphs[interaction_type]
-        sub_tree_roots = set([node for node in sub_tree.nodes() if sub_tree.in_degree(node)==0])
-        cur_subtree_dfs = self.subtree_dfs[interaction_type]
-        #cur_parents = sub_tree_roots
+    def get_hierarchical_interactions(self, interaction_types, direction='forward', format='indices'):
+        tree_roots = set([node for node in self.sys_graph.nodes() if self.sys_graph.in_degree(node)==0])
         result_masks = []
-        #result_indices = []
-        cur_parents = set(sub_tree_roots)
+        cur_parents = set(tree_roots)
         while cur_parents:
-            mask = np.zeros((len(self.sys2ind), len(self.sys2ind)))
-            queries = []
-            keys = []
+            masks = {interaction_type:np.zeros((len(self.sys2ind), len(self.sys2ind))) for interaction_type in interaction_types}
+            queries = {interaction_type: [] for interaction_type in interaction_types}
+            keys = {interaction_type: [] for interaction_type in interaction_types}
             new_parents = set()
 
             for parent in cur_parents:
-                children = list(sub_tree.successors(parent))
+                children = list(self.sys_graph.successors(parent))
                 for child in children:
+                    edge_type = self.interaction_dict[(parent, child)]
                     if direction == 'forward':
-                        mask[self.sys2ind[parent], self.sys2ind[child]] = 1
+                        masks[edge_type][self.sys2ind[parent], self.sys2ind[child]] = 1
                         if format == 'indices':
-                            queries.append(self.sys2ind[parent])
-                            keys.append(self.sys2ind[child])
+                            queries[edge_type].append(self.sys2ind[parent])
+                            keys[edge_type].append(self.sys2ind[child])
                     elif direction == 'backward':
-                        mask[self.sys2ind[child], self.sys2ind[parent]] = 1
+                        masks[edge_type][self.sys2ind[child], self.sys2ind[parent]] = 1
                         if format == 'indices':
-                            queries.append(self.sys2ind[child])
-                            keys.append(self.sys2ind[parent])
+                            queries[edge_type].append(self.sys2ind[child])
+                            keys[edge_type].append(self.sys2ind[parent])
                     new_parents.add(child)
-            if mask.sum() == 0:
+            if sum([mask.sum() for mask in masks.values()]) == 0:
                 break
             if format == 'indices':
-                result_mask = mask[queries, :]
-                result_mask = result_mask[:, keys]
-                result_mask = torch.tensor(result_mask, dtype=torch.float32)
-                if self.dense_attention:
-                    result_mask = torch.ones_like(result_mask)
-                result_masks.append({"query": torch.tensor(queries, dtype=torch.long), "key": torch.tensor(keys, dtype=torch.long), 'mask': result_mask})
+                result_dict = {}
+
+                for interaction_type, mask in masks.items():
+                    if len(queries[interaction_type]) == 0:
+                        continue
+                    result_mask = mask[queries[interaction_type], :]
+                    result_mask = result_mask[:, keys[interaction_type]]
+                    result_mask = torch.tensor(result_mask, dtype=torch.float32)
+                    if self.dense_attention:
+                        result_mask = torch.ones_like(result_mask)
+                    result_dict[interaction_type] = {"query": torch.tensor(queries[interaction_type], dtype=torch.long),
+                                                       "key": torch.tensor(keys[interaction_type], dtype=torch.long),
+                                                       'mask': result_mask}
+                result_masks.append(result_dict)
             else:
-                result_mask = torch.tensor(mask, dtype=torch.float32)
+                result_mask = {torch.tensor(mask, dtype=torch.float32) for mask in masks}
                 if self.dense_attention:
-                    result_mask = torch.ones_like(result_mask)
+                    result_mask = {interaction_type: torch.ones_like(mask) for interaction_type, mask in masks.items()}
                 result_masks.append(result_mask)
-
             cur_parents = new_parents
-
         if direction == 'forward':
             result_masks.reverse()
         return result_masks
@@ -519,6 +531,7 @@ class TreeParser(object):
         nested_subtrees = [self.get_subtree_mask(subtree_type, direction=direction, format=format) for subtree_type in subtree_order]
         return nested_subtrees
 
+    '''
     def mask_subtree_mask_by_mut(self, tree_mask, mut_vector):
         non_zero_index_tree = np.where(tree_mask!=0)
         result_mask = np.zeros_like(tree_mask)
@@ -528,6 +541,7 @@ class TreeParser(object):
             if np.any([mut_system in self.descendant_dict_ind[y] for mut_system in mut_systems]):
                 result_mask[x, y] =1
         return torch.tensor(result_mask, dtype=torch.float32)
+    '''
 
     def get_target_components(self, target_go):
         if self.tree_parser.node_height_dict[target_go] != 0:
@@ -547,7 +561,7 @@ class TreeParser(object):
     def get_partial_sys2sys_masks(self, target_gos):
         """Build partial adjacency masks and edges from GO subgraph."""
         sys2ind_partial = {go: i for i, go in enumerate(target_gos)}
-        all_paths = self.get_paths_from_node_to_leaves(self.system_graph, target_gos[-1])
+        all_paths = self.get_paths_from_node_to_leaves(self.sys_graph, target_gos[-1])
         all_edges_forward = self.get_edges_from_paths(all_paths)
 
         sys2sys_forward_partial = torch.zeros(size=(len(target_gos), len(target_gos)))

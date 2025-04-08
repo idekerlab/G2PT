@@ -51,3 +51,17 @@ class FocalLoss(nn.Module):
         focal_loss = self.alpha * (1-BCE_EXP)**self.gamma * BCE
                        
         return focal_loss
+
+class VarianceLoss(nn.Module):
+    """
+    Computes variance-matching loss between predictions and targets within each minibatch.
+    Encourages the predictions' variance to match the variance of the targets.
+    """
+    def __init__(self):
+        super(VarianceLoss, self).__init__()
+
+    def forward(self, predictions, targets):
+        pred_std = torch.std(predictions, unbiased=False)
+        target_std = torch.std(targets, unbiased=False)
+        loss = (pred_std - target_std).pow(2)
+        return loss
