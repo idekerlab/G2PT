@@ -10,7 +10,7 @@ from tqdm import tqdm
 import numpy as np
 import copy
 from src.utils.data import move_to
-from src.utils.trainer import CCCLoss, FocalLoss, VarianceLoss
+from src.utils.trainer import CCCLoss, FocalLoss, VarianceLoss, MultiplePhenotypeLoss
 import copy
 
 
@@ -22,11 +22,19 @@ class SNP2PTrainer(object):
         self.snp2p_model = snp2p_model.to(self.device)
         self.ccc_loss = CCCLoss()
         self.beta = 0.1
+        '''
         if args.regression:
             self.phenotype_loss = nn.MSELoss()
             self.variance_loss = VarianceLoss()
         else:
             self.phenotype_loss = nn.BCELoss()
+        '''
+        self.loss = MultiplePhenotypeLoss(snp2p_dataloader.dataset.bt_inds, snp2p_dataloader.dataset.qt_inds)
+        self.phenotypes = snp2p_dataloader.dataset.pheno_ids
+        self.qt = snp2p_dataloader.dataset.qt
+        self.qt_inds = snp2p_dataloader.dataset.qt_inds
+        self.bt = snp2p_dataloader.dataset.bt
+        self.bt_inds = snp2p_dataloader.dataset.bt_inds
         self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=args.lr,
                                      weight_decay=args.wd)
         self.validation_dataloader = validation_dataloader
@@ -106,7 +114,7 @@ class SNP2PTrainer(object):
                                                                    sys2gene=self.args.sys2gene,
                                                                    )
                 #for phenotype_predicted_i, module_name in zip(phenotype_predicted, self.g2p_module_names):
-                phenotype_predicted_detached = phenotype_predicted.detach().cpu().numpy()
+                phenotype_predicted_detached = phenotype_predicted[:, :, 0].detach().cpu().numpy()
 
                 #sys_scores.append(sys_score.detach().cpu().numpy())
                 #gene_scores.append(gene_score.detach().cpu().numpy())
@@ -118,28 +126,24 @@ class SNP2PTrainer(object):
                 del batch
         trues = np.concatenate(trues)
         covariates = np.concatenate(covariates)
-        results = np.concatenate(results)[:, 0]
-        if print_importance:
-            sys_scores = np.concatenate(sys_scores)[:, 0, 0, :]
-            gene_scores = np.concatenate(gene_scores)[:, 0, 0, :]
-        print(trues[:50])
-        print(results[:50])
-        if self.args.regression:
-            r_square = metrics.r2_score(trues, results)
-            pearson = pearsonr(trues, results)
-            spearman = spearmanr(trues, results)
+        results = np.concatenate(results)
+
+        for t, i in zip(self.qt, self.qt_inds):
+            r_square = metrics.r2_score(trues[:, i], results[:, i])
+            pearson = pearsonr(trues[:, i], results[:, i])
+            spearman = spearmanr(trues[:, i], results[:, i])
             performance = pearson[0]
             #print(module_name)
-            print("Performance overall")
+            print("Performance overall for %s"%t)
             print("R_square: ", r_square)
             print("Pearson R", pearson)
             print("Spearman Rho: ", spearman)
 
             print("Performance female")
             female_indices = covariates[:, 0]==1
-            r_square = metrics.r2_score(trues[female_indices], results[female_indices])
-            pearson = pearsonr(trues[female_indices], results[female_indices])
-            spearman = spearmanr(trues[female_indices], results[female_indices])
+            r_square = metrics.r2_score(trues[female_indices, i], results[female_indices, i])
+            pearson = pearsonr(trues[female_indices, i], results[female_indices, i])
+            spearman = spearmanr(trues[female_indices, i], results[female_indices, i])
             female_performance = pearson[0]
             #print(module_name)
             print("R_square: ", r_square)
@@ -148,37 +152,28 @@ class SNP2PTrainer(object):
 
             print("Performance male")
             male_indices = covariates[:, 1]==1
-            r_square = metrics.r2_score(trues[male_indices], results[male_indices])
-            pearson = pearsonr(trues[male_indices], results[male_indices])
-            spearman = spearmanr(trues[male_indices], results[male_indices])
+            r_square = metrics.r2_score(trues[male_indices, i], results[male_indices, i])
+            pearson = pearsonr(trues[male_indices, i], results[male_indices, i])
+            spearman = spearmanr(trues[male_indices, i], results[male_indices, i])
             male_performance = pearson[0]
             #print(module_name)
             print("R_square: ", r_square)
             print("Pearson R", pearson)
             print("Spearman Rho: ", spearman)
-        else:
-            performance = metrics.average_precision_score(trues, results)
-            print("Performance overall")
+        for t, i in zip(self.bt, self.bt_inds):
+            performance = metrics.average_precision_score(trues[:, i], results[:, i])
+            print("Performance overall for %s"%t)
             print("AUPR: ", performance)
-
             print("Performance female")
             female_indices = covariates[:, 0] == 1
-            female_performance = metrics.average_precision_score(trues[female_indices], results[female_indices])
+            female_performance = metrics.average_precision_score(trues[female_indices, i], results[female_indices, i])
             print("AUPR: ", female_performance)
 
             print("Performance male")
             male_indices = covariates[:, 1] == 1
-            male_performance = metrics.average_precision_score(trues[male_indices], results[male_indices])
+            male_performance = metrics.average_precision_score(trues[male_indices, i], results[male_indices, i])
             print("AUPR: ", male_performance)
-        if print_importance:
-            for i, sys in self.snp2p_dataloader.dataset.tree_parser.ind2sys.items():
-                female_pearson, _ = pearsonr(results[female_indices], sys_scores[female_indices, i])
-                male_pearson, _ = pearsonr(results[male_indices], sys_scores[male_indices, i])
-                print(sys, ": ", female_pearson, male_pearson)
-            for i, gene in self.snp2p_dataloader.dataset.tree_parser.ind2gene.items():
-                female_pearson, _ = pearsonr(results[female_indices], gene_scores[female_indices, i])
-                male_pearson, _ = pearsonr(results[male_indices], gene_scores[male_indices, i])
-                print(gene, ": ", female_pearson, male_pearson)
+
         return performance
 
     def train_epoch(self, epoch, ccc=False, sex=False):
@@ -208,11 +203,11 @@ class SNP2PTrainer(object):
             phenotype_loss = 0
             ccc_loss = 0
             score_loss = 0
-            phenotype_loss_result = self.phenotype_loss(phenotype_predicted[:, 0],
-                                                        (batch['phenotype']).to(torch.float32))
+            phenotype_loss_result = self.loss(phenotype_predicted[:, :, 0], (batch['phenotype']).to(torch.float32))
             phenotype_loss += phenotype_loss_result
             mean_response_loss += float(phenotype_loss_result)
-
+            loss = phenotype_loss
+            '''
             if ccc:
                 man_indices = batch['covariates'][:, 0] == 1
                 ccc_loss_result_man = self.ccc_loss((batch['phenotype']).to(torch.float32)[man_indices], phenotype_predicted[man_indices, 0])
@@ -221,7 +216,7 @@ class SNP2PTrainer(object):
                                                     phenotype_predicted[woman_indices, 0])
                 ccc_loss += ccc_loss_result_man + ccc_loss_result_woman
                 mean_ccc_loss += float((ccc_loss_result_man + ccc_loss_result_woman))/2
-            loss = phenotype_loss
+            
             if ccc:
                 loss = loss + 0.1 * ccc_loss
             if sex:
@@ -237,6 +232,7 @@ class SNP2PTrainer(object):
                     sex_loss = 0
                 loss = loss + 0.1 * sex_loss
                 mean_sex_loss += sex_loss
+            '''
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()

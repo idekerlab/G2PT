@@ -65,3 +65,67 @@ class VarianceLoss(nn.Module):
         target_std = torch.std(targets, unbiased=False)
         loss = (pred_std - target_std).pow(2)
         return loss
+
+
+class MultiplePhenotypeLoss(nn.Module):
+    """
+    Custom loss function for handling multiple loss types based on column indices.
+
+    Attributes:
+        bce_cols (list): Column indices for which Binary Cross Entropy loss is applied.
+        mse_cols (list): Column indices for which Mean Squared Error loss is applied.
+    """
+
+    def __init__(self, bce_cols, mse_cols):
+        """
+        Initializes the CustomLoss.
+
+        Parameters:
+            bce_cols (list): List of column indices to use Binary Cross Entropy loss.
+            mse_cols (list): List of column indices to use Mean Squared Error loss.
+        """
+        super(MultiplePhenotypeLoss, self).__init__()
+        self.bce_cols = bce_cols
+        self.mse_cols = mse_cols
+
+    def forward(self, predictions, targets):
+        """
+        Compute the loss over multiple columns using either BCE or MSE for valid targets.
+        Invalid target values marked as -9 are ignored.
+
+        Parameters:
+            predictions (torch.Tensor): Tensor with shape (batch_size, n_columns).
+            targets (torch.Tensor): Tensor with the same shape as predictions.
+
+        Returns:
+            torch.Tensor: The computed average loss.
+        """
+        total_loss = 0.0
+        loss_count = 0
+        #print(predictions.size(), targets.size())
+        # Process columns with Binary Cross Entropy loss
+        for col in self.bce_cols:
+            pred = predictions[:, col]
+            target = targets[:, col]
+
+            # Skip invalid targets (-9)
+            valid_mask = (target != -9)
+            if valid_mask.sum() > 0:
+                # F.binary_cross_entropy_with_logits expects raw logits as input.
+                loss = F.binary_cross_entropy_with_logits(pred[valid_mask], target[valid_mask].float())
+                total_loss += loss
+                loss_count += 1
+
+        # Process columns with Mean Squared Error loss
+        for col in self.mse_cols:
+            pred = predictions[:, col]
+            target = targets[:, col]
+
+            valid_mask = (target != -9)
+            if valid_mask.sum() > 0:
+                loss = F.mse_loss(pred[valid_mask], target[valid_mask])
+                total_loss += loss
+                loss_count += 1
+
+        # Averaging the loss across columns that contributed
+        return total_loss / loss_count if loss_count > 0 else total_loss

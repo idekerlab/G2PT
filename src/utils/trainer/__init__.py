@@ -1,4 +1,4 @@
-from .loss import CCCLoss, FocalLoss, VarianceLoss
+from .loss import CCCLoss, FocalLoss, VarianceLoss, MultiplePhenotypeLoss
 from .drug_response_trainer import DrugResponseTrainer
 from .drug_response_finetuner import DrugResponseFineTuner
 from .drug_trainer import DrugTrainer

@@ -9,7 +9,7 @@ from src.model.utils import PoincareNorm
 class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
     def __init__(self, tree_parser, hidden_dims, snp2pheno=False, gene2pheno=True, sys2pheno=True,
-                 interaction_types=['default'], n_covariates=13, n_phenotypes=1, dropout=0.2, binary=False,
+                 interaction_types=['default'], n_covariates=13, n_phenotypes=1, dropout=0.2,
                  activation='softmax', input_format='indices', poincare=False):
         super(SNP2PhenotypeModel, self).__init__(tree_parser, hidden_dims, interaction_types=interaction_types, dropout=dropout,
                                                  input_format=input_format, poincare=poincare)
@@ -113,11 +113,13 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.phenotype_predictor_1 = nn.Linear(hidden_dims * n_geno2pheno, hidden_dims)
         self.phenotype_predictor_2 = nn.Linear(hidden_dims, 1)
         self.sigmoid = nn.Sigmoid()
+        '''
         self.binary = binary
         if self.binary:
             print("Model will predict binary")
         else:
             print("Model will do regression")
+        '''
 
     def forward(self, genotype_dict, covariates, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward,
                 gene2sys_mask, sys2gene_mask, sys2env=True, env2sys=True, sys2gene=True, score=False, attention=False):
@@ -275,8 +277,6 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
         phenotype_prediction = self.phenotype_predictor_2(self.last_activation(self.phenotype_predictor_1(phenotype_feature)))
 
-        if self.binary:
-            phenotype_prediction = self.sigmoid(phenotype_prediction)
         return phenotype_prediction
 
     def get_sys2pheno(self, phenotype_vector, system_embedding, system_mask=None, attention=False, score=False):

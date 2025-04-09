@@ -55,12 +55,18 @@ def main():
     # Train bfile format
     parser.add_argument('--train-bfile', help='Training genotype dataset', type=str, default=None)
     parser.add_argument('--train-cov', help='Training covariates dataset', type=str, default=None)
+    parser.add_argument('--train-pheno', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--val-bfile', help='Validation dataset', type=str, default=None)
     parser.add_argument('--val-cov', help='Validation covariates dataset', type=str, default=None)
+    parser.add_argument('--val-pheno', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--test-bfile', help='Test dataset', type=str, default=None)
     parser.add_argument('--test-cov', help='Validation covariates dataset', type=str, default=None)
+    parser.add_argument('--test-pheno', help='Validation covariates dataset', type=str, default=None)
     parser.add_argument('--cov-ids', nargs='*', default=[])
     parser.add_argument('--flip', action='store_true', default=False)
+    parser.add_argument('--pheno-ids', nargs='*', default=[])
+    parser.add_argument('--bt', nargs='*', default=[])
+    parser.add_argument('--qt', nargs='*', default=[])
     # Propagation option
     parser.add_argument('--sys2env', action='store_true', default=False)
     parser.add_argument('--env2sys', action='store_true', default=False)
@@ -68,6 +74,9 @@ def main():
     parser.add_argument('--sys2pheno', action='store_true', default=True)
     parser.add_argument('--gene2pheno', action='store_true', default=False)
     parser.add_argument('--snp2pheno', action='store_true', default=False)
+
+
+
     parser.add_argument('--poincare', action='store_true', default=False)
 
     parser.add_argument('--dense-attention', action='store_true', default=False)
@@ -165,7 +174,7 @@ def main_worker(rank, ngpus_per_node, args):
     tree_parser = SNPTreeParser(args.onto, args.snp2gene, dense_attention=args.dense_attention)
 
     fix_system = False
-
+    '''
     if args.train_bfile is None:
         print("Loading Genotype dataset... at %s" % args.genotype_csv)
         genotype = pd.read_csv(args.genotype_csv, index_col=0, sep='\t')  # .astype('int32')
@@ -173,12 +182,13 @@ def main_worker(rank, ngpus_per_node, args):
         train_dataset = pd.read_csv(args.train_cov, header=None, sep='\t')
         snp2p_dataset = SNP2PDataset(train_dataset, genotype, tree_parser, n_cov=args.n_cov)
     else:
-        print("Loading PLINK bfile... at %s" % args.train_bfile)
-        snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, flip=args.flip, input_format=args.input_format,
-                                     cov_ids=args.cov_ids)
-        args.cov_mean_dict = snp2p_dataset.cov_mean_dict
-        args.cov_std_dict = snp2p_dataset.cov_std_dict
-        print("Loading done...")
+    '''
+    print("Loading PLINK bfile... at %s" % args.train_bfile)
+    snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip, input_format=args.input_format,
+                                 cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
+    args.cov_mean_dict = snp2p_dataset.cov_mean_dict
+    args.cov_std_dict = snp2p_dataset.cov_std_dict
+    print("Loading done...")
 
     snp2p_collator = SNP2PCollator(tree_parser, input_format=args.input_format)
 
@@ -196,7 +206,7 @@ def main_worker(rank, ngpus_per_node, args):
                                          sys2pheno=args.sys2pheno, gene2pheno=args.gene2pheno, snp2pheno=args.snp2pheno,
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
-                                         binary=(not args.regression), activation='softmax', input_format=args.input_format)
+                                         n_phenotypes=snp2p_dataset.n_pheno, activation='softmax', input_format=args.input_format)
         print(args.model, 'initialized')
         snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
         if args.model.split('.')[-1].isdigit():
@@ -209,8 +219,8 @@ def main_worker(rank, ngpus_per_node, args):
                                          sys2pheno=args.sys2pheno, gene2pheno=args.gene2pheno, snp2pheno=args.snp2pheno,
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
-                                         binary=(not args.regression), activation='softmax', input_format=args.input_format,
-                                         poincare=args.poincare)
+                                         activation='softmax', input_format=args.input_format,
+                                         n_phenotypes=snp2p_dataset.n_pheno, poincare=args.poincare)
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         args.start_epoch = 0
 
@@ -248,7 +258,7 @@ def main_worker(rank, ngpus_per_node, args):
                                                      and args.rank % torch.cuda.device_count() == 0):
         print("Summary of trainable parameters")
         count_parameters(snp2p_model)
-
+    '''
     if args.distributed:
         if args.regression:
             if args.z_weight == 0:
@@ -275,14 +285,19 @@ def main_worker(rank, ngpus_per_node, args):
                 snp2p_sampler = None
             else:
                 snp2p_sampler = BinaryCohortSampler(snp2p_dataset)
-
+    '''
+    snp2p_sampler = None
+    if args.distributed:
+        shuffle = False
+    else:
+        shuffle = True
     snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
                                   num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler)
 
     if args.val_bfile is not None:
-        val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, cov_mean_dict=args.cov_mean_dict,
+        val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, args.val_pheno, cov_mean_dict=args.cov_mean_dict,
                                          cov_std_dict=args.cov_std_dict, flip=args.flip, input_format=args.input_format,
-                                         cov_ids=args.cov_ids)
+                                         cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.jobs, collate_fn=snp2p_collator)
     elif args.val_cov is not None:

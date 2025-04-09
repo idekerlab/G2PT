@@ -85,7 +85,7 @@ class SNP2PDataset(Dataset):
 class PLINKDataset(Dataset):
 
     def __init__(self, tree_parser : SNPTreeParser, bfile, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None, flip=False,
-                 input_format='indices', cov_ids=()):
+                 input_format='indices', cov_ids=(), pheno_ids=(), bt=(), qt=()):
         """
         tree_parser: SNP tree parser object
         bfile: PLINK bfile prefix
@@ -112,6 +112,7 @@ class PLINKDataset(Dataset):
         print("From PLINK %d variants with %d samples are queried" % (self.genotype.shape[1], self.genotype.shape[0]))
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
         if cov is not None:
+            print("Loading Covariate file at %s"%cov)
             self.cov_df = pd.read_csv(cov, sep='\t')
         else:
             self.cov_df = pd.DataFrame({'FID': plink_data.sample_family_id.as_numpy(),
@@ -127,13 +128,33 @@ class PLINKDataset(Dataset):
         self.cov_df['IID'] = self.cov_df['IID'].astype(str)
 
         if pheno is not None:
+            print("Loading Phenotype file at %s" % pheno)
             self.pheno_df = pd.read_csv(pheno, sep='\t')
-            if 'PHENOTYPE' not in self.cov_df.columns:
-                self.cov_df.merge(self.pheno_df, left_on=['FID', 'IID'], right_on=['FID', 'IID'])
-                self.genotype = self.genotype.loc[self.cov_df.IID]
+            if len(pheno_ids)!=0:
+                self.pheno_ids = pheno_ids
+            else:
+                self.pheno_ids = [pheno for pheno in self.pheno_df.columns[2:]]
+            self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
+            self.pheno_df = self.pheno_df.set_index('IID').loc[self.cov_df.IID].reset_index()
+            #if 'PHENOTYPE' not in self.cov_df.columns:
+            #self.cov_df.merge(self.pheno_df, left_on=['FID', 'IID'], right_on=['FID', 'IID'])
+            #self.genotype = self.genotype.loc[self.cov_df.IID]
         else:
             self.pheno_df = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
+            self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
+            self.pheno_df = self.pheno_df.set_index('IID').loc[self.cov_df.IID].reset_index()
+            self.pheno_ids = ['PHENOTYPE']
 
+        self.pheno2ind = {pheno:i for i, pheno in enumerate(self.pheno_ids)}
+        if (len(bt)==0) & (len(qt)==0):
+            self.qt = self.pheno_ids # all phenotypes will be regression tasks
+        else:
+            self.qt = qt
+            self.bt = bt
+            self.qt_inds = [self.pheno2ind[pheno] for pheno in qt]
+            self.bt_inds = [self.pheno2ind[pheno] for pheno in bt]
+
+        self.n_pheno = len(self.pheno_ids)
         if len(cov_ids) != 0:
             self.cov_ids = cov_ids
         else:
@@ -142,7 +163,7 @@ class PLINKDataset(Dataset):
         self.genotype = self.genotype.loc[self.cov_df['IID']]
         self.genotype = self.genotype[snp_sorted]
         self.has_phenotype = False
-        if 'PHENOTYPE' in self.cov_df.columns:
+        if ('PHENOTYPE' in self.cov_df.columns) or (pheno is not None):
             self.has_phenotype = True
         if cov_mean_dict is None:
             self.cov_mean_dict = dict()
@@ -182,6 +203,7 @@ class PLINKDataset(Dataset):
     def __getitem__(self, index):
         start = time.time()
         covariates = self.cov_df.iloc[index]
+        phenotypes = self.pheno_df.iloc[index]
         iid = str(int(covariates['IID']))
         sample2snp_dict = {}
 
@@ -198,8 +220,7 @@ class PLINKDataset(Dataset):
             snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
             snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
         sample2snp_dict['embedding'] = snp_type_dict
-        if self.has_phenotype:
-            result_dict['phenotype'] = covariates['PHENOTYPE']
+
         covariates_tensor = [0]*self.n_cov
         sex = covariates['SEX']
         i_cov = 0
@@ -219,6 +240,11 @@ class PLINKDataset(Dataset):
             i_cov += 1
         covariates_tensor = torch.tensor(covariates_tensor, dtype=torch.float32)
         covariates_tensor = covariates_tensor#torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
+
+        phenotype_tensor = torch.tensor([phenotypes[pheno_id] for pheno_id in self.pheno_ids], dtype=torch.float32)
+        if self.has_phenotype:
+            result_dict['phenotype'] = phenotype_tensor
+
         result_dict['genotype'] = sample2snp_dict
         end = time.time()
         result_dict["datatime"] = torch.tensor(end-start)
@@ -260,7 +286,7 @@ class SNP2PCollator(object):
         result_dict['genotype'] = genotype_dict
         result_dict['covariates'] = torch.stack([d['covariates'] for d in data])
         #print(result_dict['covariates'])
-        result_dict['phenotype'] = torch.tensor([d['phenotype'] for d in data], dtype=torch.float32)
+        result_dict['phenotype'] = torch.stack([d['phenotype'] for d in data])
         end = time.time()
         result_dict['datatime'] = torch.mean(torch.stack([d['datatime'] for d in data]))
         result_dict["time"] = torch.tensor(end - start)
