@@ -222,6 +222,7 @@ def main_worker(rank, ngpus_per_node, args):
                                          activation='softmax', input_format=args.input_format,
                                          n_phenotypes=snp2p_dataset.n_pheno, poincare=args.poincare)
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
+        #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         args.start_epoch = 0
 
     if not torch.cuda.is_available():
@@ -292,14 +293,17 @@ def main_worker(rank, ngpus_per_node, args):
     else:
         shuffle = True
     snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
-                                  num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler)
+                                  num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler, pin_memory=True,
+                                  persistent_workers=True,  # keep workers alive across epochs
+                                  prefetch_factor=2
+                                  )
 
     if args.val_bfile is not None:
         val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, args.val_pheno, cov_mean_dict=args.cov_mean_dict,
                                          cov_std_dict=args.cov_std_dict, flip=args.flip, input_format=args.input_format,
                                          cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
-                                          num_workers=args.jobs, collate_fn=snp2p_collator)
+                                          num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True)
     elif args.val_cov is not None:
         val_dataset = pd.read_csv(args.val_cov, header=None, sep='\t')
         val_snp2p_dataset = SNP2PDataset(val_dataset, genotype, tree_parser, age_mean=snp2p_dataset.age_mean,

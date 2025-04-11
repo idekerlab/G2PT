@@ -101,19 +101,41 @@ class PLINKDataset(Dataset):
         self.bfile = bfile
         print('Loading PLINK data at %s'%bfile)
         plink_data = plink.read_plink(path=bfile)
-        self.genotype = pd.DataFrame(plink_data.call_genotype.as_numpy().sum(axis=-1).T)
-        self.genotype.index = plink_data.sample_id.values
-        self.genotype.columns = plink_data.variant_id.values
         self.input_format = input_format
-        if flip:
-            self.genotype = 2 - self.genotype
-            print("Swapping Ref and Alt!")
-        self.flip = flip
-        print("From PLINK %d variants with %d samples are queried" % (self.genotype.shape[1], self.genotype.shape[0]))
+
+        genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
+        self.ind2iid = {idx:str(iid) for idx, iid in enumerate(plink_data.sample_id.values)}
+        #plink_snp_ids = plink_data.variant_id.values
+        #plink_snp_id2ind = {snp_id:ind for ind, snp_id in enumerate(plink_snp_ids)}
+        #ordered_snp_ind = [tree_parser.snp2ind[col] for col in plink_snp_ids if col in tree_parser.snp2ind.keys()]
+        genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
+        genotype_df = genotype_df[snp_sorted]
+        genotype = genotype_df.values
+        if flip:
+            genotype = 2 - genotype
+            print("Swapping Ref and Alt!")
+        if input_format == 'binary':
+            self.genotype == genotype
+        else:
+            self.genotype = {}
+            for i, personal_genotype in enumerate(genotype):
+                self.genotype[i] = {}
+                self.genotype[i]['homozygous_a1'] = np.where(personal_genotype == 2)[0]
+                self.genotype[i]['heterozygous'] = np.where(personal_genotype == 1)[0]
+
+
+        #self.genotype.index = plink_data.sample_id.values
+        #self.genotype.columns = plink_data.variant_id.values
+        self.flip = flip
+        print("From PLINK %d variants with %d samples are queried" % (genotype.shape[1], genotype.shape[0]))
+        del genotype_df
+        del genotype
+
         if cov is not None:
             print("Loading Covariate file at %s"%cov)
             self.cov_df = pd.read_csv(cov, sep='\t')
+            self.cov_df['IID'] = self.cov_df['IID'].astype(str)
         else:
             self.cov_df = pd.DataFrame({'FID': plink_data.sample_family_id.as_numpy(),
                                         'IID': plink_data.sample_id.as_numpy(),
@@ -122,10 +144,12 @@ class PLINKDataset(Dataset):
             self.cov_df = self.cov_df[['FID', 'IID', 'SEX', 'PHENOTYPE']]
             self.cov_df = self.cov_df.loc[self.cov_df.PHENOTYPE!=-1]
             self.cov_df['PHENOTYPE'] = self.cov_df['PHENOTYPE'] - 1
-            self.genotype = self.genotype.loc[self.cov_df.IID]
+            self.cov_df['IID'] = self.cov_df['IID'].astype(str)
+            self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
+            #self.genotype = self.genotype.loc[self.cov_df.IID]
 
         self.cov_df['FID'] = self.cov_df['FID'].astype(str)
-        self.cov_df['IID'] = self.cov_df['IID'].astype(str)
+
 
         if pheno is not None:
             print("Loading Phenotype file at %s" % pheno)
@@ -135,14 +159,14 @@ class PLINKDataset(Dataset):
             else:
                 self.pheno_ids = [pheno for pheno in self.pheno_df.columns[2:]]
             self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
-            self.pheno_df = self.pheno_df.set_index('IID').loc[self.cov_df.IID].reset_index()
+            self.pheno_df = self.pheno_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
             #if 'PHENOTYPE' not in self.cov_df.columns:
             #self.cov_df.merge(self.pheno_df, left_on=['FID', 'IID'], right_on=['FID', 'IID'])
             #self.genotype = self.genotype.loc[self.cov_df.IID]
         else:
             self.pheno_df = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
             self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
-            self.pheno_df = self.pheno_df.set_index('IID').loc[self.cov_df.IID].reset_index()
+            self.pheno_df = self.pheno_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
             self.pheno_ids = ['PHENOTYPE']
 
         self.pheno2ind = {pheno:i for i, pheno in enumerate(self.pheno_ids)}
@@ -160,8 +184,8 @@ class PLINKDataset(Dataset):
         else:
             self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov != 'PHENOTYPE']
         self.n_cov = len(self.cov_ids) + 1 ## +1 for sex cov
-        self.genotype = self.genotype.loc[self.cov_df['IID']]
-        self.genotype = self.genotype[snp_sorted]
+        #self.genotype = self.genotype.loc[self.cov_df['IID']]
+
         self.has_phenotype = False
         if ('PHENOTYPE' in self.cov_df.columns) or (pheno is not None):
             self.has_phenotype = True
@@ -175,6 +199,7 @@ class PLINKDataset(Dataset):
         else:
             self.cov_mean_dict = cov_mean_dict
             self.cov_std_dict = cov_std_dict
+
 
     def __len__(self):
         return self.cov_df.shape[0]
@@ -209,16 +234,20 @@ class PLINKDataset(Dataset):
 
         result_dict = dict()
         snp_type_dict = dict()
+
+
         if self.input_format=='binary':
-            homozygous_a1 = np.where(self.genotype.loc[iid] == 2)[0]
-            heterozygous = np.where(self.genotype.loc[iid] == 1)[0]
+            homozygous_a1 = np.where(self.genotype[iid, :] == 2)[0]
+            heterozygous = np.where(self.genotype[iid, :] == 1)[0]
             snp_type_dict['homozygous_a1'] = torch.tensor(self.tree_parser.get_snp2gene_mask({1.0: homozygous_a1}), dtype=torch.int)
             snp_type_dict['heterozygous'] = torch.tensor(self.tree_parser.get_snp2gene_mask({1.0: heterozygous}), dtype=torch.int)
         else:
-            homozygous_a1 = np.where(self.genotype.loc[iid] == 2)[0]
-            heterozygous = np.where(self.genotype.loc[iid] == 1)[0]
+            homozygous_a1 = self.genotype[index]['homozygous_a1']
+            heterozygous = self.genotype[index]['heterozygous']
+            #print(homozygous_a1, heterozygous)
             snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
             snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
+
         sample2snp_dict['embedding'] = snp_type_dict
 
         covariates_tensor = [0]*self.n_cov
