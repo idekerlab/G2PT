@@ -6,77 +6,154 @@ from . import TreeParser
 
 class SNPTreeParser(TreeParser):
 
-    def __init__(self, ontology, snp2gene, dense_attention=False, sys_annot_file=None, by_chr=False):
-        super(SNPTreeParser, self).__init__(ontology, dense_attention=dense_attention, sys_annot_file=sys_annot_file)
+    def __init__(self,
+                 ontology,        # path or DataFrame for parent–child ontology
+                 snp2gene,        # path or DataFrame for SNP→gene mapping
+                 dense_attention=False,
+                 sys_annot_file=None,
+                 by_chr=False,
+                 multiple_phenotypes=False):
+        # 1. Initialize all system–level structures
+        #super().__init__(ontology,
+        #                 dense_attention=dense_attention,
+        #                 sys_annot_file=sys_annot_file)
+        ontology = pd.read_csv(ontology, sep='\t', names=['parent', 'child', 'interaction'])
+        self.dense_attention = dense_attention
+        if sys_annot_file:
+            sys_descriptions = pd.read_csv(sys_annot_file, header=None, names=['Term', 'Term_Description'], index_col=0, sep='\t')
 
-        #self.snp2gene_df = self.ontology.loc[self.ontology['interaction'] == 'snp']
-        self.snp2gene_df = pd.read_csv(snp2gene, sep='\t', names=['snp', 'gene', 'chr'])
-        self.snp2gene_df = self.snp2gene_df.loc[self.snp2gene_df.gene.isin(self.gene2ind.keys())]
-        """
-        genes = self.snp2gene_df.gene.unique()
-        genes_not_in_sys2gene = [gene for gene in genes if gene not in self.gene2ind.keys()]
-        gene_max_ind = max(self.gene2ind.values())
-        # Adding Genes not in Ontology
-        for gene in genes_not_in_sys2gene:
-            gene_max_ind += 1
-            self.gene2ind[gene] = gene_max_ind
-            self.ind2gene[gene_max_ind] = gene
-        self.n_genes = len(self.gene2ind.keys())
-        self.gene2sys_mask = np.zeros((len(self.sys2ind), len(self.gene2ind)))
-        self.sys2gene_dict = {self.sys2ind[system]: [] for system in self.sys2ind.keys()}
-        self.gene2sys_dict = {gene: [] for gene in range(self.n_genes)}
-        for system, gene in zip(self.gene2sys_df['parent'], self.gene2sys_df['child']):
-            #print(system, gene)
-            self.gene2sys_mask[self.sys2ind[system], self.gene2ind[gene]] = 1.
-            self.sys2gene_dict[self.sys2ind[system]].append(self.gene2ind[gene])
-            self.gene2sys_dict[self.gene2ind[gene]].append(self.sys2ind[system])
-        self.sys2gene_mask = self.gene2sys_mask.T
-        self.subtree_types = self.system_df['interaction'].unique()
-        """
-
-        snps2gene_df_group_by_snps = self.snp2gene_df.groupby('snp')
-        snps2gene_df_group_by_genes = self.snp2gene_df.groupby('gene')
-
-        self.gene2snp= {gene: snps2gene_df_group_by_genes.get_group(gene)['snp'].values.tolist() for gene in
-                         snps2gene_df_group_by_genes.groups.keys()}
-        self.snp2gene= {snp: snps2gene_df_group_by_snps.get_group(snp)['gene'].values.tolist() for snp in
-                         snps2gene_df_group_by_snps.groups.keys()}
-
-        snps = self.snp2gene_df['snp'].unique()
-        self.snp2ind = {snp: index for index, snp in enumerate(snps)}
-        self.ind2snp = {index: snp for index, snp in enumerate(snps)}
-        self.n_snps = len(self.snp2ind)
-        self.snp_pad_index = self.n_snps
-        self.chromosomes = sorted(self.snp2gene_df.chr.unique())
-        self.gene2chr = {gene:CHR for gene, CHR in zip(self.snp2gene_df['gene'], self.snp2gene_df['chr'])}
-        self.snp2chr = {snp: CHR for snp, CHR in zip(self.snp2gene_df['snp'], self.snp2gene_df['chr'])}
-        self.chr2gene = {CHR: [self.gene2ind[gene] for gene in
-                               self.snp2gene_df.loc[self.snp2gene_df['chr'] == CHR]['gene'].values.tolist()] for CHR in
-                         self.chromosomes}
-        self.chr2snp = {CHR: [self.snp2ind[snp] for snp in
-                              self.snp2gene_df.loc[self.snp2gene_df['chr'] == CHR]['snp'].values.tolist()] for CHR in
-                        self.chromosomes}
-
-        self.sys2snp = {sys:self.get_sys2snp(sys) for sys in self.sys2ind.keys()}
-        self.snp2sys = {}
-        for sys, snps in self.sys2snp.items():
-            for snp in snps:
-                if snp in self.snp2sys.keys():
-                    self.snp2sys[snp].append(sys)
-                else:
-                    self.snp2sys[snp] = [sys]
-
-
+            self.sys_annot_dict = sys_descriptions.to_dict()["Term_Description"]
+        else:
+            self.sys_annot_dict = None
+        super().init_ontology(ontology,
+                              inplace=True)
+        # 2. Now build both the system AND SNP structures in one shot:
+        #    pass `snp2gene` through to init_ontology
+        self.init_ontology_with_snp(self.ontology,
+                           snp2gene,
+                           inplace=True,
+                           multiple_phenotypes=multiple_phenotypes)
 
         self.by_chr = by_chr
-        self.snp2gene_mask = np.zeros((self.n_genes, self.n_snps))
-        self.gene2snp_dict = {ind:[] for gene, ind in self.gene2ind.items()}
-        self.snp2gene_dict = {ind:[] for ind in range(self.n_snps)}
-        for snp, gene in zip(self.snp2gene_df['snp'], self.snp2gene_df['gene']):
-            self.snp2gene_mask[self.gene2ind[gene], self.snp2ind[snp]] = 1
-            self.gene2snp_dict[self.gene2ind[gene]].append(self.snp2ind[snp])
-            self.snp2gene_dict[self.snp2ind[snp]].append(self.gene2ind[gene])
-        self.gene2snp_mask = self.snp2gene_mask.T
+
+
+    def init_ontology_with_snp(self,
+                      ontology_df,
+                      snp2gene,
+                      inplace=True,
+                      multiple_phenotypes=False,
+                      verbose=True):
+        """
+        Extend TreeParser.init_ontology by also loading and wiring
+        the SNP→gene table (snp2gene).
+        """
+        # ———— 1) do all the gene–system work in the parent ————
+        parent_result = super().init_ontology(ontology_df,
+                                              inplace=inplace,
+                                              verbose=verbose)
+        parser = parent_result if parent_result is not None else self
+
+        # ———— 2) load snp2gene (either file‐path or DataFrame) ————
+        if isinstance(snp2gene, str):
+            # assume tab‑delimited with headers ['snp','gene','chr'] or auto‑detect
+            if multiple_phenotypes:
+                parser.snp2gene_df = pd.read_csv(snp2gene, sep='\t')
+                #print(parser.snp2gene_df.head())
+            else:
+                parser.snp2gene_df = pd.read_csv(snp2gene, names=['snp', 'gene', 'chr'],
+                                                sep='\t',
+                                                dtype={'snp':str,'gene':str,'chr':str})
+        else:
+            parser.snp2gene_df = snp2gene.copy()
+
+        # optional multiple‐phenotype branch
+        if multiple_phenotypes:
+            parser.phenotypes = list(parser.snp2gene_df.columns[3:])
+            parser.pheno2snp = {
+                ph: parser.snp2gene_df.loc[parser.snp2gene_df[ph], 'snp']
+                     .unique()
+                     .tolist()
+                for ph in parser.phenotypes
+            }
+            parser.pheno2gene = {
+                ph: parser.snp2gene_df.loc[parser.snp2gene_df[ph], 'gene']
+                     .unique()
+                     .tolist()
+                for ph in parser.phenotypes
+            }
+
+        # ———— 3) filter to known genes ————
+        parser.snp2gene_df = parser.snp2gene_df.loc[
+            parser.snp2gene_df['gene'].isin(parser.gene2ind)
+        ]
+
+        # ———— 4) build SNP↔gene dicts & masks ————
+        by_snp  = parser.snp2gene_df.groupby('snp')
+        by_gene = parser.snp2gene_df.groupby('gene')
+
+        parser.gene2snp = {
+            gene: grp['snp'].tolist()
+            for gene, grp in by_gene
+        }
+        parser.snp2gene = {
+            snp: grp['gene'].tolist()
+            for snp, grp in by_snp
+        }
+
+        # integer indices
+        snps = parser.snp2gene_df['snp'].unique()
+        parser.snp2ind = { s:i for i,s in enumerate(snps) }
+        parser.ind2snp = { i:s for s,i in parser.snp2ind.items() }
+        parser.n_snps = len(snps)
+        parser.snp_pad_index = parser.n_snps
+
+        # chromosomes
+        parser.chromosomes = sorted(parser.snp2gene_df['chr'].unique())
+        parser.gene2chr = dict(zip(parser.snp2gene_df['gene'],
+                                   parser.snp2gene_df['chr']))
+        parser.snp2chr  = dict(zip(parser.snp2gene_df['snp'],
+                                   parser.snp2gene_df['chr']))
+        parser.chr2gene = {
+            c: [parser.gene2ind[g]
+                for g in parser.snp2gene_df
+                              .loc[parser.snp2gene_df['chr']==c, 'gene']]
+            for c in parser.chromosomes
+        }
+        parser.chr2snp = {
+            c: [parser.snp2ind[s]
+                for s in parser.snp2gene_df
+                              .loc[parser.snp2gene_df['chr']==c, 'snp']]
+            for c in parser.chromosomes
+        }
+
+        # system→SNP mapping (uses your existing get_sys2snp)
+        parser.sys2snp = {
+            sys_idx: parser.get_sys2snp(sys_idx)
+            for sys_idx in parser.sys2ind
+        }
+        parser.snp2sys = {}
+        for sys_idx, snp_list in parser.sys2snp.items():
+            for snp in snp_list:
+                parser.snp2sys.setdefault(snp, []).append(sys_idx)
+
+        # finally masks and dicts
+        parser.snp2gene_mask   = np.zeros((parser.n_genes, parser.n_snps))
+        parser.gene2snp_dict    = {gi:[] for gi in range(parser.n_genes)}
+        parser.snp2gene_dict    = {si:[] for si in range(parser.n_snps)}
+
+        for snp, gene in zip(parser.snp2gene_df['snp'],
+                              parser.snp2gene_df['gene']):
+            gi = parser.gene2ind[gene]
+            si = parser.snp2ind[snp]
+            parser.snp2gene_mask[gi, si] = 1
+            parser.gene2snp_dict[gi].append(si)
+            parser.snp2gene_dict[si].append(gi)
+
+        parser.gene2snp_mask = parser.snp2gene_mask.T
+
+        # ———— 5) return only if non‑inplace ————
+        if parent_result is not None:
+            return parser
 
 
     def summary(self, system=True, gene=True, snp=True):
@@ -133,18 +210,26 @@ class SNPTreeParser(TreeParser):
     def get_snp2gene_embeddings(self, snp_indices):
         snp_embedding_indices = sorted(list(set(sum([[snp]*len(self.snp2gene_dict[snp]) for snp in snp_indices], []))))
         gene_embedding_indices = sorted(list(set(sum([self.snp2gene_dict[snp] for snp in snp_indices], []))))
-        return {"snp":torch.tensor(snp_embedding_indices, dtype=torch.int), "gene":torch.tensor(gene_embedding_indices, dtype=torch.int)}
+        return {"snp":snp_embedding_indices, "gene":gene_embedding_indices}
 
     def get_snp2gene_indices(self, snp_indices):
         return sorted(list(set(sum([self.snp2gene_dict[snp] for snp in snp_indices], []))))
 
-    def get_snp2gene(self, snp_indices, type_indices=None):
+    def get_snp2gene(self, snp_indices, type_indices=None, snp_ind_alias_dict=None, gene_ind_alias_dict=None):
         if self.by_chr:
             return self.get_snp2gene_by_chromosome(snp_indices, type_indices=type_indices)
         else:
             embeddings = self.get_snp2gene_embeddings(snp_indices)
             mask = self.get_snp2gene_sub_mask(embeddings['gene'], embeddings['snp'], type_indices=type_indices)
-            return {"snp": embeddings['snp'], 'gene': embeddings['gene'], 'mask': mask}
+            if snp_ind_alias_dict is not None:
+                snp_indices = torch.tensor(self.alias_indices(embeddings['snp'], self.ind2snp, snp_ind_alias_dict), dtype=torch.int)
+            else:
+                snp_indices = torch.tensor(embeddings['snp'], dtype=torch.int)
+            if gene_ind_alias_dict is not None:
+                gene_indices = torch.tensor(self.alias_indices(embeddings['gene'], self.ind2gene, gene_ind_alias_dict), dtype=torch.int)
+            else:
+                gene_indices = torch.tensor(embeddings['gene'], dtype=torch.int)
+            return {"snp": snp_indices, 'gene': gene_indices, 'mask': mask}
 
     def get_snp2gene_by_chromosome(self, snp_indices, type_indices=None):
         embeddings = {CHR: self.get_snp2gene_embeddings([snp for snp in snp_indices if snp in self.chr2snp[CHR]])  for CHR in self.chromosomes}
@@ -168,6 +253,25 @@ class SNPTreeParser(TreeParser):
         target_genes = self.sys2gene_full[target_go]
         target_snps = self.sys2snp[target_go]
         return target_gos, target_genes, target_snps
+
+    def retain_snps(self, snp_list, inplace=False, verbose=True):
+        """
+        retain genes in input gene list and rebuild ontology
+
+        Parameters:
+        ----------
+        gene_list : list, tuple
+            list of genes to retain
+        """
+        new_snp2gene_df = self.snp2gene_df.loc[self.snp2gene_df.snp.isin(snp_list)]
+        gene2keep = new_snp2gene_df.gene.unique()
+        gene2sys_to_keep = self.gene2sys_df.loc[self.gene2sys_df.child.isin(gene2keep)]
+        ontology_df_new = pd.concat([self.sys_df, gene2sys_to_keep])
+        if inplace:
+            self.init_ontology_with_snp(ontology_df_new, new_snp2gene_df, inplace=inplace, verbose=verbose)
+        else:
+            return self.init_ontology_with_snp(ontology_df_new, new_snp2gene_df, inplace=inplace, verbose=verbose)
+
 
 
 

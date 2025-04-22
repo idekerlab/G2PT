@@ -70,10 +70,14 @@ def main():
     parser.add_argument('--out', help='output csv')
     parser.add_argument('--system_annot', type=str, default=None)
 
+    parser.add_argument('--bt', nargs='*', default=[])
+    parser.add_argument('--qt', nargs='*', default=[])
+    parser.add_argument('--cov-effect', default='pre')
+
 
     args = parser.parse_args()
 
-    tree_parser = SNPTreeParser(args.onto, args.snp2gene, by_chr=False, sys_annot_file=args.system_annot)
+    tree_parser = SNPTreeParser(args.onto, args.snp2gene, by_chr=False, sys_annot_file=args.system_annot, multiple_phenotypes=False)
 
 
     g2p_model_dict = torch.load(args.model)
@@ -88,19 +92,28 @@ def main():
 
 
     #genotypes = pd.read_csv(args.snp, index_col=0, sep='\t')
-    dataset = PLINKDataset(tree_parser, args.bfile, args.cov, cov_ids=g2p_model_dict['arguments'].cov_ids,
-                           cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict,
+    dataset = PLINKDataset(tree_parser, args.bfile, args.cov, args.pheno, cov_ids=g2p_model_dict['arguments'].cov_ids,
+                           cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[], bt=args.bt, qt=args.qt, dynamic_phenotype_sampling=False,
                            cov_std_dict=g2p_model_dict['arguments'].cov_std_dict, input_format=g2p_model_dict['arguments'].input_format)
+    args.bt_inds = dataset.bt_inds
+    args.qt_inds = dataset.qt_inds
+    args.bt = dataset.bt
+    args.qt = dataset.qt
+    args.pheno_ids = dataset.pheno_ids
+    args.pheno2ind = dataset.pheno2ind
+    args.ind2pheno = dataset.ind2pheno
+    args.pheno2type = dataset.pheno2type
+
     #dataset = SNP2PDataset(whole_df, genotypes, tree_parser, n_cov=args.n_cov, age_mean=age_mean, age_std=age_std)
     device = torch.device("cuda:%d"%args.cuda)
     whole_collator = SNP2PCollator(tree_parser, input_format=g2p_model_dict['arguments'].input_format)
     whole_dataloader = DataLoader(dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.cpu, collate_fn=whole_collator)
 
-    nested_subtrees_forward = tree_parser.get_nested_subtree_mask(args.subtree_order, direction='forward', format=g2p_model_dict['arguments'].input_format)
+    nested_subtrees_forward = tree_parser.get_hierarchical_interactions(args.subtree_order, direction='forward', format=g2p_model_dict['arguments'].input_format)
     nested_subtrees_forward = move_to(nested_subtrees_forward, device)
 
-    nested_subtrees_backward = tree_parser.get_nested_subtree_mask(args.subtree_order, direction='backward', format=g2p_model_dict['arguments'].input_format)
+    nested_subtrees_backward = tree_parser.get_hierarchical_interactions(args.subtree_order, direction='backward', format=g2p_model_dict['arguments'].input_format)
     nested_subtrees_backward = move_to(nested_subtrees_backward, device)
 
     sys2gene_mask = move_to(torch.tensor(tree_parser.sys2gene_mask, dtype=torch.bool), device)
@@ -108,10 +121,10 @@ def main():
 
     g2p_model = SNP2PhenotypeModel(tree_parser, hidden_dims=g2p_model_dict['arguments'].hidden_dims,
                                          dropout=0.0, n_covariates=dataset.n_cov,
-                                         binary=(not g2p_model_dict['arguments'].regression), activation='softmax',
+                                         activation='softmax', n_phenotypes=dataset.n_pheno,
                                    snp2pheno=g2p_model_dict['arguments'].snp2pheno,
                                    gene2pheno=g2p_model_dict['arguments'].gene2pheno,
-                                   sys2pheno=g2p_model_dict['arguments'].sys2pheno, input_format=g2p_model_dict['arguments'].input_format)
+                                   sys2pheno=g2p_model_dict['arguments'].sys2pheno, input_format=g2p_model_dict['arguments'].input_format, cov_effect=args.cov_effect)
 
     g2p_model.load_state_dict(g2p_model_dict['state_dict'])
     g2p_model = g2p_model.to(device)
@@ -126,7 +139,7 @@ def main():
         batch = move_to(batch, device)
         with torch.no_grad():
             if args.prediction_only:
-                phenotype_predicted = g2p_model(batch['genotype'], batch['covariates'],
+                phenotype_predicted = g2p_model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
                                                 nested_subtrees_forward,
                                                 nested_subtrees_backward,
                                                 gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
@@ -138,6 +151,7 @@ def main():
                 phenotypes.append(phenotype_predicted.detach().cpu().numpy())
             else:
                 phenotype_predicted, sys_attention, gene_attention = g2p_model(batch['genotype'], batch['covariates'],
+                                                                               batch['phenotype_indices'],
                                                 nested_subtrees_forward,
                                                 nested_subtrees_backward,
                                                 gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
@@ -151,8 +165,11 @@ def main():
                 gene_attentions.append(gene_attention.detach().cpu().numpy())
         #phenotypes.append(prediction.detach().cpu().numpy())  
     
-    phenotypes = np.concatenate(phenotypes)[:, 0]
-    cov_df["prediction"] = phenotypes
+    phenotypes = np.concatenate(phenotypes)[:, :, 0]
+    cov_df = dataset.cov_df
+    #cov_df["prediction"] = phenotypes
+    for pheno, ind in dataset.pheno2ind.items():
+        cov_df[pheno] = phenotypes[:, ind]
     cov_df.to_csv(args.out + '.prediction.csv', index=False)
     if args.prediction_only:
         print("Prediction-only, prediction done")
@@ -172,7 +189,7 @@ def main():
     sys_attention_df.columns = sys_score_cols
     gene_attention_df.columns = gene_score_cols
     whole_dataset_with_attentions = pd.concat([cov_df, sys_attention_df, gene_attention_df], axis=1)
-    whole_dataset_with_attentions = whole_dataset_with_attentions[whole_dataset_with_attentions.columns[1:]]
+    whole_dataset_with_attentions = whole_dataset_with_attentions#[whole_dataset_with_attentions.columns[1:]]
     whole_dataset_with_attentions.to_csv(args.out+'.attention.csv', index=False)
 
     sys_importance_df = pd.DataFrame({'System':sys_score_cols})

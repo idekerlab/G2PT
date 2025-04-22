@@ -18,7 +18,8 @@ from prettytable import PrettyTable
 
 from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
-from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler, BinaryCohortSampler, DistributedBinaryCohortSampler, PLINKDataset
+from torch.utils.data.distributed import DistributedSampler
+from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler, BinaryCohortSampler, DistributedBinaryCohortSampler, PLINKDataset, DynamicPhenotypeBatchSampler, DynamicPhenotypeBatchIterableDataset, DynamicPhenotypeBatchIterableDatasetDDP
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
 from datetime import timedelta
@@ -75,7 +76,7 @@ def main():
     parser.add_argument('--gene2pheno', action='store_true', default=False)
     parser.add_argument('--snp2pheno', action='store_true', default=False)
 
-
+    parser.add_argument('--dynamic-phenotype-sampling', action='store_true', default=False)
 
     parser.add_argument('--poincare', action='store_true', default=False)
 
@@ -96,9 +97,9 @@ def main():
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
     # Multi-GPU option
-    parser.add_argument('--world-size', default=-1, type=int,
+    parser.add_argument('--world-size', default=1, type=int,
                         help='number of nodes for distributed training')
-    parser.add_argument('--rank', default=-1, type=int,
+    parser.add_argument('--rank', default=0, type=int,
                         help='node rank for distributed training')
     parser.add_argument('--local-rank', default=1)
     parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
@@ -123,6 +124,7 @@ def main():
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
 
     ngpus_per_node = torch.cuda.device_count()
+    args.ngpus_per_node = ngpus_per_node
     if args.multiprocessing_distributed:
         #if 'SLURM_PROCID' in os.environ:
         # Since we have ngpus_per_node processes per node, the total world_size
@@ -140,6 +142,7 @@ def main():
         mp.spawn(main_worker, nprocs=args.world_size, args=(ngpus_per_node, args))
     else:
         # Simply call main_worker function
+        print("The world size is %d" % args.world_size)
         main_worker(args.cuda, ngpus_per_node, args)
 
 
@@ -170,8 +173,11 @@ def main_worker(rank, ngpus_per_node, args):
         device = torch.device("cuda:%d" % args.cuda)
     else:
         device = torch.device("cpu")
-
-    tree_parser = SNPTreeParser(args.onto, args.snp2gene, dense_attention=args.dense_attention)
+    if args.dynamic_phenotype_sampling:
+        multiple_phenotypes = True
+    else:
+        multiple_phenotypes = False
+    tree_parser = SNPTreeParser(args.onto, args.snp2gene, dense_attention=args.dense_attention, multiple_phenotypes=multiple_phenotypes)
 
     fix_system = False
     '''
@@ -185,7 +191,16 @@ def main_worker(rank, ngpus_per_node, args):
     '''
     print("Loading PLINK bfile... at %s" % args.train_bfile)
     snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip, input_format=args.input_format,
-                                 cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
+                                 cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt, dynamic_phenotype_sampling=args.dynamic_phenotype_sampling)
+    args.bt_inds = snp2p_dataset.bt_inds
+    args.qt_inds = snp2p_dataset.qt_inds
+    args.bt = snp2p_dataset.bt
+    args.qt = snp2p_dataset.qt
+    args.pheno_ids = snp2p_dataset.pheno_ids
+    args.pheno2ind = snp2p_dataset.pheno2ind
+    args.ind2pheno = snp2p_dataset.ind2pheno
+    args.pheno2type = snp2p_dataset.pheno2type
+
     args.cov_mean_dict = snp2p_dataset.cov_mean_dict
     args.cov_std_dict = snp2p_dataset.cov_std_dict
     print("Loading done...")
@@ -238,8 +253,8 @@ def main_worker(rank, ngpus_per_node, args):
             # When using a single GPU per process and per
             # DistributedDataParallel, we need to divide the batch size
             # ourselves based on the total number of GPUs we have
-            args.batch_size = int(args.batch_size / ngpus_per_node)
-            args.jobs = int((args.jobs + ngpus_per_node - 1) / ngpus_per_node)
+            #args.batch_size = int(args.batch_size / ngpus_per_node)
+            args.jobs = int((args.jobs) / ngpus_per_node)
             print(args.batch_size, args.jobs)
             snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[gpu], find_unused_parameters=True)
         else:
@@ -259,6 +274,44 @@ def main_worker(rank, ngpus_per_node, args):
                                                      and args.rank % torch.cuda.device_count() == 0):
         print("Summary of trainable parameters")
         count_parameters(snp2p_model)
+    if args.distributed:
+        if args.dynamic_phenotype_sampling:
+            dataset = DynamicPhenotypeBatchIterableDatasetDDP(snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True)
+            snp2p_dataloader = DataLoader(dataset, batch_size=None,
+                                          num_workers=args.jobs,
+                                          prefetch_factor=2
+                                          )
+        else:
+            print("No dynamic Sampling")
+            snp2p_sampler = DistributedSampler(dataset=snp2p_dataset, shuffle=True)
+            shuffle = False
+            snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
+                                          num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler,
+                                          pin_memory=True,
+                                          persistent_workers=True,  # keep workers alive across epochs
+                                          prefetch_factor=2
+                                          )
+    else:
+        snp2p_sampler = None
+        if args.dynamic_phenotype_sampling:
+            #snp2p_batch_sampler = DynamicPhenotypeBatchSampler(dataset=snp2p_dataset, batch_size=args.batch_size)
+            dataset = DynamicPhenotypeBatchIterableDataset(snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True)
+            snp2p_dataloader = DataLoader(dataset, batch_size=None,
+                                          num_workers=args.jobs,
+                                          prefetch_factor=2
+                                          )
+        else:
+            print("No dynamic Sampling")
+            #snp2p_sampler = DistributedSampler(dataset=snp2p_dataset, shuffle=True)
+            snp2p_batch_sampler = None
+            batch_size = None
+            shuffle = True
+            snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
+                                          num_workers=args.jobs, shuffle=shuffle, sampler=None,
+                                          pin_memory=True,
+                                          persistent_workers=True,  # keep workers alive across epochs
+                                          prefetch_factor=2
+                                          )
     '''
     if args.distributed:
         if args.regression:
@@ -287,22 +340,14 @@ def main_worker(rank, ngpus_per_node, args):
             else:
                 snp2p_sampler = BinaryCohortSampler(snp2p_dataset)
     '''
-    snp2p_sampler = None
-    if args.distributed:
-        shuffle = False
-    else:
-        shuffle = True
-    snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
-                                  num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler, pin_memory=True,
-                                  persistent_workers=True,  # keep workers alive across epochs
-                                  prefetch_factor=2
-                                  )
+
+
 
     if args.val_bfile is not None:
         val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, args.val_pheno, cov_mean_dict=args.cov_mean_dict,
                                          cov_std_dict=args.cov_std_dict, flip=args.flip, input_format=args.input_format,
                                          cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
-        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
+        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=int(args.batch_size/(args.ngpus_per_node*2)),
                                           num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True)
     elif args.val_cov is not None:
         val_dataset = pd.read_csv(args.val_cov, header=None, sep='\t')
@@ -313,7 +358,8 @@ def main_worker(rank, ngpus_per_node, args):
     else:
         val_snp2p_dataloader = None
 
-    snp2p_trainer = SNP2PTrainer(snp2p_model, snp2p_dataloader, device, args,
+
+    snp2p_trainer = SNP2PTrainer(snp2p_model, tree_parser, snp2p_dataloader, device, args,
                                  validation_dataloader=val_snp2p_dataloader, fix_system=fix_system)
     snp2p_trainer.train(args.epochs, args.out)
 

@@ -10,7 +10,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
     def __init__(self, tree_parser, hidden_dims, snp2pheno=False, gene2pheno=True, sys2pheno=True,
                  interaction_types=['default'], n_covariates=13, n_phenotypes=1, dropout=0.2,
-                 activation='softmax', input_format='indices', poincare=False):
+                 activation='softmax', input_format='indices', poincare=False, cov_effect='post'):
         super(SNP2PhenotypeModel, self).__init__(tree_parser, hidden_dims, interaction_types=interaction_types, dropout=dropout,
                                                  input_format=input_format, poincare=poincare)
         self.n_snps = self.tree_parser.n_snps
@@ -111,8 +111,9 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         #self.prediction_norm = nn.LayerNorm(hidden_dims, elementwise_affine=True)
 
         self.phenotype_predictor_1 = nn.Linear(hidden_dims * n_geno2pheno, hidden_dims)
-        self.phenotype_predictor_2 = nn.Linear(hidden_dims, 1)
+        self.phenotype_predictor_2 = nn.Linear(hidden_dims, 1, bias=False)
         self.sigmoid = nn.Sigmoid()
+        self.cov_effect = cov_effect
         '''
         self.binary = binary
         if self.binary:
@@ -121,14 +122,24 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             print("Model will do regression")
         '''
 
-    def forward(self, genotype_dict, covariates, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward,
+    def forward(self, genotype_dict, covariates, phenotype_ids, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward,
                 gene2sys_mask, sys2gene_mask, sys2env=True, env2sys=True, sys2gene=True, score=False, attention=False):
         batch_size = covariates.size(0)
 
         covariate_embedding = self.get_covariate_embedding(covariates)
         gene_embedding = self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)
-        cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariate_embedding)
-        gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
+    
+
+        #gene_embedding = gene_embedding[:, :-1, :] + snp_effect_on_gene[:, :-1, :]
+        system_embedding = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :]
+
+        if self.cov_effect=='pre':
+            cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariate_embedding)
+            gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
+            cov_effect_on_sys = self.get_cov2gene(system_embedding, covariate_embedding)
+            system_embedding = system_embedding + self.effect_norm(cov_effect_on_sys)
+
+
 
         gene_embedding, snp_effect_on_gene = self.get_snp2gene(genotype_dict, gene_embedding)
         if self.input_format == 'indices':
@@ -137,10 +148,8 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             gene_embedding = gene_embedding + self.effect_norm(snp_effect_on_gene)
 
 
-        #gene_embedding = gene_embedding[:, :-1, :] + snp_effect_on_gene[:, :-1, :]
-        system_embedding = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :]
-        cov_effect_on_sys = self.get_cov2gene(system_embedding, covariate_embedding)
-        system_embedding = system_embedding + self.effect_norm(cov_effect_on_sys)
+
+
         #print(gene2sys_mask.size())
         system_embedding, gene_effect_on_system = self.get_gene2sys(system_embedding, gene_embedding, gene2sys_mask)
         total_update = self.effect_norm(gene_effect_on_system)
@@ -164,7 +173,15 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             gene_embedding, system_effect_on_gene = self.get_sys2gene(gene_embedding, system_embedding, sys2gene_mask)
             gene_embedding = gene_embedding + self.effect_norm(system_effect_on_gene)
             #gene_embedding = gene_embedding + system_effect_on_gene
-        phenotype_embedding = self.phenotype_embeddings.weight.unsqueeze(0).expand(batch_size, -1, -1)
+        phenotype_embedding = self.phenotype_embeddings(phenotype_ids)
+        
+        if self.cov_effect=='post':
+            cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariate_embedding)
+            gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
+            cov_effect_on_sys = self.get_cov2gene(system_embedding, covariate_embedding)
+            system_embedding = system_embedding + self.effect_norm(cov_effect_on_sys)
+
+
         prediction = self.prediction(phenotype_embedding, system_embedding, gene_embedding, genotype=genotype_dict['embedding'])
         if attention:
             if score:
