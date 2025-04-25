@@ -106,8 +106,10 @@ class PLINKDataset(Dataset):
         self.genotype.columns = plink_data.variant_id.values
         self.input_format = input_format
         if flip:
-            self.genotype = 2 - self.genotype
             print("Swapping Ref and Alt!")
+        else:
+            self.genotype = 2 - self.genotype
+
         self.flip = flip
         print("From PLINK %d variants with %d samples are queried" % (self.genotype.shape[1], self.genotype.shape[0]))
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]

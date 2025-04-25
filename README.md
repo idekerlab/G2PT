@@ -25,19 +25,9 @@ to run the training scripts:
 
 1. Participant Genotype files:
     * You can put [PLINK binary file](https://www.cog-genomics.org/plink/1.9/input#bed) 
-      * _--flip_ argument will flip ref. and alt. allele (use to recommend `--flip` argument, which make homozygous alt. as 2)
-    * Or you can put tab-delimited file containing personal genotype data to reduce memory usage 
-      * Index will indicate Sample ID. 
-      * `homozygous_a0`, `heterozygous`, `homozygous_a1` contain index of SNP by the allele
+      * _--flip_ argument will flip ref. and alt. allele (`--flip` argument, which make homozygous ref. as 2)
 
-* Example of tab-delimited genotype file
-
-|         | homozygous_a0 | heterozygous | homozygous_a1 |
-|---------|---------------|--------------|---------------|
-| 1000909 | 0,1,3,5,7,9   | 2,4,5        | 6,8           |
-| 1000303 | 1,3,6,7,8,9   | 2,5          | 4             |
-
-2. Covariates files
+2. Covariate and phenotype files
    * File including covariates and phenotypes.
    * same as `.cov` and `.pheno` in [PLINK](https://www.cog-genomics.org/plink/1.9/formats#cov)
      * If you want to use subset of covariates, you can put _--cov-ids_ (i.e. with `--cov-ids SEX AGE`, model will use only SEX and AGE as covaritates)
@@ -124,7 +114,7 @@ There are several optional parameters that you can provide in addition to the in
 
 ## 1. Prune Gene Ontology with your GWAS results
 
-You can prune Gene Ontology (Biological Process) based on your GWAS summary statistics
+You can collapse Gene Ontology (Biological Process) based on your GWAS summary statistics
 
 [Prune Gene Ontology based on Your GWAS results](Prune_Gene_Ontology_Based_on_GWAS_results.ipynb)
 
@@ -195,7 +185,7 @@ python predict_attention.py \
 This will generate
 
 * Prediction: `{output_prefix}.prediction.csv`, containing only predictions (Good for performance evaluation!) 
-* Attention result: `{output_prefix}.attention.csv`, containing Nx(S+G) system and gene attention results for whole population
+* Attention result: `{output_prefix}.attention.csv`, containing Nx(C+S+G) covariates, system, and gene attention results for whole population
 * System importance score: `{output_prefix}.sys_corr.csv`, containing correlation between system attention and prediction
 * Gene importance score: `{output_prefix}.gene_corr.csv`, containing correlation between system attention and prediction
 
@@ -221,4 +211,5 @@ You can search epistasis within system and visualize, and analyze. Please pass t
 - [x] Applying [Differential Transformer](https://github.com/microsoft/unilm/tree/master/Diff-Transformer) to genetic factor translation
 - [x] Build data loader for `plink` binary file using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/) 
 - [x] Adding `.cov` and `.pheno` for input
+- [ ] Change model for multiple phenotypes
 
