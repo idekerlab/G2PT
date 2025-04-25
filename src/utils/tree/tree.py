@@ -232,7 +232,7 @@ class TreeParser(object):
         to_collapse = {
             parent
             for parent in self.sys2ind
-            for child in self.system_graph[parent]
+            for child in self.sys_graph[parent]
             if term_hash[parent] == term_hash[child]
         }
 
@@ -255,7 +255,7 @@ class TreeParser(object):
         to_collapse = sorted(to_collapse, key=lambda term: self.node_height_dict[term])
 
         # Copy system graph and sys2gene for modification
-        sys_graph_copied = copy.deepcopy(self.system_graph)
+        sys_graph_copied = copy.deepcopy(self.sys_graph)
         sys2gene_copied = copy.deepcopy(self.sys2gene)
 
         # Perform collapse
@@ -357,20 +357,20 @@ class TreeParser(object):
             Dictionary mapping nodes to their heights.
         """
         # Ensure the graph is a tree (i.e., has a single root)
-        if not nx.is_directed_acyclic_graph(self.system_graph):
+        if not nx.is_directed_acyclic_graph(self.sys_graph):
             raise ValueError("The input graph must be a directed acyclic graph (DAG).")
 
         # Start by identifying leaf nodes
-        leaf_nodes = [node for node in self.system_graph.nodes if self.system_graph.out_degree(node) == 0]
+        leaf_nodes = [node for node in self.sys_graph.nodes if self.sys_graph.out_degree(node) == 0]
 
         # Dictionary to store node heights
         heights = {node: 0 for node in leaf_nodes}  # Leaf nodes have height 0
 
         # Process nodes in reverse topological order
-        for node in reversed(list(nx.topological_sort(self.system_graph))):
+        for node in reversed(list(nx.topological_sort(self.sys_graph))):
             if node not in heights:  # Non-leaf nodes
                 # Height is 1 + max height of its children
-                heights[node] = 1 + max(heights[child] for child in self.system_graph.successors(node))
+                heights[node] = 1 + max(heights[child] for child in self.sys_graph.successors(node))
         return heights
 
 
@@ -391,7 +391,7 @@ class TreeParser(object):
         # Compute the height of all nodes
         node_heights = self.compute_node_heights()
         # Get all descendants of the given node
-        descendants = nx.descendants(self.system_graph, node)
+        descendants = nx.descendants(self.sys_graph, node)
         # Sort descendants by height (ascending or descending)
         sorted_descendants = sorted(descendants, key=lambda x: node_heights[x])
         return sorted_descendants
@@ -549,7 +549,7 @@ class TreeParser(object):
     def get_partial_sys2sys_masks(self, target_gos):
         """Build partial adjacency masks and edges from GO subgraph."""
         sys2ind_partial = {go: i for i, go in enumerate(target_gos)}
-        all_paths = self.get_paths_from_node_to_leaves(self.system_graph, target_gos[-1])
+        all_paths = self.get_paths_from_node_to_leaves(self.sys_graph, target_gos[-1])
         all_edges_forward = self.get_edges_from_paths(all_paths)
 
         sys2sys_forward_partial = torch.zeros(size=(len(target_gos), len(target_gos)))
