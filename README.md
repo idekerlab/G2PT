@@ -1,4 +1,4 @@
-# G2PT: Mechanistic genotype-phenotype translation using hierarchical transformers
+# G2PT: A genotype-phenotype transformer to assess and explain polygenic risk
 
 ## Overview
 
@@ -34,11 +34,17 @@ to run the training scripts:
    * If you do not put `.cov` while you put PLINK bfiles. Covariates will be generated from `.fam` file (Sex only)  
    * If you do not put `.pheno`, you should include `PHENOTYPE` in training and validation covariate file 
 
-* Example of covariates file 
+* [Example of covariates file](samples/train.cov) (tab-separated)
 
-| FID      | IID   | PHENOTYPE | SEX | AGE | PC1 | PC2 | ... | PC10 |
-|----------|-------|-----------|-----|-----|-----|-----| --- |------| 
-| 10008090 | 10008090 | 1.2       | 1   | 48  | 3   | 0.3 | ... | 0.5  |
+| FID      | IID   | SEX | AGE | PC1 | PC2 | ... | PC10 |
+|----------|-------|-----|-----|-----|-----| --- |------| 
+| 10008090 | 10008090 |  1   | 48  | 3   | 0.3 | ... | 0.5  |
+
+* [Example of phenotype file](samples/train.pheno) (tab-separated)
+
+| FID      | IID   | PHENOTYPE |
+|----------|-------|-----------| 
+| 10008090 | 10008090 | 1.2       |
 
 3. Ontology (hierarchy) file: 
     * _--onto_ : A tab-delimited file that contains the ontology (hierarchy) that defines the structure of a branch
@@ -53,7 +59,7 @@ to run the training scripts:
 
 **If you want to collapse gene ontology based on a GWAS summary statistics please check first step of [G2PT overall pipeline](#1-collapse-gene-ontology-with-your-gwas-results)**
 
-* Example of ontology file
+* [Example of ontology file](samples/ontology.txt) (header should not be included in file)
 
 | parent     | child      | interaction_type |
 |------------|------------|------------------|
@@ -66,7 +72,7 @@ to run the training scripts:
   * _--snp2gene_ : A tab-delimited file for mapping SNPs to genes. The first column indicates SNP, second column for gene, and third for chromosome
 
   
-* Example of snp2gene file
+* [Example of snp2gene file](samples/snp2gene.txt)
 
 | SNP_ID           | Gene       | Chromosome |
 |------------------|------------|------------|
