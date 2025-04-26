@@ -18,7 +18,7 @@ from prettytable import PrettyTable
 
 from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
-from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler, BinaryCohortSampler, DistributedBinaryCohortSampler, PLINKDataset
+from src.utils.data.dataset import SNP2PCollator, CohortSampler, DistributedCohortSampler, BinaryCohortSampler, DistributedBinaryCohortSampler, PLINKDataset
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
 from datetime import timedelta
@@ -41,38 +41,38 @@ def count_parameters(model):
 
 def main():
     parser = argparse.ArgumentParser(description='Some beautiful description')
-    # Participant Genotype file
-    parser.add_argument('--genotype-csv', help='Personal genotype file', type=str, default=None)
-    parser.add_argument('--n_cov', help='The number of covariates', type=int, default=4)
-    # Indexing files
-    #parser.add_argument('--snp2id', help='SNP to ID mapping file', type=str)
-    #parser.add_argument('--gene2id', help='Gene to ID mapping file', type=str)
+
     # Hierarchy files
     parser.add_argument('--onto', help='Ontology file used to guide the neural network', type=str)
     parser.add_argument('--snp2gene', help='SNP to gene mapping file', type=str)
     parser.add_argument('--subtree-order', help='Subtree cascading order', nargs='+', default=['default'])
 
-    # Train bfile format
+    # Participant Genotype file
     parser.add_argument('--train-bfile', help='Training genotype dataset', type=str, default=None)
     parser.add_argument('--train-cov', help='Training covariates dataset', type=str, default=None)
+    parser.add_argument('--train-pheno', help='Training phenotype dataset', type=str, default=None)
     parser.add_argument('--val-bfile', help='Validation dataset', type=str, default=None)
     parser.add_argument('--val-cov', help='Validation covariates dataset', type=str, default=None)
-    parser.add_argument('--test-bfile', help='Test dataset', type=str, default=None)
-    parser.add_argument('--test-cov', help='Validation covariates dataset', type=str, default=None)
+    parser.add_argument('--val-pheno', help='Training phenotype dataset', type=str, default=None)
     parser.add_argument('--cov-ids', nargs='*', default=[])
     parser.add_argument('--flip', action='store_true', default=False)
+    parser.add_argument('--regression', action='store_true', default=False)
+
     # Propagation option
     parser.add_argument('--sys2env', action='store_true', default=False)
     parser.add_argument('--env2sys', action='store_true', default=False)
     parser.add_argument('--sys2gene', action='store_true', default=False)
-    parser.add_argument('--sys2pheno', action='store_true', default=True)
+
+    parser.add_argument('--sys2pheno', action='store_true', default=False)
     parser.add_argument('--gene2pheno', action='store_true', default=False)
     parser.add_argument('--snp2pheno', action='store_true', default=False)
-    parser.add_argument('--poincare', action='store_true', default=False)
 
+    # Additional argument for model training
+    parser.add_argument('--poincare', action='store_true', default=False)
     parser.add_argument('--dense-attention', action='store_true', default=False)
     parser.add_argument('--input-format', default='indices', choices=["indices", "binary"])
-    parser.add_argument('--regression', action='store_true', default=False)
+
+
     # Model parameters
     parser.add_argument('--hidden-dims', help='hidden dimension for model', default=256, type=int)
     # Training parameters
@@ -166,19 +166,12 @@ def main_worker(rank, ngpus_per_node, args):
 
     fix_system = False
 
-    if args.train_bfile is None:
-        print("Loading Genotype dataset... at %s" % args.genotype_csv)
-        genotype = pd.read_csv(args.genotype_csv, index_col=0, sep='\t')  # .astype('int32')
-        print("Loading done...")
-        train_dataset = pd.read_csv(args.train_cov, header=None, sep='\t')
-        snp2p_dataset = SNP2PDataset(train_dataset, genotype, tree_parser, n_cov=args.n_cov)
-    else:
-        print("Loading PLINK bfile... at %s" % args.train_bfile)
-        snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, flip=args.flip, input_format=args.input_format,
-                                     cov_ids=args.cov_ids)
-        args.cov_mean_dict = snp2p_dataset.cov_mean_dict
-        args.cov_std_dict = snp2p_dataset.cov_std_dict
-        print("Loading done...")
+    print("Loading PLINK bfile... at %s" % args.train_bfile)
+    snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip, input_format=args.input_format,
+                                 cov_ids=args.cov_ids)
+    args.cov_mean_dict = snp2p_dataset.cov_mean_dict
+    args.cov_std_dict = snp2p_dataset.cov_std_dict
+    print("Loading done...")
 
     snp2p_collator = SNP2PCollator(tree_parser, input_format=args.input_format)
 
@@ -279,17 +272,11 @@ def main_worker(rank, ngpus_per_node, args):
                                   num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler)
 
     if args.val_bfile is not None:
-        val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, cov_mean_dict=args.cov_mean_dict,
+        val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, args.val_pheno, cov_mean_dict=args.cov_mean_dict,
                                          cov_std_dict=args.cov_std_dict, flip=args.flip, input_format=args.input_format,
                                          cov_ids=args.cov_ids)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.jobs, collate_fn=snp2p_collator)
-    elif args.val_cov is not None:
-        val_dataset = pd.read_csv(args.val_cov, header=None, sep='\t')
-        val_snp2p_dataset = SNP2PDataset(val_dataset, genotype, tree_parser, age_mean=snp2p_dataset.age_mean,
-                                         age_std=snp2p_dataset.age_std, n_cov=args.n_cov)
-        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
-                                              num_workers=args.jobs, collate_fn=snp2p_collator)
     else:
         val_snp2p_dataloader = None
 

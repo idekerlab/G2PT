@@ -1,1 +1,1 @@
-from .SNP2PDataset import SNP2PCollator, SNP2PDataset, CohortSampler, DistributedCohortSampler, PLINKDataset, DistributedBinaryCohortSampler, BinaryCohortSampler
+from .SNP2PDataset import SNP2PCollator, CohortSampler, DistributedCohortSampler, PLINKDataset, DistributedBinaryCohortSampler, BinaryCohortSampler

@@ -19,7 +19,7 @@ conda env create python==3.6 --name envname --file=environment.yml
 
 ## Usage
 
-To train a new model using a custom data set, first make sure that you have
+To train a new model using a data set, first make sure that you have
 a proper virtual environment set up. Also make sure that you have all the required files
 to run the training scripts:
 
@@ -49,7 +49,9 @@ to run the training scripts:
     The following is an example describing a sample hierarchy.
 
         ![Ontology](./Figures/ontology.png)
-      * * _--subtree_order_ : if you have nested subtrees in ontology, you can set this option default is `['default']` (no subtree inside)
+      * _--subtree_order_ : if you have nested subtrees in ontology, you can set this option default is `['default']` (no subtree inside)
+
+**If you want to collapse gene ontology based on a GWAS summary statistics please check first step of [G2PT overall pipeline](#1-collapse-gene-ontology-with-your-gwas-results)**
 
 * Example of ontology file
 
@@ -112,11 +114,11 @@ There are several optional parameters that you can provide in addition to the in
 
 # G2PT Pipeline in Overall
 
-## 1. Prune Gene Ontology with your GWAS results
+## 1. Collapse Gene Ontology with your GWAS results
 
 You can collapse Gene Ontology (Biological Process) based on your GWAS summary statistics
 
-[Prune Gene Ontology based on Your GWAS results](Prune_Gene_Ontology_Based_on_GWAS_results.ipynb)
+[Collapse Gene Ontology based on Your GWAS results](Collapse_Gene_Ontology_Based_on_GWAS_results.ipynb)
 
 ## 2. Train model
 
@@ -125,13 +127,21 @@ You can put ontology file made from step 1.
 ### Model Training Example (Single GPU) 
 
 
+**Warning: Sample data is randomly generated data, so it won't give any meaningful result**
+
+**Please just use sample data for tutorial, and apply this pipeline for your data**
+
+You can train model with data [train_model.sh](train_model.sh) 
+
+------------------
+
+
 ```          
 python train_snp2p_model.py \
                       --onto ONTO \
                       --snp2gene SNP2Gene \
                       --train-bfile TRAIN --train-cov TRAIN.cov --train-pheno TRAIN.pheno \
                       --val-bfile VAL --train-cov VAL.cov --val-pheno VAL.pheno \
-                      --test TEST --test-cov VAL.cov --test-pheno TEST.pheno \ 
                       --epochs EPOCHS \
                       --lr LR \
                       --wd WD \
@@ -141,7 +151,10 @@ python train_snp2p_model.py \
                       --jobs JOBS \
                       --cuda 0 \
                       --hidden_dims HIDDEN_DIMS \
-                      --out OUT
+                      --out OUT \
+                      --sys2env --env2sys --sys2gene \
+                      --gene2pheno --sys2pheno \
+                      --regression # if model is regression task
 ```
 
 ### Model Training Example (Multiple GPUs)
@@ -152,7 +165,6 @@ python train_snp2p_model.py \
                       --snp2gene SNP2Gene \
                       --train-bfile TRAIN --train-cov TRAIN.cov --train-pheno TRAIN.pheno \
                       --val-bfile VAL --train-cov VAL.cov --val-pheno VAL.pheno \
-                      --test TEST --test-cov VAL.cov --test-pheno TEST.pheno \ 
                       --epochs EPOCHS \
                       --lr LR \
                       --wd WD \
@@ -166,20 +178,29 @@ python train_snp2p_model.py \
                       --world-size 1 \ 
                       --rank 0 \
                       --hidden_dims HIDDEN_DIMS \
-                      --out OUT
+                      --out OUT \
+                      --sys2env --env2sys --sys2gene \
+                      --gene2pheno --sys2pheno \
+                      --regression # if model is regression task
 ```
 
+-----------------------------------
 ## 3. Predict with Trained Model
+
+You can predict with a trained model.
+
+please check [predict_model.sh](predict_model.sh)
+
 
 ```          
 python predict_attention.py \
                       --onto ONTO \
                       --snp2gene SNP2Gene \
                       --bfile BFILE_prefix --cov COVAR.cov --pheno PHENO.pheno \
-                      --model trained_model_dir
+                      --model trained_model
                       --out output_prefix \ 
                       --batch_size BATCH_SIZE \
-                      --cpu N_cpu 
+                      --jobs N_cpu 
 ```
 
 This will generate

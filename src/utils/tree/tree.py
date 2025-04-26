@@ -99,7 +99,7 @@ class TreeParser(object):
         self.descendant_dict_ind = {self.sys2ind[key]:[self.sys2ind[descendant] for descendant in value]
                                     for key, value in self.descendant_dict.items()}
         print("Subtree types: ", self.subtree_types)
-        '''
+
         self.subtree_dfs = {subtree_type:self.sys_df.loc[self.sys_df['interaction']==subtree_type]
                             for subtree_type in self.subtree_types}
         self.subtree_graphs = {subtree_type: nx.from_pandas_edgelist(self.subtree_dfs[subtree_type], create_using=nx.DiGraph(),
@@ -112,7 +112,7 @@ class TreeParser(object):
         self.subtree_reverse_roots = {subtree_type:set([node for node in self.subtree_reverse_graphs[subtree_type].nodes()
                                                 if self.subtree_reverse_graphs[subtree_type].out_degree(node)==0])
                               for subtree_type in self.subtree_types}
-        '''
+
         self.gene2gene_mask = np.zeros((len(self.gene2ind), len(self.gene2ind)))
         self.gene2sys_graph = nx.from_pandas_edgelist(self.gene2sys_df, create_using=nx.DiGraph(),
                                                          source='parent', target='child')

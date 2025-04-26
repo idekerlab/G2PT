@@ -10,78 +10,6 @@ from torch.utils.data.distributed import DistributedSampler
 from sgkit.io import plink
 import numpy as np
 
-
-class SNP2PDataset(Dataset):
-
-    def __init__(self, genotype_phenotype, snp_data, tree_parser: SNPTreeParser, age_mean=None, age_std=None, n_cov=4):
-        self.g2p_df = genotype_phenotype
-        self.tree_parser = TreeParser
-        self.snp_df = snp_data
-        self.tree_parser = tree_parser
-        self.n_cov = n_cov
-        if age_mean is None:
-            self.age_mean = self.g2p_df[3].mean()
-        else:
-            self.age_mean = age_mean
-        if age_std is None:
-            self.age_std = self.g2p_df[3].std()
-        else:
-            self.age_std = age_std
-
-
-    def __len__(self):
-        return self.g2p_df.shape[0]
-
-    def __getitem__(self, index):
-        start = time.time()
-        sample_ind, phenotype, sex, age, age_sq, *covariates = self.g2p_df.iloc[index].values
-        #print(index, sample_ind, phenotype, sex, covariates)
-        sample2snp_dict = {}
-        homozygous_a1 = self.snp_df.loc[sample_ind, 'homozygous_a1']
-        if type(homozygous_a1)==str:
-            homozygous_a1 = [int(i) for i in homozygous_a1.split(",")]
-        else:
-            homozygous_a1 = []
-        #homozygous_a2 = [int(i) for i in (self.snp_df.loc[sample_ind, 'homozygous_a2']).split(",")]
-        #heterozygous = [int(i) for i in (self.snp_df.loc[sample_ind, 'heterozygous']).split(",")]
-        heterozygous = self.snp_df.loc[sample_ind, 'heterozygous']
-        if type(heterozygous) == str:
-            heterozygous = [int(i) for i in heterozygous.split(",")]
-        else:
-            heterozygous = []
-
-        result_dict = dict()
-        snp_type_dict = dict()
-
-        snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
-        snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
-        sample2snp_dict['embedding'] = snp_type_dict
-
-        ##heterozygous_gene_indices = torch.unique(snp_type_dict['heterozygous']['gene']).tolist()
-        #homozygous_a1_gene_indices = torch.unique(snp_type_dict['homozygous_a1']['gene']).tolist()
-        #gene2sys_mask_for_gene = torch.zeros((self.tree_parser.n_systems, self.tree_parser.n_genes), dtype=torch.bool)
-        #gene2sys_mask_for_gene[:, homozygous_a1_gene_indices] = 1
-        #gene2sys_mask_for_gene[:, heterozygous_gene_indices] = 1
-        #result_dict["gene2sys_mask"] = torch.tensor(self.tree_parser.gene2sys_mask, dtype=torch.bool) & gene2sys_mask_for_gene
-        result_dict['phenotype'] = phenotype
-        sex_age_tensor = [0]*self.n_cov
-        #sex_age_tensor = [0, 0, 0, 0]
-        if int(sex)==-9:
-            pass
-        else:
-            sex_age_tensor[int(sex)] = 1
-        if self.n_cov>=4:
-            sex_age_tensor[2] = (age - self.age_mean)/self.age_std
-            sex_age_tensor[3] = (age_sq - self.age_mean**2)/(self.age_std**2)
-        sex_age_tensor = torch.tensor(sex_age_tensor, dtype=torch.float32)
-        covariates = sex_age_tensor#torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
-        result_dict['genotype'] = sample2snp_dict
-        end = time.time()
-        result_dict["datatime"] = torch.tensor(end-start)
-        result_dict["covariates"] = covariates
-
-        return result_dict
-
 class PLINKDataset(Dataset):
 
     def __init__(self, tree_parser : SNPTreeParser, bfile, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None, flip=False,
@@ -130,11 +58,15 @@ class PLINKDataset(Dataset):
 
         if pheno is not None:
             self.pheno_df = pd.read_csv(pheno, sep='\t')
+            self.pheno_df['FID'] = self.pheno_df['FID'].astype(str)
+            self.pheno_df['IID'] = self.pheno_df['IID'].astype(str)
             if 'PHENOTYPE' not in self.cov_df.columns:
-                self.cov_df.merge(self.pheno_df, left_on=['FID', 'IID'], right_on=['FID', 'IID'])
+                self.cov_df = self.cov_df.merge(self.pheno_df, left_on=['FID', 'IID'], right_on=['FID', 'IID'])
                 self.genotype = self.genotype.loc[self.cov_df.IID]
         else:
             self.pheno_df = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
+            self.pheno_df['FID'] = self.pheno_df['FID'].astype(str)
+            self.pheno_df['IID'] = self.pheno_df['IID'].astype(str)
 
         if len(cov_ids) != 0:
             self.cov_ids = cov_ids

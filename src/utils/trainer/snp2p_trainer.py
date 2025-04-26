@@ -121,8 +121,8 @@ class SNP2PTrainer(object):
         if print_importance:
             sys_scores = np.concatenate(sys_scores)[:, 0, 0, :]
             gene_scores = np.concatenate(gene_scores)[:, 0, 0, :]
-        print(trues[:50])
-        print(results[:50])
+        #print(trues[:50])
+        #print(results[:50])
         if self.args.regression:
             r_square = metrics.r2_score(trues, results)
             pearson = pearsonr(trues, results)
@@ -209,6 +209,7 @@ class SNP2PTrainer(object):
             score_loss = 0
             phenotype_loss_result = self.phenotype_loss(phenotype_predicted[:, 0],
                                                         (batch['phenotype']).to(torch.float32))
+
             phenotype_loss += phenotype_loss_result
             mean_response_loss += float(phenotype_loss_result)
 

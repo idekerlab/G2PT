@@ -54,53 +54,45 @@ def move_to(obj, device):
 def main():
     parser = argparse.ArgumentParser(description='Some beautiful description')
     parser.add_argument('--onto', help='Ontology file used to guide the neural network', type=str)
-    parser.add_argument('--subtree_order', help='Subtree cascading order', nargs='+', default=['default'])
     parser.add_argument('--bfile', help='Training genotype dataset', type=str, default=None)
     parser.add_argument('--cov', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--pheno', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--input-format', default='indices', choices=["indices", "binary"])
-    parser.add_argument('--snp', help='Mutation information for cell lines', type=str)
     parser.add_argument('--batch-size', type=int)
     parser.add_argument('--snp2gene', help='Gene to ID mapping file', type=str)
-    parser.add_argument('--snp2id', help='Gene to ID mapping file', type=str)
     parser.add_argument('--cuda', type=int)
     parser.add_argument('--model', help='trained model')
-    parser.add_argument('--cpu', type=int)
+    parser.add_argument('--jobs', type=int)
     parser.add_argument('--prediction-only', action='store_true')
     parser.add_argument('--out', help='output csv')
     parser.add_argument('--system_annot', type=str, default=None)
 
 
     args = parser.parse_args()
-
-    tree_parser = SNPTreeParser(args.onto, args.snp2gene, by_chr=False, sys_annot_file=args.system_annot)
-
-
     g2p_model_dict = torch.load(args.model)
-    print(g2p_model_dict['arguments'])
-    #g2p_model = g2p_model_dict
-    
-    #train_df = pd.read_csv(args.train, sep='\t', header=None)
-    #val_df = pd.read_csv(args.val, sep='\t', header=None)
-    #test_df = pd.read_csv(args.test, sep='\t', header=None)
 
+    print("Arguments from trained model")
+    for key, value in vars(g2p_model_dict['arguments']).items():
+        print(f"{key}: {value}")
+    print("---------------------------------------------------------------------------------------")
+    tree_parser = SNPTreeParser(g2p_model_dict['arguments'].onto, g2p_model_dict['arguments'].snp2gene, by_chr=False,
+                                sys_annot_file=args.system_annot)
     cov_df = pd.read_csv(args.cov, sep='\t')
 
 
-    #genotypes = pd.read_csv(args.snp, index_col=0, sep='\t')
-    dataset = PLINKDataset(tree_parser, args.bfile, args.cov, cov_ids=g2p_model_dict['arguments'].cov_ids,
+    dataset = PLINKDataset(tree_parser, args.bfile, args.cov,  args.pheno, cov_ids=g2p_model_dict['arguments'].cov_ids,
                            cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict,
                            cov_std_dict=g2p_model_dict['arguments'].cov_std_dict, input_format=g2p_model_dict['arguments'].input_format)
-    #dataset = SNP2PDataset(whole_df, genotypes, tree_parser, n_cov=args.n_cov, age_mean=age_mean, age_std=age_std)
+
     device = torch.device("cuda:%d"%args.cuda)
     whole_collator = SNP2PCollator(tree_parser, input_format=g2p_model_dict['arguments'].input_format)
     whole_dataloader = DataLoader(dataset, shuffle=False, batch_size=args.batch_size,
-                                          num_workers=args.cpu, collate_fn=whole_collator)
+                                          num_workers=args.jobs, collate_fn=whole_collator)
 
-    nested_subtrees_forward = tree_parser.get_nested_subtree_mask(args.subtree_order, direction='forward', format=g2p_model_dict['arguments'].input_format)
+    nested_subtrees_forward = tree_parser.get_nested_subtree_mask(g2p_model_dict['arguments'].subtree_order, direction='forward', format=g2p_model_dict['arguments'].input_format)
     nested_subtrees_forward = move_to(nested_subtrees_forward, device)
 
-    nested_subtrees_backward = tree_parser.get_nested_subtree_mask(args.subtree_order, direction='backward', format=g2p_model_dict['arguments'].input_format)
+    nested_subtrees_backward = tree_parser.get_nested_subtree_mask(g2p_model_dict['arguments'].subtree_order, direction='backward', format=g2p_model_dict['arguments'].input_format)
     nested_subtrees_backward = move_to(nested_subtrees_backward, device)
 
     sys2gene_mask = move_to(torch.tensor(tree_parser.sys2gene_mask, dtype=torch.bool), device)
