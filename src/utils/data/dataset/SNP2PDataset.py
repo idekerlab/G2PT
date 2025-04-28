@@ -104,10 +104,14 @@ class PLINKDataset(Dataset):
         """
         self.tree_parser = tree_parser
         self.bfile = bfile
+        self.n_snp2pad = int(np.ceil(self.tree_parser.n_snps/8)) * 8 - self.tree_parser.n_snps
+        self.n_gene2pad = int(np.ceil(self.tree_parser.n_genes / 8)) * 8 - self.tree_parser.n_genes
+        self.n_sys2pad = int(np.ceil(self.tree_parser.n_systems / 8)) * 8 - self.tree_parser.n_systems
         print('Loading PLINK data at %s'%bfile)
 
         # Processing Genotypes
         plink_data = plink.read_plink(path=bfile)
+        print('loading done')
         self.input_format = input_format
 
         genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
@@ -119,17 +123,60 @@ class PLINKDataset(Dataset):
         genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
         genotype_df = genotype_df[snp_sorted]
         genotype = genotype_df.values
-        if flip:
+        if not flip:
             genotype = 2 - genotype
+        else:
             print("Swapping Ref and Alt!")
+        self.N, self.n_snps = genotype.shape
+        n_snps     = tree_parser.n_snps               # original SNP catalogue size
+        n_genes    = tree_parser.n_genes
+        n_systems  = tree_parser.n_systems
+
+        snp_offset = n_snps                           # allele * n_snps + j
+        snp_pad    = n_snps * 3                  # padding value
+        gene_pad   = n_genes
+        sys_pad    = n_systems
+
+
+        print("Parsing genotype...")
         if input_format == 'binary':
             self.genotype == genotype
         else:
+            gene_idx = torch.arange(n_genes, dtype=torch.long)
+            #if n_gene2pad:
+            gene_idx = torch.cat((gene_idx,
+                                  torch.full((self.n_gene2pad,), gene_pad, dtype=torch.long)))
+            self.gene_idx = gene_idx  # (L_gene,)
+
+            sys_idx = torch.arange(n_systems, dtype=torch.long)
+            #if n_sys2pad:
+            sys_idx = torch.cat((sys_idx,
+                                 torch.full((self.n_sys2pad,), sys_pad, dtype=torch.long)))
+            self.sys_idx = sys_idx  # (L_sys,)
+
+            # ---------- SNP indices for all individuals ----------
+            alleles = torch.as_tensor(genotype, dtype=torch.long)  # (N × 1 200)
+
+            base = torch.arange(self.n_snps, dtype=torch.long)  # [0 … 1 199]
+            print(base)
+            snp_idx = alleles * snp_offset + base  # vectorised
+            print(snp_idx.size())
+            #if self.n_snp2pad:
+            pad = torch.full((self.N, self.n_snp2pad),
+                             snp_pad, dtype=torch.long)
+            snp_idx = torch.cat((snp_idx, pad), dim=1)  # (N × (1 200 + pad))
+            print(snp_idx.size())
+            self.snp_idx = snp_idx.contiguous()  # final (N × L_snp)
+            '''
             self.genotype = {}
             for i, personal_genotype in enumerate(genotype):
                 self.genotype[i] = {}
-                self.genotype[i]['homozygous_a1'] = np.where(personal_genotype == 2)[0]
-                self.genotype[i]['heterozygous'] = np.where(personal_genotype == 1)[0]
+                self.genotype[i]['snp'] = [allele*tree_parser.n_snps+j for j, allele in enumerate(personal_genotype)] + [self.tree_parser.n_snps * 3 + 1] * self.n_snp2pad
+                self.genotype[i]['gene'] = list(range(self.tree_parser.n_genes)) + [self.tree_parser.n_genes + 1] * self.n_gene2pad
+                self.genotype[i]['sys'] = list(range(self.tree_parser.n_systems)) + [self.tree_parser.n_systems + 1] * self.n_sys2pad
+                #self.genotype[i]['homozygous_a1'] = np.where(personal_genotype == 2)[0]
+                #self.genotype[i]['heterozygous'] = np.where(personal_genotype == 1)[0]
+            '''
 
 
         #self.genotype.index = plink_data.sample_id.values
@@ -238,6 +285,7 @@ class PLINKDataset(Dataset):
         if self.flip:
             print("Ref. and Alt. are flipped")
         print("%d of participant with %d of variants"%(self.genotype.shape[0], self.genotype.shape[1]))
+        print("The number of covariates:", self.n_cov)
 
     def is_binary(self, array):
         return np.isin(array, [0, 1]).all()
@@ -276,6 +324,7 @@ class PLINKDataset(Dataset):
         result_dict = dict()
         snp_type_dict = dict()
         #print("Subtree", self.subtree)
+
         if self.dynamic_phenotype_sampling:
             tree_parser = self.subtree
             snp_ind_alias_dict = self.tree_parser.snp2ind
@@ -285,6 +334,7 @@ class PLINKDataset(Dataset):
             snp_ind_alias_dict = None
             gene_ind_alias_dict = None
 
+        '''
         if self.input_format=='binary':
             homozygous_a1 = np.where(self.genotype[iid, :] == 2)[0]
             heterozygous = np.where(self.genotype[iid, :] == 1)[0]
@@ -303,8 +353,14 @@ class PLINKDataset(Dataset):
                 # print(homozygous_a1, heterozygous)
                 snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
                 snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
-
+        
         sample2snp_dict['embedding'] = snp_type_dict
+        '''
+        sample2snp_dict = {}
+        sample2snp_dict['snp'] = self.snp_idx[index]
+        sample2snp_dict['gene'] = self.gene_idx
+        sample2snp_dict['sys'] = self.sys_idx
+        #print(sample2snp_dict['snp'].size(), sample2snp_dict['gene'].size(), sample2snp_dict['sys'].size())
 
         covariates_tensor = [0]*self.n_cov
         sex = covariates['SEX']
@@ -359,7 +415,7 @@ class SNP2PCollator(object):
         genotype_dict = dict()
         snp_type_dict = {}
 
-
+        '''
         for snp_type in ['heterozygous', 'homozygous_a1']:
             if self.input_format == 'indices':
                 embedding_dict = {}
@@ -376,10 +432,15 @@ class SNP2PCollator(object):
                 snp_type_dict[snp_type] = embedding_dict
             else:
                 snp_type_dict[snp_type] = torch.stack([dr['genotype']["embedding"][snp_type] for dr in data])
+        
 
         genotype_dict['embedding'] = snp_type_dict
+        '''
         #result_dict['gene2sys_mask'] = torch.stack([d['gene2sys_mask'] for d in data])
-        result_dict['genotype'] = genotype_dict
+        result_dict['genotype'] = {}
+        result_dict['genotype']['snp'] = torch.stack([d['genotype']['snp'] for d in data])#.long()#genotype_dict
+        result_dict['genotype']['gene'] = torch.stack([d['genotype']['gene'] for d in data])#.long()
+        result_dict['genotype']['sys'] = torch.stack([d['genotype']['sys'] for d in data])#.long()
         result_dict['covariates'] = torch.stack([d['covariates'] for d in data])
         #print(result_dict['covariates'])
         result_dict['phenotype_indices'] = torch.stack([d['phenotype_indices'] for d in data])

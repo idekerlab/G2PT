@@ -137,7 +137,7 @@ class SNPTreeParser(TreeParser):
                 parser.snp2sys.setdefault(snp, []).append(sys_idx)
 
         # finally masks and dicts
-        parser.snp2gene_mask   = np.zeros((parser.n_genes, parser.n_snps))
+        parser.snp2gene_mask   = np.full((int(np.ceil(parser.n_genes/8)*8), (int(np.ceil(parser.n_snps/8)*8))), -10**4)
         parser.gene2snp_dict    = {gi:[] for gi in range(parser.n_genes)}
         parser.snp2gene_dict    = {si:[] for si in range(parser.n_snps)}
 
@@ -145,7 +145,7 @@ class SNPTreeParser(TreeParser):
                               parser.snp2gene_df['gene']):
             gi = parser.gene2ind[gene]
             si = parser.snp2ind[snp]
-            parser.snp2gene_mask[gi, si] = 1
+            parser.snp2gene_mask[gi, si] = 0
             parser.gene2snp_dict[gi].append(si)
             parser.snp2gene_dict[si].append(gi)
 

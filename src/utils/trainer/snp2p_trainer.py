@@ -46,6 +46,7 @@ class SNP2PTrainer(object):
         #self.total_train_step = len(
         #    self.snp2p_dataloader) * args.epochs  # + len(self.drug_response_dataloader_cellline)*args.epochs
         #self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
+        self.snp2gene_mask = move_to(torch.tensor(tree_parser.snp2gene_mask, dtype=torch.float32), device)
         self.nested_subtrees_forward = tree_parser.get_hierarchical_interactions(
             tree_parser.interaction_types, direction='forward', format=self.args.input_format)
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
@@ -53,7 +54,7 @@ class SNP2PTrainer(object):
             tree_parser.interaction_types, direction='backward', format=self.args.input_format)
         self.nested_subtrees_backward = move_to(self.nested_subtrees_backward, device)
         self.sys2gene_mask = move_to(
-            torch.tensor(tree_parser.sys2gene_mask, dtype=torch.bool), device)
+            torch.tensor(tree_parser.sys2gene_mask, dtype=torch.float32), device)
         self.gene2sys_mask = self.sys2gene_mask.T
 
         self.fix_system = fix_system
@@ -126,9 +127,10 @@ class SNP2PTrainer(object):
                 trues.append(batch['phenotype'])
                 covariates.append(batch['covariates'].detach().cpu().numpy())
                 batch = move_to(batch, self.device)
-                phenotype_predicted = model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
-                                                                   self.nested_subtrees_forward,
-                                                                   self.nested_subtrees_backward,
+                phenotype_predicted = self.snp2p_model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
+                                                   self.nested_subtrees_forward,
+                                                   self.nested_subtrees_backward,
+                                                   snp2gene_mask = self.snp2gene_mask,
                                                                    gene2sys_mask=self.gene2sys_mask,#batch['gene2sys_mask'],
                                                                    sys2gene_mask=self.sys2gene_mask,
                                                                    sys2env=self.args.sys2env,
@@ -203,12 +205,13 @@ class SNP2PTrainer(object):
         return performance
 
     def train_epoch(self, epoch, ccc=False, sex=False):
+
         self.snp2p_model.train()
         if self.args.multiprocessing_distributed:
             if self.args.z_weight!=0:
                 self.snp2p_dataloader.sampler.set_epoch(epoch)
         self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", ccc=ccc, sex=False)
-
+    '''
     def pretrain(self, dataloader, epoch, name=""):
         mean_response_loss = 0.
         mean_ccc_loss = 0.
@@ -222,11 +225,12 @@ class SNP2PTrainer(object):
             nested_subtrees_backward = self.nested_subtrees_backward
             gene2sys_mask = self.gene2sys_mask
             sys2gene_mask = self.sys2gene_mask
-
+            
 
             phenotype_predicted = self.snp2p_model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
                                                    nested_subtrees_forward,
                                                    nested_subtrees_backward,
+                                                   snp2gene_mask = self.snp2gene_mask,
                                                    gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
                                                    sys2gene_mask=sys2gene_mask,
                                                    sys2env=self.args.sys2env,
@@ -234,11 +238,12 @@ class SNP2PTrainer(object):
                                                    sys2gene=self.args.sys2gene)
 
             phenotype_loss = 0
-            phenotype_loss_result = self.loss(phenotype_predicted[:, :, 0], (batch['phenotype']).to(torch.float32))
+            print(phenotype_predicted.dtype)
+            phenotype_loss_result = self.loss(phenotype_predicted[:, :, 0].half(), (batch['phenotype']).half())#.to(torch.float32))
             phenotype_loss += phenotype_loss_result
             mean_response_loss += float(phenotype_loss_result)
             loss = phenotype_loss
-
+            print(loss.dtype)
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -252,12 +257,17 @@ class SNP2PTrainer(object):
             del batch
 
         del mean_response_loss, mean_ccc_loss
-
+    '''
     def iter_minibatches(self, dataloader, epoch, name="", ccc=False, sex=False):
         mean_response_loss = 0.
         mean_ccc_loss = 0.
         mean_score_loss = 0.
         mean_sex_loss = 0.
+        #print(batch['genotypoe'])
+        #print(self.snp2gene_mask.shape, self.snp2gene_mask)
+        #print(np.where(self.snp2gene_mask.detach().cpu().numpy()==0), self.snp2gene_mask)
+        #print(self.gene2sys_mask.shape, self.gene2sys_mask)
+        #print(self.nested_subtrees_forward)
         if self.dynamic_phenotype_sampling:
             num_batches = np.ceil(len(dataloader.dataset.dataset)/(self.args.batch_size*self.args.world_size))
             dataloader_with_tqdm = tqdm(dataloader, total=num_batches)
@@ -277,11 +287,12 @@ class SNP2PTrainer(object):
                 nested_subtrees_backward = self.nested_subtrees_backward
                 gene2sys_mask = self.gene2sys_mask
                 sys2gene_mask = self.sys2gene_mask
-
-
+            #print(batch['genotype']['snp'].shape)
+            #print(batch['genotype']['snp'])
             phenotype_predicted = self.snp2p_model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
                                                    nested_subtrees_forward,
                                                    nested_subtrees_backward,
+                                                   snp2gene_mask = self.snp2gene_mask,
                                                    gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
                                                    sys2gene_mask=sys2gene_mask,
                                                    sys2env=self.args.sys2env,
@@ -310,7 +321,7 @@ class SNP2PTrainer(object):
                 loss = self.loss
 
             phenotype_loss = 0
-            phenotype_loss_result = loss(predictions, (batch['phenotype']).to(torch.float32))
+            phenotype_loss_result = loss(predictions.half(), (batch['phenotype']).half())
             phenotype_loss += phenotype_loss_result
             mean_response_loss += float(phenotype_loss_result)
             loss = phenotype_loss

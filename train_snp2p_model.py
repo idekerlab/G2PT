@@ -236,6 +236,7 @@ def main_worker(rank, ngpus_per_node, args):
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          activation='softmax', input_format=args.input_format,
                                          n_phenotypes=snp2p_dataset.n_pheno, poincare=args.poincare)
+        #snp2p_model = snp2p_model.half()
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         args.start_epoch = 0
@@ -310,7 +311,7 @@ def main_worker(rank, ngpus_per_node, args):
                                           num_workers=args.jobs, shuffle=shuffle, sampler=None,
                                           pin_memory=True,
                                           persistent_workers=True,  # keep workers alive across epochs
-                                          prefetch_factor=2
+                                          #prefetch_factor=2
                                           )
     '''
     if args.distributed:

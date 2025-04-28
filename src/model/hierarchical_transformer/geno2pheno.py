@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
-from src.model.hierarchical_transformer import PositionWiseFeedForward, MultiHeadedAttention, MultiheadDiffAttn
+from src.model.hierarchical_transformer import MultiHeadedAttention, MultiheadDiffAttn
 from src.model.utils import poincare_log_map_zero
 
 
@@ -19,7 +19,7 @@ class Genotype2Phenotype(nn.Module):
             self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, activation=activation,
                                                   transform=transform, poincare=False)
 
-        self.feed_forward = PositionWiseFeedForward(d_model=hidden, d_ff=feed_forward_hidden, dropout=dropout)
+        #self.feed_forward = _SwiGLUFFN(d_model=hidden, d_ff=feed_forward_hidden, p=dropout)
         self.dropout = nn.Dropout(dropout)
         self.inner_norm = inner_norm
         self.outer_norm = outer_norm
@@ -29,8 +29,8 @@ class Genotype2Phenotype(nn.Module):
         result = self.attention.forward(q, k, v)
         result = result.squeeze(1)
         result = self.inner_norm(result)
-        result = self.feed_forward(result)
-        result = self.outer_norm(result)
+        #result = self.feed_forward(result)
+        #result = self.outer_norm(result)
         result = self.dropout(result)
         return result
 

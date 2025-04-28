@@ -3,6 +3,7 @@ import numpy as np
 import networkx as nx
 import torch
 import copy
+import torch.nn.functional as F
 from itertools import product
 
 class TreeParser(object):
@@ -62,15 +63,15 @@ class TreeParser(object):
                 else:
                     obj.gene2sys[gene] = [sys]
 
-        obj.system2system_mask = np.zeros((len(obj.sys2ind), len(obj.sys2ind)))
+        obj.system2system_mask = np.full((len(obj.sys2ind), len(obj.sys2ind)), -10**4)
         for parent_system, child_system in zip(obj.sys_df['parent'], obj.sys_df['child']):
-            obj.system2system_mask[obj.sys2ind[parent_system], obj.sys2ind[child_system]] = 1
+            obj.system2system_mask[obj.sys2ind[parent_system], obj.sys2ind[child_system]] = 0
 
-        obj.gene2sys_mask = np.zeros((len(obj.sys2ind), len(obj.gene2ind)))
+        obj.gene2sys_mask = np.full((int(np.ceil(obj.n_systems/8)*8), (int(np.ceil(obj.n_genes/8)*8))), -10**4)#np.zeros((len(obj.sys2ind), len(obj.gene2ind)))
         obj.sys2gene_dict = { obj.sys2ind[system]: [] for system in systems }
         obj.gene2sys_dict = { gene: [] for gene in range(obj.n_genes) }
         for system, gene in zip(obj.gene2sys_df['parent'], obj.gene2sys_df['child']):
-            obj.gene2sys_mask[obj.sys2ind[system], obj.gene2ind[gene]] = 1.
+            obj.gene2sys_mask[obj.sys2ind[system], obj.gene2ind[gene]] = 0.
             obj.sys2gene_dict[obj.sys2ind[system]].append(obj.gene2ind[gene])
             obj.gene2sys_dict[obj.gene2ind[gene]].append(obj.sys2ind[system])
 
@@ -115,7 +116,7 @@ class TreeParser(object):
         if verbose:
             print("%d Systems are queried" % obj.n_systems)
             print("%d Genes are queried" % obj.n_genes)
-            print("Total %d Gene-System interactions are queried" % obj.gene2sys_mask.sum())
+            #print("Total %d Gene-System interactions are queried" % obj.gene2sys_mask.sum())
             print("Building descendant dict")
             print("Subtree types: ", obj.subtree_types)
         if not inplace:
@@ -533,7 +534,7 @@ class TreeParser(object):
         result_masks = []
         cur_parents = set(tree_roots)
         while cur_parents:
-            masks = {interaction_type:np.zeros((len(self.sys2ind), len(self.sys2ind))) for interaction_type in interaction_types}
+            masks = {interaction_type:np.full((len(self.sys2ind), len(self.sys2ind)), -10**4) for interaction_type in interaction_types}
             queries = {interaction_type: [] for interaction_type in interaction_types}
             keys = {interaction_type: [] for interaction_type in interaction_types}
             new_parents = set()
@@ -543,17 +544,17 @@ class TreeParser(object):
                 for child in children:
                     edge_type = self.interaction_dict[(parent, child)]
                     if direction == 'forward':
-                        masks[edge_type][self.sys2ind[parent], self.sys2ind[child]] = 1
+                        masks[edge_type][self.sys2ind[parent], self.sys2ind[child]] = 0
                         if format == 'indices':
                             queries[edge_type].append(self.sys2ind[parent])
                             keys[edge_type].append(self.sys2ind[child])
                     elif direction == 'backward':
-                        masks[edge_type][self.sys2ind[child], self.sys2ind[parent]] = 1
+                        masks[edge_type][self.sys2ind[child], self.sys2ind[parent]] = 0
                         if format == 'indices':
                             queries[edge_type].append(self.sys2ind[child])
                             keys[edge_type].append(self.sys2ind[parent])
                     new_parents.add(child)
-            if sum([mask.sum() for mask in masks.values()]) == 0:
+            if sum([len(np.where(mask==0)) for mask in masks.values()]) == 0:
                 break
             if format == 'indices':
                 result_dict = {}
@@ -561,19 +562,41 @@ class TreeParser(object):
                 for interaction_type, mask in masks.items():
                     if len(queries[interaction_type]) == 0:
                         continue
+                    queries[interaction_type] = sorted(list(set(queries[interaction_type])))
+                    keys[interaction_type] = sorted(list(set(keys[interaction_type])))
+                    n_query_pad = int(np.ceil(len(queries[interaction_type])/8)*8) - len(queries[interaction_type])
+                    n_key_pad = int(np.ceil(len(keys[interaction_type])/8)*8) - len(keys[interaction_type])
+                    #queries[interaction_type] = queries[interaction_type] + [self.n_systems]*n_query_pad
+                    #keys[interaction_type] = keys[interaction_type] + [self.n_systems] * n_key_pad
                     result_mask = mask[queries[interaction_type], :]
                     result_mask = result_mask[:, keys[interaction_type]]
+                    print(len(queries[interaction_type]), len(keys[interaction_type]), result_mask.shape, n_query_pad, n_key_pad)
                     result_mask = torch.tensor(result_mask, dtype=torch.float32)
+                    result_mask = F.pad(result_mask, (0, n_key_pad, 0, n_query_pad), value=-10**4)
+                    queries[interaction_type] = queries[interaction_type] + [self.n_systems] * n_query_pad
+                    keys[interaction_type] = keys[interaction_type] + [self.n_systems] * n_key_pad
+                    print(len(queries[interaction_type]), len(keys[interaction_type]), result_mask.size())
+                    print(queries[interaction_type], keys[interaction_type], result_mask)
                     if self.dense_attention:
                         result_mask = torch.ones_like(result_mask)
-                    if sys_ind_alias_dict is not None:
-                        result_dict[interaction_type] = {"query": torch.tensor(self.alias_indices(queries[interaction_type], self.ind2sys, sys_ind_alias_dict), dtype=torch.long),
-                                                           "key": torch.tensor(self.alias_indices(keys[interaction_type], self.ind2sys, sys_ind_alias_dict), dtype=torch.long),
-                                                           'mask': result_mask}
+                    if direction=='forward':
+                        if sys_ind_alias_dict is not None:
+                            result_dict[interaction_type] = {"query": torch.tensor(self.alias_indices(queries[interaction_type], self.ind2sys, sys_ind_alias_dict), dtype=torch.long),
+                                                               "key": torch.tensor(self.alias_indices(keys[interaction_type], self.ind2sys, sys_ind_alias_dict), dtype=torch.long),
+                                                               'mask': result_mask}
+                        else:
+                            result_dict[interaction_type] = {"query": torch.tensor(queries[interaction_type], dtype=torch.long),
+                                                               "key": torch.tensor(keys[interaction_type], dtype=torch.long),
+                                                               'mask': result_mask}
                     else:
-                        result_dict[interaction_type] = {"query": torch.tensor(queries[interaction_type], dtype=torch.long),
-                                                           "key": torch.tensor(keys[interaction_type], dtype=torch.long),
-                                                           'mask': result_mask}
+                        if sys_ind_alias_dict is not None:
+                            result_dict[interaction_type] = {"query": torch.tensor(self.alias_indices(keys[interaction_type], self.ind2sys, sys_ind_alias_dict), dtype=torch.long),
+                                                               "key": torch.tensor(self.alias_indices(queries[interaction_type], self.ind2sys, sys_ind_alias_dict), dtype=torch.long),
+                                                               'mask': result_mask}
+                        else:
+                            result_dict[interaction_type] = {"query": torch.tensor(keys[interaction_type], dtype=torch.long),
+                                                               "key": torch.tensor(queries[interaction_type], dtype=torch.long),
+                                                               'mask': result_mask.T}
                 result_masks.append(result_dict)
             else:
                 result_mask = {torch.tensor(mask, dtype=torch.float32) for mask in masks}
