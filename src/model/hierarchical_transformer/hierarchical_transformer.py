@@ -3,9 +3,9 @@ import torch.nn.functional as F
 import torch
 import xformers.ops as xops
 import math
-from src.model.hierarchical_transformer import MultiHeadedAttention
 
-class _SwiGLUFFN(nn.Module):
+
+class SwiGLUFFN(nn.Module):
     def __init__(self, d_model: int, d_ff: int, p: float):  # d_ff keeps API stable
         super().__init__()
         # We still accept d_ff but compute expansion ratio from it.
@@ -49,7 +49,7 @@ class HierarchicalTransformerUpdate(nn.Module):
         # Norms & FFN
         self.norm_attn = norm                # pre‑supplied
         self.norm_ffn  = nn.LayerNorm(hidden, eps=1e-5)
-        self.ffn = _SwiGLUFFN(hidden, feed_forward_hidden, dropout)
+        self.ffn = SwiGLUFFN(hidden, feed_forward_hidden, dropout)
         self.drop = nn.Dropout(dropout)
         self.softmax = softmax
 

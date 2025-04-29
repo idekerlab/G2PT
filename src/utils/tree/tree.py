@@ -570,13 +570,13 @@ class TreeParser(object):
                     #keys[interaction_type] = keys[interaction_type] + [self.n_systems] * n_key_pad
                     result_mask = mask[queries[interaction_type], :]
                     result_mask = result_mask[:, keys[interaction_type]]
-                    print(len(queries[interaction_type]), len(keys[interaction_type]), result_mask.shape, n_query_pad, n_key_pad)
+                    #print(len(queries[interaction_type]), len(keys[interaction_type]), result_mask.shape, n_query_pad, n_key_pad)
                     result_mask = torch.tensor(result_mask, dtype=torch.float32)
                     result_mask = F.pad(result_mask, (0, n_key_pad, 0, n_query_pad), value=-10**4)
                     queries[interaction_type] = queries[interaction_type] + [self.n_systems] * n_query_pad
                     keys[interaction_type] = keys[interaction_type] + [self.n_systems] * n_key_pad
-                    print(len(queries[interaction_type]), len(keys[interaction_type]), result_mask.size())
-                    print(queries[interaction_type], keys[interaction_type], result_mask)
+                    #print(len(queries[interaction_type]), len(keys[interaction_type]), result_mask.size())
+                    #print(queries[interaction_type], keys[interaction_type], result_mask)
                     if self.dense_attention:
                         result_mask = torch.ones_like(result_mask)
                     if direction=='forward':

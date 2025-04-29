@@ -87,6 +87,8 @@ class MultiplePhenotypeLoss(nn.Module):
         super(MultiplePhenotypeLoss, self).__init__()
         self.bce_cols = bce_cols
         self.mse_cols = mse_cols
+        self.n_tasks = len(bce_cols) + len(mse_cols)
+        self.log_vars = nn.Parameter(torch.zeros(self.n_tasks))
 
     def forward(self, predictions, targets):
         """
@@ -107,12 +109,13 @@ class MultiplePhenotypeLoss(nn.Module):
         for col in self.bce_cols:
             pred = predictions[:, col]
             target = targets[:, col]
-
+            s = self.log_vars[col]
             # Skip invalid targets (-9)
             valid_mask = (target != -9)
             if valid_mask.sum() > 0:
                 # F.binary_cross_entropy_with_logits expects raw logits as input.
                 loss = F.binary_cross_entropy_with_logits(pred[valid_mask], target[valid_mask].float())
+                loss = torch.exp(-s) * loss + s
                 total_loss += loss
                 loss_count += 1
 
@@ -120,10 +123,11 @@ class MultiplePhenotypeLoss(nn.Module):
         for col in self.mse_cols:
             pred = predictions[:, col]
             target = targets[:, col]
-
+            s = self.log_vars[col]
             valid_mask = (target != -9)
             if valid_mask.sum() > 0:
                 loss = F.mse_loss(pred[valid_mask], target[valid_mask])
+                loss = 0.5 * (torch.exp(-s) * loss + s)
                 total_loss += loss
                 loss_count += 1
 

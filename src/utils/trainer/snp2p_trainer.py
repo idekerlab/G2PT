@@ -13,6 +13,23 @@ from src.utils.data import move_to
 from src.utils.trainer import CCCLoss, FocalLoss, VarianceLoss, MultiplePhenotypeLoss
 import copy
 
+def _corrcoef(x):                         # x: [B, P]
+    x = x - x.mean(dim=0, keepdim=True)
+    x = x / (x.std(dim=0, unbiased=False) + 1e-6)
+    return (x.T @ x) / (x.size(0) - 1)    # [P, P]
+
+def correlation_matching_loss(pred, target, lam=0.05):
+    """
+    pred   : [B, P]  logits or probabilities
+    target : [B, P]  0/1 labels (float32)
+    """
+    c_pred = _corrcoef(pred.detach())     # stop grad through corr
+    c_true = _corrcoef(target)
+    tri_mask = torch.triu(torch.ones_like(c_pred), diagonal=1).bool()
+    diff = torch.abs(c_pred - c_true)[tri_mask]
+    return lam * diff.mean()
+
+
 
 class SNP2PTrainer(object):
 
@@ -73,7 +90,7 @@ class SNP2PTrainer(object):
             torch.cuda.empty_cache()
         
 
-        if not self.args.multiprocessing_distributed or (self.args.multiprocessing_distributed
+        if not self.args.distributed or (self.args.distributed
                                                          and self.args.rank % torch.cuda.device_count() == 0):
             performance = self.evaluate(self.snp2p_model, self.validation_dataloader, 0, name='Validation', print_importance=False)
             gc.collect()
@@ -92,16 +109,15 @@ class SNP2PTrainer(object):
 
             if (epoch % self.args.val_step) == 0 & (epoch != 0):
                 if self.validation_dataloader is not None:
-                    if not self.args.multiprocessing_distributed or (self.args.multiprocessing_distributed
-                                                                     and self.args.rank % torch.cuda.device_count() == 0):
+                    if not self.args.distributed or (self.args.distributed and self.args.rank == 0):
                         performance = self.evaluate(self.snp2p_model, self.validation_dataloader, epoch + 1,
                                                     name="Validation", print_importance=False)
                         torch.cuda.empty_cache()
                         gc.collect()
                 if output_path:
                     output_path_epoch = output_path + ".%d" % epoch
-                    if self.args.multiprocessing_distributed:
-                        if self.args.rank % torch.cuda.device_count() == 0:
+                    if self.args.distributed:
+                        if self.args.rank == 0:
                             print("Save to...", output_path_epoch)
                             torch.save({"arguments": self.args,
                                     "state_dict": self.snp2p_model.module.state_dict()},
@@ -207,7 +223,7 @@ class SNP2PTrainer(object):
     def train_epoch(self, epoch, ccc=False, sex=False):
 
         self.snp2p_model.train()
-        if self.args.multiprocessing_distributed:
+        if self.args.distributed:
             if self.args.z_weight!=0:
                 self.snp2p_dataloader.sampler.set_epoch(epoch)
         self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", ccc=ccc, sex=False)
@@ -321,8 +337,8 @@ class SNP2PTrainer(object):
                 loss = self.loss
 
             phenotype_loss = 0
-            phenotype_loss_result = loss(predictions.half(), (batch['phenotype']).half())
-            phenotype_loss += phenotype_loss_result
+            phenotype_loss_result = loss(predictions, batch['phenotype'])
+            phenotype_loss += phenotype_loss_result #+ correlation_matching_loss(predictions, batch['phenotype'])
             mean_response_loss += float(phenotype_loss_result)
             loss = phenotype_loss
 

@@ -39,6 +39,41 @@ def count_parameters(model):
     print(f"Total Trainable Params: {total_params}")
     return total_params
 
+def ddp_setup():
+    """
+    Return (distributed, rank, world_size, local_rank, device).
+    Works for:
+        • plain `python my_train.py`           → distributed=False
+        • 1-GPU: `python my_train.py --cuda 0` → distributed=False
+        • multi-GPU / single-node:
+                      torchrun --nproc_per_node=N my_train.py
+          → distributed=True  (DDP across N GPUs)
+    """
+    # ❶ Detect whether torchrun (or mpirun) has set these
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    rank        = int(os.environ.get("RANK",        0))
+    local_rank  = int(os.environ.get("LOCAL_RANK",  0))
+
+    distributed = world_size > 1
+    '''
+    if distributed and not dist.is_initialized():
+        dist.init_process_group(
+            backend="nccl",
+            init_method="env://",    # MASTER_ADDR / MASTER_PORT already exported
+            world_size=world_size,
+            rank=rank,
+            timeout=timedelta(hours=3),
+        )
+    '''
+    # ❷ Choose the device for this rank
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = torch.device("cpu")
+    print("DDP setup done")
+    return distributed, rank, world_size, local_rank, device
+
 
 def main():
     parser = argparse.ArgumentParser(description='Some beautiful description')
@@ -97,6 +132,7 @@ def main():
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
     # Multi-GPU option
+    '''
     parser.add_argument('--world-size', default=1, type=int,
                         help='number of nodes for distributed training')
     parser.add_argument('--rank', default=0, type=int,
@@ -111,20 +147,34 @@ def main():
                              'N processes per node, which has N GPUs. This is the '
                              'fastest way to use PyTorch for either single node or '
                              'multi node data parallel training')
+    '''
 
     # Model input and output
     parser.add_argument('--model', help='path to trained model', default=None)
     parser.add_argument('--out', help="output model path")
 
     args = parser.parse_args()
+    print('Start Process')
     if args.cuda is not None:
         warnings.warn('You have chosen a specific GPU. This will completely '
                       'disable data parallelism.')
 
-    args.distributed = args.world_size > 1 or args.multiprocessing_distributed
+    #args.distributed = args.world_size > 1 or args.multiprocessing_distributed
 
     ngpus_per_node = torch.cuda.device_count()
     args.ngpus_per_node = ngpus_per_node
+
+    distributed, rank, world_size, local_rank, device = ddp_setup()
+
+    #+  # -------- torchrun gives all ranks in env --------
+    args.distributed = distributed
+    args.rank = rank
+    args.world_size = world_size
+    args.local_rank = local_rank
+
+    torch.cuda.set_device(args.local_rank)
+    main_worker(args)  # no mp.spawn!
+    '''
     if args.multiprocessing_distributed:
         #if 'SLURM_PROCID' in os.environ:
         # Since we have ngpus_per_node processes per node, the total world_size
@@ -144,13 +194,24 @@ def main():
         # Simply call main_worker function
         print("The world size is %d" % args.world_size)
         main_worker(args.cuda, ngpus_per_node, args)
+    '''
 
-
-def main_worker(rank, ngpus_per_node, args):
-    global best_acc1
+def main_worker(args):
+    #global best_acc1
+    #node_name = socket.gethostname()
+    #print(f"Initialize main worker {rank} at node {node_name}")
+    gpu = args.local_rank
     node_name = socket.gethostname()
-    print(f"Initialize main worker {rank} at node {node_name}")
-
+    print(f"[{args.rank}/{args.world_size}] running on {node_name} GPU {gpu}, rank: {args.rank}, local_rank: {args.local_rank}", flush=True)
+    if args.distributed and not dist.is_initialized():
+        dist.init_process_group(
+            backend="nccl",
+            init_method="env://",
+            world_size=args.world_size,
+            rank=args.rank,
+            timeout=timedelta(hours=3),
+        )
+    '''
     if args.distributed:
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
@@ -165,7 +226,8 @@ def main_worker(rank, ngpus_per_node, args):
                                 world_size=args.world_size, rank=args.rank, timeout=timeout)
         print("GPU %d process initialized" % (gpu))
         torch.cuda.empty_cache()
-    print("Finish setup main worker", rank)
+    '''
+    print("Finish setup main worker", args.rank)
 
     if args.distributed:
         device = torch.device("cuda:%d" % gpu)
@@ -241,40 +303,24 @@ def main_worker(rank, ngpus_per_node, args):
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         args.start_epoch = 0
 
-    if not torch.cuda.is_available():
-        print('using CPU, this will be slow')
-    elif args.distributed:
+    if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
         # should always set the single device scope, otherwise,
         # DistributedDataParallel will use all available devices.
-        if args.cuda is None:
-            #torch.cuda.set_device(args.gpu)
-            print("Distributed trainings are set up")
-            snp2p_model.to(device)
-            # When using a single GPU per process and per
-            # DistributedDataParallel, we need to divide the batch size
-            # ourselves based on the total number of GPUs we have
-            #args.batch_size = int(args.batch_size / ngpus_per_node)
-            args.jobs = int((args.jobs) / ngpus_per_node)
-            print(args.batch_size, args.jobs)
-            snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[gpu], find_unused_parameters=True)
-        else:
-            snp2p_model.to(device)
-            # DistributedDataParallel will divide and allocate batch_size to all
-            # available GPUs if device_ids are not set
-            snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, find_unused_parameters=True)
+        print("Distributed trainings are set up")
+        args.jobs = int((args.jobs) / args.world_size)
+        snp2p_model = snp2p_model.to(device)
+        snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[gpu], output_device=gpu, find_unused_parameters=True)
     elif args.cuda is not None:
-        #torch.cuda.set_device(args.gpu)
         snp2p_model = snp2p_model.to(device)
         print("Model is loaded at GPU(%d)" % args.cuda)
     else:
-        # DataParallel will divide and allocate batch_size to all available GPUs
-        snp2p_model = torch.nn.DataParallel(snp2p_model).to(device)
+        print("Model is on cpu (not recommended)")
 
-    if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                                                     and args.rank % torch.cuda.device_count() == 0):
+    if not args.distributed or (args.distributed and args.rank  == 0):
         print("Summary of trainable parameters")
         count_parameters(snp2p_model)
+
     if args.distributed:
         if args.dynamic_phenotype_sampling:
             dataset = DynamicPhenotypeBatchIterableDatasetDDP(snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True)
@@ -350,12 +396,6 @@ def main_worker(rank, ngpus_per_node, args):
                                          cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=int(args.batch_size/(args.ngpus_per_node*2)),
                                           num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True)
-    elif args.val_cov is not None:
-        val_dataset = pd.read_csv(args.val_cov, header=None, sep='\t')
-        val_snp2p_dataset = SNP2PDataset(val_dataset, genotype, tree_parser, age_mean=snp2p_dataset.age_mean,
-                                         age_std=snp2p_dataset.age_std, n_cov=args.n_cov)
-        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
-                                              num_workers=args.jobs, collate_fn=snp2p_collator)
     else:
         val_snp2p_dataloader = None
 
@@ -365,4 +405,6 @@ def main_worker(rank, ngpus_per_node, args):
     snp2p_trainer.train(args.epochs, args.out)
 
 if __name__ == '__main__':
+    print("Python __main__", flush=True)
+    #print("NCCL socket name :", os.environ["NCCL_SOCKET_IFNAME"])
     main()

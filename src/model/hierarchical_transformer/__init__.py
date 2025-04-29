@@ -1,3 +1,3 @@
-from .attention import MultiHeadedAttention, Attention, MultiheadDiffAttn
-from .hierarchical_transformer import HierarchicalTransformerUpdate, HierarchicalTransformer#, PositionWiseFeedForward
+from .attention import MultiheadDiffAttn
+from .hierarchical_transformer import HierarchicalTransformerUpdate, HierarchicalTransformer, SwiGLUFFN
 from .geno2pheno import Genotype2Phenotype
