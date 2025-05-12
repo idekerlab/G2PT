@@ -264,13 +264,13 @@ class TreeParser(object):
         # Generate the collapsed ontology
         collapsed_ontology = self.sys_graph_to_ontology_table(sys_graph_collapsed, sys2gene_collapsed)
 
-        return collapsed_ontology
+        #return collapsed_ontology
 
         # Reinitialize ontology with the collapsed data
-        #if inplace:
-        #    self.init_ontology(collapsed_ontology)
-        #else:
-        #    return self.init_ontology(collapsed_ontology, inplace=False)
+        if inplace:
+            self.init_ontology(collapsed_ontology)
+        else:
+            return self.init_ontology(collapsed_ontology, inplace=False)
 
     def delete_systems(self, systems, sys_graph, sys2gene):
         """

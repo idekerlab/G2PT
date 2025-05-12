@@ -7,6 +7,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torch.utils.data.sampler import Sampler, BatchSampler, RandomSampler
 from scipy.stats import zscore, skewnorm
 import torch
+import torch.nn.functional as F
 from src.utils.tree import TreeParser, SNPTreeParser
 from torch.nn.utils.rnn import pad_sequence
 import time
@@ -14,204 +15,49 @@ from torch.utils.data.distributed import DistributedSampler
 from sgkit.io import plink
 import math
 import numpy as np
+import re
+from glob import glob
+import zarr
+import os
+from collections import OrderedDict
 
+class GenotypeDataset(Dataset):
+    def __init__(self, tree_parser : SNPTreeParser, cov, pheno=None, cov_mean_dict=None, cov_std_dict=None,
+                 cov_ids=(), pheno_ids=(), bt=(), qt=(), dynamic_phenotype_sampling=False):
 
-class SNP2PDataset(Dataset):
-
-    def __init__(self, genotype_phenotype, snp_data, tree_parser: SNPTreeParser, age_mean=None, age_std=None, n_cov=4):
-        self.g2p_df = genotype_phenotype
-        self.tree_parser = TreeParser
-        self.snp_df = snp_data
         self.tree_parser = tree_parser
-        self.n_cov = n_cov
-        if age_mean is None:
-            self.age_mean = self.g2p_df[3].mean()
-        else:
-            self.age_mean = age_mean
-        if age_std is None:
-            self.age_std = self.g2p_df[3].std()
-        else:
-            self.age_std = age_std
-
-
-    def __len__(self):
-        return self.g2p_df.shape[0]
-
-    def __getitem__(self, index):
-        start = time.time()
-        sample_ind, phenotype, sex, age, age_sq, *covariates = self.g2p_df.iloc[index].values
-        #print(index, sample_ind, phenotype, sex, covariates)
-        sample2snp_dict = {}
-        homozygous_a1 = self.snp_df.loc[sample_ind, 'homozygous_a1']
-        if type(homozygous_a1)==str:
-            homozygous_a1 = [int(i) for i in homozygous_a1.split(",")]
-        else:
-            homozygous_a1 = []
-        #homozygous_a2 = [int(i) for i in (self.snp_df.loc[sample_ind, 'homozygous_a2']).split(",")]
-        #heterozygous = [int(i) for i in (self.snp_df.loc[sample_ind, 'heterozygous']).split(",")]
-        heterozygous = self.snp_df.loc[sample_ind, 'heterozygous']
-        if type(heterozygous) == str:
-            heterozygous = [int(i) for i in heterozygous.split(",")]
-        else:
-            heterozygous = []
-
-        result_dict = dict()
-        snp_type_dict = dict()
-
-        snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
-        snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
-        sample2snp_dict['embedding'] = snp_type_dict
-
-        ##heterozygous_gene_indices = torch.unique(snp_type_dict['heterozygous']['gene']).tolist()
-        #homozygous_a1_gene_indices = torch.unique(snp_type_dict['homozygous_a1']['gene']).tolist()
-        #gene2sys_mask_for_gene = torch.zeros((self.tree_parser.n_systems, self.tree_parser.n_genes), dtype=torch.bool)
-        #gene2sys_mask_for_gene[:, homozygous_a1_gene_indices] = 1
-        #gene2sys_mask_for_gene[:, heterozygous_gene_indices] = 1
-        #result_dict["gene2sys_mask"] = torch.tensor(self.tree_parser.gene2sys_mask, dtype=torch.bool) & gene2sys_mask_for_gene
-        result_dict['phenotype'] = phenotype
-        sex_age_tensor = [0]*self.n_cov
-        #sex_age_tensor = [0, 0, 0, 0]
-        if int(sex)==-9:
-            pass
-        else:
-            sex_age_tensor[int(sex)] = 1
-        if self.n_cov>=4:
-            sex_age_tensor[2] = (age - self.age_mean)/self.age_std
-            sex_age_tensor[3] = (age_sq - self.age_mean**2)/(self.age_std**2)
-        sex_age_tensor = torch.tensor(sex_age_tensor, dtype=torch.float32)
-        covariates = sex_age_tensor#torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
-        result_dict['genotype'] = sample2snp_dict
-        end = time.time()
-        result_dict["datatime"] = torch.tensor(end-start)
-        result_dict["covariates"] = covariates
-
-        return result_dict
-
-class PLINKDataset(Dataset):
-
-    def __init__(self, tree_parser : SNPTreeParser, bfile, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None, flip=False,
-                 input_format='indices', cov_ids=(), pheno_ids=(), bt=(), qt=(), dynamic_phenotype_sampling=0):
-        """
-        tree_parser: SNP tree parser object
-        bfile: PLINK bfile prefix
-        cov: covariates tab-delimited text file. If None, covariates will be inferred from bfile.fam file
-        pheno: phenotype tab-delimited text file. If None, phenotype will be inferred from bfile.fam file
-        cov_mean_dict: dictionary of covariates mean, {cov_id: mean_value}. If None, mean of covariates will be calculated from cov file
-        cov_std_dict: dictionary of covariates standard deviation, {cov_id: std_value}. If None, standard deviation of covariates will be calculated from cov file
-        flip: If True, it will flip reference and altered allele
-        input_format: input data format for model, indices or binary
-        cov_ids: If you want to use specific covariates, you can put list of covariate ids. If None, dataset will return all covariates from cov file
-        """
-        self.tree_parser = tree_parser
-        self.bfile = bfile
         self.n_snp2pad = int(np.ceil(self.tree_parser.n_snps/8)) * 8 - self.tree_parser.n_snps
         self.n_gene2pad = int(np.ceil(self.tree_parser.n_genes / 8)) * 8 - self.tree_parser.n_genes
         self.n_sys2pad = int(np.ceil(self.tree_parser.n_systems / 8)) * 8 - self.tree_parser.n_systems
-        print('Loading PLINK data at %s'%bfile)
 
-        # Processing Genotypes
-        plink_data = plink.read_plink(path=bfile)
-        print('loading done')
-        self.input_format = input_format
+        gene_pad   = self.tree_parser.n_genes
+        sys_pad    = self.tree_parser.n_systems
 
-        genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
-        snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
-        self.ind2iid = {idx:str(iid) for idx, iid in enumerate(plink_data.sample_id.values)}
-        #plink_snp_ids = plink_data.variant_id.values
-        #plink_snp_id2ind = {snp_id:ind for ind, snp_id in enumerate(plink_snp_ids)}
-        #ordered_snp_ind = [tree_parser.snp2ind[col] for col in plink_snp_ids if col in tree_parser.snp2ind.keys()]
-        genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
-        genotype_df = genotype_df[snp_sorted]
-        genotype = genotype_df.values
-        if not flip:
-            genotype = 2 - genotype
-        else:
-            print("Swapping Ref and Alt!")
-        self.N, self.n_snps = genotype.shape
-        n_snps     = tree_parser.n_snps               # original SNP catalogue size
-        n_genes    = tree_parser.n_genes
-        n_systems  = tree_parser.n_systems
+        gene_idx = torch.arange(self.tree_parser.n_genes, dtype=torch.long)
+        gene_idx = torch.cat((gene_idx,
+                              torch.full((self.n_gene2pad,), gene_pad, dtype=torch.long)))
+        self.gene_idx = gene_idx  # (L_gene,)
+        sys_idx = torch.arange(self.tree_parser.n_systems, dtype=torch.long)
+        sys_idx = torch.cat((sys_idx,
+                             torch.full((self.n_sys2pad,), sys_pad, dtype=torch.long)))
+        self.sys_idx = sys_idx  # (L_sys,)
+        self.dynamic_phenotype_sampling = dynamic_phenotype_sampling
 
-        snp_offset = n_snps                           # allele * n_snps + j
-        snp_pad    = n_snps * 3                  # padding value
-        gene_pad   = n_genes
-        sys_pad    = n_systems
-
-
-        print("Parsing genotype...")
-        if input_format == 'binary':
-            self.genotype == genotype
-        else:
-            gene_idx = torch.arange(n_genes, dtype=torch.long)
-            #if n_gene2pad:
-            gene_idx = torch.cat((gene_idx,
-                                  torch.full((self.n_gene2pad,), gene_pad, dtype=torch.long)))
-            self.gene_idx = gene_idx  # (L_gene,)
-
-            sys_idx = torch.arange(n_systems, dtype=torch.long)
-            #if n_sys2pad:
-            sys_idx = torch.cat((sys_idx,
-                                 torch.full((self.n_sys2pad,), sys_pad, dtype=torch.long)))
-            self.sys_idx = sys_idx  # (L_sys,)
-
-            # ---------- SNP indices for all individuals ----------
-            alleles = torch.as_tensor(genotype, dtype=torch.long)  # (N × 1 200)
-
-            base = torch.arange(self.n_snps, dtype=torch.long)  # [0 … 1 199]
-            print(base)
-            snp_idx = alleles * snp_offset + base  # vectorised
-            print(snp_idx.size())
-            #if self.n_snp2pad:
-            pad = torch.full((self.N, self.n_snp2pad),
-                             snp_pad, dtype=torch.long)
-            snp_idx = torch.cat((snp_idx, pad), dim=1)  # (N × (1 200 + pad))
-            print(snp_idx.size())
-            self.snp_idx = snp_idx.contiguous()  # final (N × L_snp)
-            '''
-            self.genotype = {}
-            for i, personal_genotype in enumerate(genotype):
-                self.genotype[i] = {}
-                self.genotype[i]['snp'] = [allele*tree_parser.n_snps+j for j, allele in enumerate(personal_genotype)] + [self.tree_parser.n_snps * 3 + 1] * self.n_snp2pad
-                self.genotype[i]['gene'] = list(range(self.tree_parser.n_genes)) + [self.tree_parser.n_genes + 1] * self.n_gene2pad
-                self.genotype[i]['sys'] = list(range(self.tree_parser.n_systems)) + [self.tree_parser.n_systems + 1] * self.n_sys2pad
-                #self.genotype[i]['homozygous_a1'] = np.where(personal_genotype == 2)[0]
-                #self.genotype[i]['heterozygous'] = np.where(personal_genotype == 1)[0]
-            '''
-
-
-        #self.genotype.index = plink_data.sample_id.values
-        #self.genotype.columns = plink_data.variant_id.values
-        self.flip = flip
-        print("From PLINK %d variants with %d samples are queried" % (genotype.shape[1], genotype.shape[0]))
-        del genotype_df
-        del genotype
-
-        # Processing Covariates
         print('Processing Covariates...')
         if cov is not None:
             print("Loading Covariate file at %s"%cov)
             self.cov_df = pd.read_csv(cov, sep='\t')
             self.cov_df['IID'] = self.cov_df['IID'].astype(str)
-            self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
+            self.cov_df['FID'] = self.cov_df['FID'].astype(str)
+            #self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
         else:
-            self.cov_df = pd.DataFrame({'FID': plink_data.sample_family_id.as_numpy(),
-                                        'IID': plink_data.sample_id.as_numpy(),
-                                        'SEX': plink_data.sample_sex.as_numpy(),
-                                        'PHENOTYPE': plink_data.sample_phenotype.as_numpy() })
-            self.cov_df = self.cov_df[['FID', 'IID', 'SEX', 'PHENOTYPE']]
-            self.cov_df = self.cov_df.loc[self.cov_df.PHENOTYPE!=-1]
-            self.cov_df['PHENOTYPE'] = self.cov_df['PHENOTYPE'] - 1
-            self.cov_df['IID'] = self.cov_df['IID'].astype(str)
-            self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
-            #self.genotype = self.genotype.loc[self.cov_df.IID]
+            self.cov_df = None # will be initialized in child class
 
-        self.cov_df['FID'] = self.cov_df['FID'].astype(str)
         if len(cov_ids) != 0:
             self.cov_ids = cov_ids
         else:
-            self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov != 'PHENOTYPE']
+            self.cov_ids = [] #[cov for cov in self.cov_df.columns[2:] if cov != 'PHENOTYPE']
         self.n_cov = len(self.cov_ids) + 1 ## +1 for sex cov
-
 
         if cov_mean_dict is None:
             self.cov_mean_dict = dict()
@@ -234,19 +80,13 @@ class PLINKDataset(Dataset):
             else:
                 self.pheno_ids = [pheno for pheno in self.pheno_df.columns[2:]]
             self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
-            self.pheno_df = self.pheno_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
-            #if 'PHENOTYPE' not in self.cov_df.columns:
-            #self.cov_df.merge(self.pheno_df, left_on=['FID', 'IID'], right_on=['FID', 'IID'])
-            #self.genotype = self.genotype.loc[self.cov_df.IID]
+
         else:
-            self.pheno_df = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
-            self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
-            self.pheno_df = self.pheno_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
-            self.pheno_ids = ['PHENOTYPE']
+            self.pheno_df = None # will be initialized in child class = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
 
         self.pheno2ind = {pheno:i for i, pheno in enumerate(self.pheno_ids)}
         self.ind2pheno = {i:pheno for i, pheno in enumerate(self.pheno_ids)}
-        if (len(bt)==0) & (len(qt)==0):
+        if (len(bt) == 0) & (len(qt) == 0):
             self.qt = self.pheno_ids # all phenotypes will be regression tasks
         else:
             self.qt = qt
@@ -259,11 +99,155 @@ class PLINKDataset(Dataset):
             for pheno in bt:
                 self.pheno2type[pheno] = 'bt'
 
-
         self.n_pheno = len(self.pheno_ids)
         self.has_phenotype = False
         if ('PHENOTYPE' in self.cov_df.columns) or (pheno is not None):
             self.has_phenotype = True
+        print("Phenotypes: ", self.pheno_ids)
+
+    def is_binary(self, array):
+        return np.isin(array, [0, 1]).all()
+
+    def __len__(self):
+        return self.cov_df.shape[0]
+
+    def __getitem__(self, index):
+        start = time.time()
+        covariates = self.cov_df.iloc[index]
+        phenotypes = self.pheno_df.iloc[index]
+        covariates_tensor = [0] * self.n_cov
+        result_dict = {}
+        sex = covariates['SEX']
+        i_cov = 0
+        if (int(sex) == -1) or (int(sex) == -9):
+            pass
+        else:
+            covariates_tensor[int(sex)] = 1
+        i_cov += 2
+        for cov_id in self.cov_ids:
+            if cov_id == 'SEX':
+                continue
+            if cov_id in self.cov_mean_dict.keys():
+                cov_value = (covariates[cov_id] - self.cov_mean_dict[cov_id]) / self.cov_std_dict[cov_id]
+            else:
+                cov_value = covariates[cov_id]
+            covariates_tensor[i_cov] = cov_value
+            i_cov += 1
+        covariates_tensor = torch.tensor(covariates_tensor, dtype=torch.float32)
+        covariates_tensor = covariates_tensor  # torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
+
+        if self.has_phenotype:
+            if self.dynamic_phenotype_sampling:
+                phenotype_ind_tensor = torch.tensor([self.pheno2ind[pheno] for pheno in self.subtree_phenotypes],
+                                                    dtype=torch.int)
+                phenotype_tensor = torch.tensor([phenotypes[pheno_id] for pheno_id in self.subtree_phenotypes],
+                                                dtype=torch.float32)
+            else:
+                phenotype_ind_tensor = torch.tensor([i for i in range(self.n_pheno)], dtype=torch.int)
+                phenotype_tensor = torch.tensor([phenotypes[pheno_id] for pheno_id in self.pheno_ids],
+                                                dtype=torch.float32)
+
+            result_dict['phenotype_indices'] = phenotype_ind_tensor
+            result_dict['phenotype'] = phenotype_tensor
+
+        end = time.time()
+        result_dict["datatime"] = torch.tensor(end - start)
+        result_dict["covariates"] = covariates_tensor
+        return result_dict
+
+class PLINKDataset(GenotypeDataset):
+    def __init__(self, tree_parser : SNPTreeParser, bfile=None, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None, flip=False,
+                 input_format='indices', cov_ids=(), pheno_ids=(), bt=(), qt=(), dynamic_phenotype_sampling=0):
+        """
+        tree_parser: SNP tree parser object
+        bfile: PLINK bfile prefix
+        cov: covariates tab-delimited text file. If None, covariates will be inferred from bfile.fam file
+        pheno: phenotype tab-delimited text file. If None, phenotype will be inferred from bfile.fam file
+        cov_mean_dict: dictionary of covariates mean, {cov_id: mean_value}. If None, mean of covariates will be calculated from cov file
+        cov_std_dict: dictionary of covariates standard deviation, {cov_id: std_value}. If None, standard deviation of covariates will be calculated from cov file
+        flip: If True, it will flip reference and altered allele
+        input_format: input data format for model, indices or binary
+        cov_ids: If you want to use specific covariates, you can put list of covariate ids. If None, dataset will return all covariates from cov file
+        """
+        super().__init__(tree_parser=tree_parser, cov=cov, pheno=pheno, cov_mean_dict=cov_mean_dict, cov_std_dict=cov_std_dict, cov_ids=cov_ids, pheno_ids=pheno_ids, bt=bt, qt=qt)
+
+        self.bfile = bfile
+
+        print('Loading PLINK data at %s' % bfile)
+        # Processing Genotypes
+        plink_data = plink.read_plink(path=bfile)
+        print('loading done')
+        self.input_format = input_format
+        genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
+        #print(self.tree_parser.snp2ind)
+        snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
+        #print(snp_sorted)
+        self.ind2iid = {idx:str(iid) for idx, iid in enumerate(plink_data.sample_id.values)}
+        #plink_snp_ids = plink_data.variant_id.values
+        #plink_snp_id2ind = {snp_id:ind for ind, snp_id in enumerate(plink_snp_ids)}
+        #ordered_snp_ind = [tree_parser.snp2ind[col] for col in plink_snp_ids if col in tree_parser.snp2ind.keys()]
+        genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
+        genotype_df = genotype_df[snp_sorted]
+        genotype = genotype_df.values
+        if not flip:
+            genotype = 2 - genotype
+        else:
+            print("Swapping Ref and Alt!")
+        self.N, self.n_snps = genotype.shape
+        n_snps     = tree_parser.n_snps               # original SNP catalogue size
+        snp_offset = n_snps                           # allele * n_snps + j
+        snp_pad    = n_snps * 3                  # padding value
+
+        # ---------- SNP indices for all individuals ----------
+        alleles = torch.as_tensor(genotype, dtype=torch.long)  # (N × 1 200)
+
+        base = torch.arange(self.n_snps, dtype=torch.long)  # [0 … 1 199]
+        #print(base)
+        #print(genotype)
+        snp_idx = alleles * snp_offset + base  # vectorised
+        #print(snp_idx)
+        #if self.n_snp2pad:
+        pad = torch.full((self.N, self.n_snp2pad),
+                         snp_pad, dtype=torch.long)
+        snp_idx = torch.cat((snp_idx, pad), dim=1)  # (N × (1 200 + pad))
+        #print(snp_idx.size())
+        self.snp_idx = snp_idx.contiguous()  # final (N × L_snp)
+
+        #self.genotype.index = plink_data.sample_id.values
+        #self.genotype.columns = plink_data.variant_id.values
+        self.flip = flip
+        print("From PLINK %d variants with %d samples are queried" % (genotype.shape[1], genotype.shape[0]))
+        del genotype_df
+        del genotype
+
+        # Processing Covariates
+        #print('Processing Covariates...')
+        if self.cov_df is not None:
+            self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
+        else:
+            self.cov_df = pd.DataFrame({'FID': plink_data.sample_family_id.as_numpy(),
+                                        'IID': plink_data.sample_id.as_numpy(),
+                                        'SEX': plink_data.sample_sex.as_numpy(),
+                                        'PHENOTYPE': plink_data.sample_phenotype.as_numpy() })
+            self.cov_df = self.cov_df[['FID', 'IID', 'SEX', 'PHENOTYPE']]
+            self.cov_df = self.cov_df.loc[self.cov_df.PHENOTYPE!=-1]
+            self.cov_df['PHENOTYPE'] = self.cov_df['PHENOTYPE'] - 1
+            self.cov_df['IID'] = self.cov_df['IID'].astype(str)
+            self.cov_df['FID'] = self.cov_df['FID'].astype(str)
+            self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
+            #self.genotype = self.genotype.loc[self.cov_df.IID]
+
+
+        if self.pheno_df is not None:
+            self.pheno_df = self.pheno_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
+            #if 'PHENOTYPE' not in self.cov_df.columns:
+            #self.cov_df.merge(self.pheno_df, left_on=['FID', 'IID'], right_on=['FID', 'IID'])
+            #self.genotype = self.genotype.loc[self.cov_df.IID]
+        else:
+            self.pheno_df = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
+            self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
+            self.pheno_df = self.pheno_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
+            self.pheno_ids = ['PHENOTYPE']
 
         if dynamic_phenotype_sampling:
             self.dynamic_phenotype_sampling = True
@@ -274,10 +258,6 @@ class PLINKDataset(Dataset):
         self.subtree = None
         self.subtree_phenotypes = []
 
-
-    def __len__(self):
-        return self.cov_df.shape[0]
-
     def summary(self):
         print('PLINK data from %s'%self.bfile)
         print('Covariates for prediction %s' % ", ".join(self.cov_ids))
@@ -287,8 +267,6 @@ class PLINKDataset(Dataset):
         print("%d of participant with %d of variants"%(self.genotype.shape[0], self.genotype.shape[1]))
         print("The number of covariates:", self.n_cov)
 
-    def is_binary(self, array):
-        return np.isin(array, [0, 1]).all()
 
     def sample_population(self, n=100, inplace=False):
         if not inplace:
@@ -313,17 +291,7 @@ class PLINKDataset(Dataset):
             return sampled_phenotypes
 
     def __getitem__(self, index):
-        start = time.time()
-        covariates = self.cov_df.iloc[index]
-        phenotypes = self.pheno_df.iloc[index]
-        #print(covariates['IID'] == phenotypes['IID'])
-        #djfkd
-        iid = str(int(covariates['IID']))
-        sample2snp_dict = {}
-
-        result_dict = dict()
-        snp_type_dict = dict()
-        #print("Subtree", self.subtree)
+        result_dict = super().__getitem__(index)
 
         if self.dynamic_phenotype_sampling:
             tree_parser = self.subtree
@@ -334,121 +302,257 @@ class PLINKDataset(Dataset):
             snp_ind_alias_dict = None
             gene_ind_alias_dict = None
 
-        '''
-        if self.input_format=='binary':
-            homozygous_a1 = np.where(self.genotype[iid, :] == 2)[0]
-            heterozygous = np.where(self.genotype[iid, :] == 1)[0]
-            snp_type_dict['homozygous_a1'] = torch.tensor(tree_parser.get_snp2gene_mask({1.0: homozygous_a1}), dtype=torch.int)
-            snp_type_dict['heterozygous'] = torch.tensor(tree_parser.get_snp2gene_mask({1.0: heterozygous}), dtype=torch.int)
-        else:
-            if self.dynamic_phenotype_sampling:
-                homozygous_a1 = self.subtree.alias_indices([ind for ind in self.genotype[index]['homozygous_a1'] if self.tree_parser.ind2snp[ind] in self.subtree.snp2ind.keys()], source_ind2id_dict=self.tree_parser.ind2snp, target_id2ind_dict=self.subtree.snp2ind)
-                heterozygous = self.subtree.alias_indices([ind for ind in self.genotype[index]['heterozygous'] if self.tree_parser.ind2snp[ind] in self.subtree.snp2ind.keys()], source_ind2id_dict=self.tree_parser.ind2snp, target_id2ind_dict=self.subtree.snp2ind)#self.genotype[index]['heterozygous']
-                #print(homozygous_a1, heterozygous)
-                snp_type_dict['homozygous_a1'] = tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1}, snp_ind_alias_dict=snp_ind_alias_dict, gene_ind_alias_dict=gene_ind_alias_dict)
-                snp_type_dict['heterozygous'] = tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous}, snp_ind_alias_dict=snp_ind_alias_dict, gene_ind_alias_dict=gene_ind_alias_dict)
-            else:
-                homozygous_a1 = self.genotype[index]['homozygous_a1']
-                heterozygous = self.genotype[index]['heterozygous']
-                # print(homozygous_a1, heterozygous)
-                snp_type_dict['homozygous_a1'] = self.tree_parser.get_snp2gene(homozygous_a1, {1.0: homozygous_a1})
-                snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
-        
-        sample2snp_dict['embedding'] = snp_type_dict
-        '''
         sample2snp_dict = {}
+        '''
+        for pheno in self.pheno_ids:
+            pheno_dict = {}
+            pheno_ind_dict = self.tree_parser.snp2gene_by_phenotype_dict[pheno]
+            pheno_dict['snp'] = self.snp_idx[index][pheno_ind_dict['snp']]
+            pheno_dict['gene'] = self.gene_idx[pheno_ind_dict['gene']]
+            pheno_dict['mask'] = pheno_ind_dict['mask']
+            sample2snp_dict[pheno] = pheno_dict
+            #F.pad(snp_idx, (0, mask.size(1) - len(snp_idx)), value=)
+        '''
+        #sample2snp_dict
         sample2snp_dict['snp'] = self.snp_idx[index]
         sample2snp_dict['gene'] = self.gene_idx
         sample2snp_dict['sys'] = self.sys_idx
-        #print(sample2snp_dict['snp'].size(), sample2snp_dict['gene'].size(), sample2snp_dict['sys'].size())
-
-        covariates_tensor = [0]*self.n_cov
-        sex = covariates['SEX']
-        i_cov = 0
-        if (int(sex)==-1) or (int(sex)==-9):
-            pass
-        else:
-            covariates_tensor[int(sex)] = 1
-        i_cov += 2
-        for cov_id in self.cov_ids:
-            if cov_id=='SEX':
-                continue
-            if cov_id in self.cov_mean_dict.keys():
-                cov_value = (covariates[cov_id]-self.cov_mean_dict[cov_id])/self.cov_std_dict[cov_id]
-            else:
-                cov_value = covariates[cov_id]
-            covariates_tensor[i_cov] = cov_value
-            i_cov += 1
-        covariates_tensor = torch.tensor(covariates_tensor, dtype=torch.float32)
-        covariates_tensor = covariates_tensor#torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
-
-
-        if self.has_phenotype:
-            if self.dynamic_phenotype_sampling:
-                phenotype_ind_tensor = torch.tensor([self.pheno2ind[pheno] for pheno in self.subtree_phenotypes], dtype=torch.int)
-                phenotype_tensor = torch.tensor([phenotypes[pheno_id] for pheno_id in self.subtree_phenotypes],
-                                                dtype=torch.float32)
-            else:
-                phenotype_ind_tensor = torch.tensor([i for i in range(self.n_pheno)], dtype=torch.int)
-                phenotype_tensor = torch.tensor([phenotypes[pheno_id] for pheno_id in self.pheno_ids],
-                                                dtype=torch.float32)
-
-            result_dict['phenotype_indices'] = phenotype_ind_tensor
-            result_dict['phenotype'] = phenotype_tensor
 
         result_dict['genotype'] = sample2snp_dict
-        end = time.time()
-        result_dict["datatime"] = torch.tensor(end-start)
-        result_dict["covariates"] = covariates_tensor
+        #print(sample2snp_dict['snp'].size(), sample2snp_dict['gene'].size(), sample2snp_dict['sys'].size())
         return result_dict
+
+
+
+class EmbeddingDataset(PLINKDataset):
+
+    def __init__(self, tree_parser : SNPTreeParser, bfile, embedding, iid2ind, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None,
+                 cov_ids=(), pheno_ids=(), bt=(), qt=()):
+        super().__init__(tree_parser=tree_parser, bfile=bfile, cov=cov, pheno=pheno, cov_mean_dict=cov_mean_dict, cov_std_dict=cov_std_dict,
+                            cov_ids=cov_ids, pheno_ids=pheno_ids, bt=bt, qt=qt)
+
+        #embedding_zarrs = glob(os.path.join(zarr_path, "*"))
+        #embedding_zarrs = sorted(embedding_zarrs, key=self.sort_key)
+        self.embedding = embedding#{self.sort_key(p): zarr.open(p, mode="r") for p in embedding_zarrs}
+
+        self.snp2block = {}
+        block_pad = self.tree_parser.n_blocks
+        self.snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
+        self.snp_indices = [self.tree_parser.snp2ind_all[snp] for snp in self.snp_sorted]
+        block_idx = torch.tensor([self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)], dtype=torch.long)
+        print(block_idx)
+        self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad,), block_pad, dtype=torch.long)))
+
+        self.iid2ind = iid2ind
+        self.ind2iid = {ind: iid for iid, ind in iid2ind.items()}
+        self.iid = self.cov_df.IID.tolist()
+
+
+    def __getitem__(self, index):
+        result_dict = super().__getitem__(index)
+        iid = self.iid[index]
+        ind = self.iid2ind[iid]
+
+        sample2snp_dict = {}
+        sample2snp_dict['gene'] = self.gene_idx
+        sample2snp_dict['sys'] = self.sys_idx
+        sample2snp_dict['block'] = self.block_idx
+
+        #embedding = torch.tensor(self.embedding.oindex[ind, :, :], dtype=torch.float32)
+        embedding = torch.load(os.path.join(self.embedding, str(iid)+'.tensor'), weights_only=True)
+        embedding = embedding[self.snp_indices, :]
+        embedding = F.pad(embedding, (0, 0, 0, self.n_snp2pad), value=0)
+
+        sample2snp_dict['snp'] = self.snp_idx[index]
+        sample2snp_dict['embedding'] = embedding
+        result_dict['genotype'] = sample2snp_dict
+
+        return result_dict
+
+class BlockDataset(Dataset):
+    def __init__(self, bfile, flip=False):
+        self.bfile = bfile
+
+        print('Loading PLINK data at %s' % bfile)
+        # Processing Genotypes
+        plink_data = plink.read_plink(path=bfile)
+        print('loading done')
+        genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
+        #print(self.tree_parser.snp2ind)
+        #snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
+        #print(snp_sorted)
+        self.iid2ind = {str(iid):idx for idx, iid in enumerate(plink_data.sample_id.values)}
+        self.ind2iid = {idx:str(iid) for idx, iid in enumerate(plink_data.sample_id.values)}
+        #plink_snp_ids = plink_data.variant_id.values
+        #plink_snp_id2ind = {snp_id:ind for ind, snp_id in enumerate(plink_snp_ids)}
+        #ordered_snp_ind = [tree_parser.snp2ind[col] for col in plink_snp_ids if col in tree_parser.snp2ind.keys()]
+        genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
+        #genotype_df = genotype_df[snp_sorted]
+        genotype = genotype_df.values
+        if not flip:
+            genotype = 2 - genotype
+        else:
+            print("Swapping Ref and Alt!")
+        self.N, self.n_snps = genotype.shape
+        snp_offset = self.n_snps                           # allele * n_snps + j
+        snp_pad    = self.n_snps * 3 + 1                  # padding value
+        # ---------- SNP indices for all individuals ----------
+        self.n_snp2pad = int(np.ceil(self.n_snps/8)*8) - self.n_snps
+        alleles = torch.as_tensor(genotype, dtype=torch.long)  # (N × 1 200)
+        base = torch.arange(self.n_snps, dtype=torch.long)  # [0 … 1 199]
+        snp_idx = alleles * snp_offset + base  # vectorised
+        #if self.n_snp2pad:
+        pad = torch.full((self.N, self.n_snp2pad),
+                         snp_pad, dtype=torch.long)
+        snp_idx = torch.cat((snp_idx, pad), dim=1)  # (N × (1 200 + pad))
+        self.snp_idx = snp_idx.contiguous()  # final (N × L_snp)
+
+        #self.genotype.index = plink_data.sample_id.values
+        #self.genotype.columns = plink_data.variant_id.values
+        self.flip = flip
+
+        print("From PLINK %d variants with %d samples are queried" % (genotype.shape[1], genotype.shape[0]))
+
+    def get_individual_block_genotype(self, iid):
+        ind = self.iid2ind[iid]
+        return self.snp_idx[ind]
+
+    def __getitem__(self, index):
+        return self.snp_idx[index]
+
+class BlockQueryDataset(GenotypeDataset):
+    def __init__(self, tree_parser : SNPTreeParser, bfile, blocks, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None, cov_ids=(), pheno_ids=(), bt=(), qt=(), flip=True):
+        """
+        """
+        super().__init__(tree_parser=tree_parser, cov=cov, pheno=pheno, cov_mean_dict=cov_mean_dict, cov_std_dict=cov_std_dict, cov_ids=cov_ids, pheno_ids=pheno_ids, bt=bt, qt=qt)
+        self.blocks = blocks
+        self.iids = self.cov_df.IID.map(str).tolist()
+        self.iid2ind = {iid:i for i, iid in enumerate(self.iids)}
+        self.ind2iid = {i:iid for i, iid in enumerate(self.iids)}
+        print('Loading PLINK data at %s' % bfile)
+        # Processing Genotypes
+        plink_data = plink.read_plink(path=bfile)
+        print('loading done')
+
+        genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
+        # print(self.tree_parser.snp2ind)
+        snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
+        # print(snp_sorted)
+        self.ind2iid = {idx: str(iid) for idx, iid in enumerate(plink_data.sample_id.values)}
+        # plink_snp_ids = plink_data.variant_id.values
+        # plink_snp_id2ind = {snp_id:ind for ind, snp_id in enumerate(plink_snp_ids)}
+        # ordered_snp_ind = [tree_parser.snp2ind[col] for col in plink_snp_ids if col in tree_parser.snp2ind.keys()]
+        genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
+        genotype_df = genotype_df[snp_sorted]
+        genotype = genotype_df.values
+        if not flip:
+            genotype = 2 - genotype
+        else:
+            print("Swapping Ref and Alt!")
+        self.N, self.n_snps = genotype.shape
+        n_snps = tree_parser.n_snps  # original SNP catalogue size
+        snp_offset = n_snps  # allele * n_snps + j
+        snp_pad = n_snps * 3  # padding value
+
+        # ---------- SNP indices for all individuals ----------
+        alleles = torch.as_tensor(genotype, dtype=torch.long)  # (N × 1 200)
+
+        base = torch.arange(self.n_snps, dtype=torch.long)  # [0 … 1 199]
+        # print(base)
+        # print(genotype)
+        snp_idx = alleles * snp_offset + base  # vectorised
+        # print(snp_idx)
+        # if self.n_snp2pad:
+        pad = torch.full((self.N, self.n_snp2pad),
+                         snp_pad, dtype=torch.long)
+        snp_idx = torch.cat((snp_idx, pad), dim=1)  # (N × (1 200 + pad))
+        # print(snp_idx.size())
+        self.snp_idx = snp_idx.contiguous()  # final (N × L_snp)
+
+        # self.genotype.index = plink_data.sample_id.values
+        # self.genotype.columns = plink_data.variant_id.values
+        self.flip = flip
+        print("From PLINK %d variants with %d samples are queried" % (genotype.shape[1], genotype.shape[0]))
+        del genotype_df
+        del genotype
+
+    def __getitem__(self, index):
+
+        iid = self.ind2iid[index]
+        sample2snp_dict = {}
+        block_dict = OrderedDict()
+        result_dict = super().__getitem__(index)
+        # sample2snp_dict
+        for block_id, block_bfile in self.blocks.items():
+            #block_dict[block_id] = {}
+            block_dict[block_id] = block_bfile.get_individual_block_genotype(iid)
+        sample2snp_dict['block'] = block_dict
+        sample2snp_dict['gene'] = self.gene_idx
+        sample2snp_dict['sys'] = self.sys_idx
+        sample2snp_dict['snp'] = self.snp_idx[index]
+        result_dict['genotype'] = sample2snp_dict
+        #print(result_dict['genotype'])
+        # print(sample2snp_dict['snp'].size(), sample2snp_dict['gene'].size(), sample2snp_dict['sys'].size())
+        return result_dict
+
 
 class SNP2PCollator(object):
 
-    def __init__(self, tree_parser: SNPTreeParser, input_format='indices'):
+    def __init__(self, tree_parser: SNPTreeParser, input_format='indices', pheno_ids = ('PHENOTYPE')):
         self.tree_parser = tree_parser
+        self.n_snp2pad = int(np.ceil(self.tree_parser.n_snps/8)) * 8 - self.tree_parser.n_snps
         self.input_format = input_format
         self.padding_index = {"snp": self.tree_parser.n_snps, "gene": self.tree_parser.n_genes}
+        self.pheno_ids = pheno_ids
+
 
     def __call__(self, data):
         start = time.time()
         result_dict = dict()
-        genotype_dict = dict()
-        snp_type_dict = {}
-
-        '''
-        for snp_type in ['heterozygous', 'homozygous_a1']:
-            if self.input_format == 'indices':
-                embedding_dict = {}
-                for embedding_type in ['snp', 'gene']:
-                    embedding_dict[embedding_type] = pad_sequence(
-                            [d['genotype']['embedding'][snp_type][embedding_type] for d in data], batch_first=True,
-                            padding_value=self.padding_index[embedding_type]).to(torch.long)
-                gene_max_len = embedding_dict["gene"].size(1)
-                snp_max_len = embedding_dict["snp"].size(1)
-                mask = torch.stack(
-                        [d["genotype"]["embedding"][snp_type]['mask'] for d in data])[:, :gene_max_len, :snp_max_len]
-                embedding_dict['mask'] = mask
-                #print(mask.sum())
-                snp_type_dict[snp_type] = embedding_dict
-            else:
-                snp_type_dict[snp_type] = torch.stack([dr['genotype']["embedding"][snp_type] for dr in data])
-        
-
-        genotype_dict['embedding'] = snp_type_dict
-        '''
-        #result_dict['gene2sys_mask'] = torch.stack([d['gene2sys_mask'] for d in data])
         result_dict['genotype'] = {}
-        result_dict['genotype']['snp'] = torch.stack([d['genotype']['snp'] for d in data])#.long()#genotype_dict
+        result_dict['genotype']['snp2gene'] = {}
+        '''
+        for pheno in self.pheno_ids:
+            pheno_result_dict = {}
+            snp_stacked = torch.stack([d['genotype'][pheno]['snp'] for d in data])
+            snp_pad_size = int(np.ceil(int(snp_stacked.size(1)) / 8) * 8) - int(snp_stacked.size(1))
+            pheno_result_dict['snp'] = F.pad(snp_stacked, (0, snp_pad_size), value=self.padding_index['snp'])
+
+            gene_stacked = torch.stack([d['genotype'][pheno]['gene'] for d in data])
+            gene_pad_size = int(np.ceil(int(gene_stacked.size(1)) / 8) * 8) - int(gene_stacked.size(1))
+            pheno_result_dict['gene'] = F.pad(gene_stacked, (0, gene_pad_size), value=self.padding_index['gene'])
+            pheno_result_dict['mask'] =  torch.stack([d['genotype'][pheno]['mask'] for d in data])
+            result_dict['genotype']['snp2gene'][pheno] = pheno_result_dict
+        '''
+
         result_dict['genotype']['gene'] = torch.stack([d['genotype']['gene'] for d in data])#.long()
         result_dict['genotype']['sys'] = torch.stack([d['genotype']['sys'] for d in data])#.long()
+
+        if self.input_format == 'embedding':
+            result_dict['genotype']['snp'] = torch.stack([d['genotype']['snp'] for d in data])  # .long()#genotype_dict
+            result_dict['genotype']['embedding'] = torch.stack([d['genotype']['embedding'] for d in data])
+            result_dict['genotype']['block'] = torch.stack([d['genotype']['block'] for d in data])
+        if self.input_format == 'block':
+            block_dict = OrderedDict()
+            #print(result_dict['genotype'])
+            for block_id in self.tree_parser.blocks:
+                block_value_dict = {}
+                block_value_dict['snp'] = torch.stack([d['genotype']['block'][block_id] for d in data])
+                block_value_dict['sig_ind'] = torch.tensor(self.tree_parser.block2sig_ind[block_id], dtype=torch.long)
+                block_dict[block_id] = block_value_dict
+            result_dict['genotype']['snp'] = torch.stack(
+                    [d['genotype']['snp'] for d in data])  # .long()#genotype_dict
+            result_dict['genotype']['block'] = block_dict
+        else:
+            result_dict['genotype']['snp'] = torch.stack([d['genotype']['snp'] for d in data])  # .long()#genotype_dict
+
         result_dict['covariates'] = torch.stack([d['covariates'] for d in data])
-        #print(result_dict['covariates'])
         result_dict['phenotype_indices'] = torch.stack([d['phenotype_indices'] for d in data])
         result_dict['phenotype'] = torch.stack([d['phenotype'] for d in data])
         end = time.time()
         result_dict['datatime'] = torch.mean(torch.stack([d['datatime'] for d in data]))
         result_dict["time"] = torch.tensor(end - start)
-        #print(genotype_dict)
+
         return result_dict
 
 

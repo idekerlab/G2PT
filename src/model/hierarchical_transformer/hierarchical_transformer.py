@@ -51,6 +51,7 @@ class HierarchicalTransformerUpdate(nn.Module):
         self.norm_ffn  = nn.LayerNorm(hidden, eps=1e-5)
         self.ffn = SwiGLUFFN(hidden, feed_forward_hidden, dropout)
         self.drop = nn.Dropout(dropout)
+        self.drop_opposite = nn.Dropout(1-dropout)
         self.softmax = softmax
 
     def _xops_softmax_attn(
@@ -66,6 +67,7 @@ class HierarchicalTransformerUpdate(nn.Module):
         bias = None
         if mask is not None:                            # (B,1|H,Lq,Lk)
             mask = mask.unsqueeze(1).repeat(1, 4, 1, 1)#mask.expand(B, H, -1, -1).reshape(B * H, Lq, -1)
+            #mask = self.drop_opposite(mask)
             #bias = xops.fmha.attn_bias.PreconvertedBias(mask, True)
 
         out = xops.memory_efficient_attention(
@@ -80,8 +82,8 @@ class HierarchicalTransformerUpdate(nn.Module):
     # ---------------------------------------------------------------------
     # no-softmax path  (keeps behaviour of your original helper)
     # ---------------------------------------------------------------------
-    @staticmethod
-    def _dotprod_no_softmax(
+
+    def _dotprod_no_softmax(self,
         q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
         mask: torch.Tensor, p_drop: float
     ):
@@ -163,7 +165,7 @@ class HierarchicalTransformerUpdate(nn.Module):
         x = q + self.drop(self._xattn(q_norm, k, v, mask))
 
         y = self.norm_ffn(x)
-        x = x + self.drop(self.ffn(y))
+        x = q + self.drop(self.ffn(y))
 
         if self.norm_channel_first:
             x = x.transpose(-1, -2)
@@ -187,8 +189,9 @@ class PositionWiseFeedForward(nn.Module):
         return self.w_2(self.dropout(self.activation(self.w_1(x))))
 
 class HierarchicalTransformer(nn.Module):
-    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, conv_type='system',
-                 norm_channel_first=False, transform=True, n_type=1, activation='softmax', poincare=False):
+    def __init__(self, hidden: object, attn_heads: object, feed_forward_hidden: object, inner_norm: object, outer_norm: object, dropout: object = 0.2,
+                 conv_type: object = 'system',
+                 norm_channel_first: object = False, transform: object = True, n_type: object = 1, activation: object = 'softmax', poincare: object = False) -> object:
         """
         :param hidden: hidden size of transformer
         :param attn_heads: head sizes of multi-head attention
@@ -209,7 +212,7 @@ class HierarchicalTransformer(nn.Module):
 
     def forward(self, q, k, mask, dropout=True):
         batch_size = q.size(0)
-        if self.conv_type=='system':
+        if (self.conv_type=='system') & (mask is not None):
             mask = mask.unsqueeze(0).expand(batch_size, -1, -1,)
         result = self.hierarchical_transformer_update(q, k, k, mask)
 

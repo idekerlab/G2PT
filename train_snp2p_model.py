@@ -33,8 +33,8 @@ def count_parameters(model):
         params = parameter.numel()
         #print(name, params, parameter.requires_grad)
         table.add_row([name, params, parameter.requires_grad])
-        if parameter.requires_grad:
-            total_params+=params
+        #if parameter.requires_grad:
+        total_params+=params
     print(table)
     print(f"Total Trainable Params: {total_params}")
     return total_params
@@ -235,10 +235,11 @@ def main_worker(args):
         device = torch.device("cuda:%d" % args.cuda)
     else:
         device = torch.device("cpu")
-    if args.dynamic_phenotype_sampling:
+    if (len(args.qt) + len(args.bt) > 1) :
         multiple_phenotypes = True
     else:
         multiple_phenotypes = False
+
     tree_parser = SNPTreeParser(args.onto, args.snp2gene, dense_attention=args.dense_attention, multiple_phenotypes=multiple_phenotypes)
 
     fix_system = False
@@ -252,8 +253,10 @@ def main_worker(args):
     else:
     '''
     print("Loading PLINK bfile... at %s" % args.train_bfile)
-    snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip, input_format=args.input_format,
-                                 cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt, dynamic_phenotype_sampling=args.dynamic_phenotype_sampling)
+    snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip,
+                                 input_format=args.input_format,
+                                 cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt,
+                                 dynamic_phenotype_sampling=args.dynamic_phenotype_sampling)
     args.bt_inds = snp2p_dataset.bt_inds
     args.qt_inds = snp2p_dataset.qt_inds
     args.bt = snp2p_dataset.bt
@@ -297,7 +300,7 @@ def main_worker(args):
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          activation='softmax', input_format=args.input_format,
-                                         n_phenotypes=snp2p_dataset.n_pheno, poincare=args.poincare)
+                                         n_phenotypes=snp2p_dataset.n_pheno)
         #snp2p_model = snp2p_model.half()
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)

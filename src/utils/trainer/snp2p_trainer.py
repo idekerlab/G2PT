@@ -29,7 +29,8 @@ def correlation_matching_loss(pred, target, lam=0.05):
     diff = torch.abs(c_pred - c_true)[tri_mask]
     return lam * diff.mean()
 
-
+def linear_temperature_schedule(epoch, total_epochs, T_init=1.0, T_final=0.1):
+    return max(T_final, T_init - (epoch / total_epochs) * (T_init - T_final))
 
 class SNP2PTrainer(object):
 
@@ -65,10 +66,10 @@ class SNP2PTrainer(object):
         #self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
         self.snp2gene_mask = move_to(torch.tensor(tree_parser.snp2gene_mask, dtype=torch.float32), device)
         self.nested_subtrees_forward = tree_parser.get_hierarchical_interactions(
-            tree_parser.interaction_types, direction='forward', format=self.args.input_format)
+            tree_parser.interaction_types, direction='forward', format='indices')#self.args.input_format)
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
         self.nested_subtrees_backward = tree_parser.get_hierarchical_interactions(
-            tree_parser.interaction_types, direction='backward', format=self.args.input_format)
+            tree_parser.interaction_types, direction='backward', format='indices')#self.args.input_format)
         self.nested_subtrees_backward = move_to(self.nested_subtrees_backward, device)
         self.sys2gene_mask = move_to(
             torch.tensor(tree_parser.sys2gene_mask, dtype=torch.float32), device)
@@ -100,8 +101,32 @@ class SNP2PTrainer(object):
         '''
         #self.best_model = self.snp2p_model
         best_performance = 0
+
         if self.dynamic_phenotype_sampling:
             self.snp2p_dataloader.dataset.dataset.dynamic_phenotype_sampling = True
+        '''
+        for epoch in range(5):
+            self.iter_minibatches(self.snp2p_dataloader, epoch, name="SNP Adaptation :", snp_only=True)
+        if not self.args.distributed or (self.args.distributed and self.args.rank == 0):
+            self.evaluate(self.snp2p_model, self.validation_dataloader, epoch + 1,
+                         name="SNP adapdation validation", print_importance=False, snp_only=True)
+
+        if self.args.distributed:
+            model = self.snp2p_model.module
+        else:
+            model = self.snp2p_model
+        
+        for name, param in model.named_parameters():
+            if 'snp_embedding' in name:
+                param.requires_grad = False
+                print(name, " become freezed")
+            if 'block_embedding' in name:
+                param.requires_grad = False
+                print(name, " become freezed")
+        '''
+        self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=self.args.lr,
+                                     weight_decay=self.args.wd)
+
         for epoch in range(self.args.start_epoch, epochs):
             self.train_epoch(epoch + 1, ccc=ccc)
             gc.collect()
@@ -129,7 +154,7 @@ class SNP2PTrainer(object):
                             output_path_epoch)
             #self.scheduler.step()
 
-    def evaluate(self, model, dataloader, epoch, name="Validation", print_importance=False):
+    def evaluate(self, model, dataloader, epoch, name="Validation", print_importance=False, snp_only=False):
         trues = []
         dataloader_with_tqdm = tqdm(dataloader)
         results = []
@@ -152,7 +177,7 @@ class SNP2PTrainer(object):
                                                                    sys2env=self.args.sys2env,
                                                                    env2sys=self.args.env2sys,
                                                                    sys2gene=self.args.sys2gene,
-                                                                   )
+                                                                   snp_only=snp_only)
                 #for phenotype_predicted_i, module_name in zip(phenotype_predicted, self.g2p_module_names):
                 if len(phenotype_predicted.size())==3:
                     phenotype_predicted = phenotype_predicted[:, :, 0]
@@ -180,8 +205,8 @@ class SNP2PTrainer(object):
             #print(module_name)
             print("Performance overall for %s"%t)
             print("R_square: ", r_square)
-            print("Pearson R", pearson)
-            print("Spearman Rho: ", spearman)
+            print("Pearson R", pearson[0])
+            print("Spearman Rho: ", spearman[0])
 
             print("Performance female")
             female_indices = covariates[:, 0]==1
@@ -191,8 +216,8 @@ class SNP2PTrainer(object):
             female_performance = pearson[0]
             #print(module_name)
             print("R_square: ", r_square)
-            print("Pearson R", pearson)
-            print("Spearman Rho: ", spearman)
+            print("Pearson R", pearson[0])
+            print("Spearman Rho: ", spearman[0])
 
             print("Performance male")
             male_indices = covariates[:, 1]==1
@@ -202,79 +227,49 @@ class SNP2PTrainer(object):
             male_performance = pearson[0]
             #print(module_name)
             print("R_square: ", r_square)
-            print("Pearson R", pearson)
-            print("Spearman Rho: ", spearman)
+            print("Pearson R", pearson[0])
+            print("Spearman Rho: ", spearman[0])
+            print(" ")
         for t, i in zip(self.bt, self.bt_inds):
+            auc_performance = metrics.roc_auc_score(trues[:, i], results[:, i])
             performance = metrics.average_precision_score(trues[:, i], results[:, i])
+
             print("Performance overall for %s"%t)
+            print("AUC: ", auc_performance)
             print("AUPR: ", performance)
             print("Performance female")
             female_indices = covariates[:, 0] == 1
+            female_auc_performance = metrics.roc_auc_score(trues[female_indices, i], results[female_indices, i])
             female_performance = metrics.average_precision_score(trues[female_indices, i], results[female_indices, i])
+            print("AUC: ", female_auc_performance)
             print("AUPR: ", female_performance)
 
             print("Performance male")
             male_indices = covariates[:, 1] == 1
+            male_auc_performance = metrics.roc_auc_score(trues[male_indices, i], results[male_indices, i])
             male_performance = metrics.average_precision_score(trues[male_indices, i], results[male_indices, i])
+            print("AUC: ", male_auc_performance)
             print("AUPR: ", male_performance)
+            print(" ")
 
         return performance
 
     def train_epoch(self, epoch, ccc=False, sex=False):
 
+
         self.snp2p_model.train()
         if self.args.distributed:
             if self.args.z_weight!=0:
                 self.snp2p_dataloader.sampler.set_epoch(epoch)
-        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", ccc=ccc, sex=False)
-    '''
-    def pretrain(self, dataloader, epoch, name=""):
-        mean_response_loss = 0.
-        mean_ccc_loss = 0.
-        mean_score_loss = 0.
-        mean_sex_loss = 0.
 
-        dataloader_with_tqdm = tqdm(dataloader)
-        for i, batch in enumerate(dataloader_with_tqdm):
-            batch = move_to(batch, self.device)
-            nested_subtrees_forward = self.nested_subtrees_forward
-            nested_subtrees_backward = self.nested_subtrees_backward
-            gene2sys_mask = self.gene2sys_mask
-            sys2gene_mask = self.sys2gene_mask
-            
+        new_temperature = linear_temperature_schedule(epoch, self.args.epochs, T_init=1.0, T_final=0.05)
+        #if not self.args.distributed:
+        #    self.snp2p_model.set_temperature(new_temperature)
+        #else:
+        #    self.snp2p_model.module.set_temperature(new_temperature)
+        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", sex=False)
 
-            phenotype_predicted = self.snp2p_model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
-                                                   nested_subtrees_forward,
-                                                   nested_subtrees_backward,
-                                                   snp2gene_mask = self.snp2gene_mask,
-                                                   gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
-                                                   sys2gene_mask=sys2gene_mask,
-                                                   sys2env=self.args.sys2env,
-                                                   env2sys=self.args.env2sys,
-                                                   sys2gene=self.args.sys2gene)
-
-            phenotype_loss = 0
-            print(phenotype_predicted.dtype)
-            phenotype_loss_result = self.loss(phenotype_predicted[:, :, 0].half(), (batch['phenotype']).half())#.to(torch.float32))
-            phenotype_loss += phenotype_loss_result
-            mean_response_loss += float(phenotype_loss_result)
-            loss = phenotype_loss
-            print(loss.dtype)
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-            dataloader_with_tqdm.set_description(
-                "%s Train epoch: %3.f, Phenotype loss: %.3f, CCCLoss: %.3f, SexLoss %.3f" % (
-                    name, epoch, mean_response_loss / (i + 1), mean_ccc_loss / (i + 1),
-                    mean_sex_loss / (i + 1)))
-            del loss
-            del phenotype_loss, phenotype_loss_result
-            del phenotype_predicted
-            del batch
-
-        del mean_response_loss, mean_ccc_loss
-    '''
-    def iter_minibatches(self, dataloader, epoch, name="", ccc=False, sex=False):
+    def iter_minibatches(self, dataloader, epoch, name="", snp_only=False, sex=False):
         mean_response_loss = 0.
         mean_ccc_loss = 0.
         mean_score_loss = 0.
@@ -313,7 +308,7 @@ class SNP2PTrainer(object):
                                                    sys2gene_mask=sys2gene_mask,
                                                    sys2env=self.args.sys2env,
                                                    env2sys=self.args.env2sys,
-                                                   sys2gene=self.args.sys2gene)
+                                                   sys2gene=self.args.sys2gene, snp_only=snp_only)
             if len(phenotype_predicted.size())==3:
                 predictions = phenotype_predicted[:, :, 0]
             else:

@@ -27,10 +27,12 @@ class Genotype2Phenotype(nn.Module):
 
     def forward(self, q, k, v, mask=None):
         result = self.attention.forward(q, k, v)
-        result = result.squeeze(1)
         result = self.inner_norm(result)
-        #result = self.feed_forward(result)
-        #result = self.outer_norm(result)
+        result = q + result
+        #if len(result.size()) > 3:
+        #result = result.squeeze(1)
+        result = self.feed_forward(result)
+        result = self.outer_norm(result)
         result = self.dropout(result)
         return result
 

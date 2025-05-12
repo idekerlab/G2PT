@@ -54,21 +54,86 @@ class SNPTreeParser(TreeParser):
         parser = parent_result if parent_result is not None else self
 
         # ———— 2) load snp2gene (either file‐path or DataFrame) ————
+        '''
         if isinstance(snp2gene, str):
             # assume tab‑delimited with headers ['snp','gene','chr'] or auto‑detect
             if multiple_phenotypes:
                 parser.snp2gene_df = pd.read_csv(snp2gene, sep='\t')
                 #print(parser.snp2gene_df.head())
             else:
-                parser.snp2gene_df = pd.read_csv(snp2gene, names=['snp', 'gene', 'chr'],
-                                                sep='\t',
-                                                dtype={'snp':str,'gene':str,'chr':str})
-        else:
-            parser.snp2gene_df = snp2gene.copy()
+        
+            parser.snp2gene_df = pd.read_csv(snp2gene, names=['snp', 'gene', 'chr'],
+                                            sep='\t',
+                                            dtype={'snp':str,'gene':str,'chr':str})
+        '''
+        parser.snp2gene_df = pd.read_csv(snp2gene, sep='\t')
+        #else:
+        #    parser.snp2gene_df = snp2gene.copy()
+        print(parser.snp2gene_df.head())
+        if 'block' in parser.snp2gene_df.columns:
+            parser.snp2gene_df =  parser.snp2gene_df.sort_values(by=["chr", "block"]).reset_index(drop=True)
+            parser.blocks = sorted(list(
+                parser.snp2gene_df[["chr", "block"]].drop_duplicates().sort_values(["chr", "block"]).itertuples(
+                    index=False, name=None)))
+            #print(parser.blocks)
+            parser.n_blocks = len(parser.blocks)
+            parser.block2ind = {block: i for i, block in enumerate(parser.blocks)}
+            parser.ind2block = {i:block for i, block in enumerate(parser.blocks)}
+            snps = parser.snp2gene_df.drop_duplicates(subset=['snp'])['snp'].tolist()
 
+            parser.snp2ind_all = {s: i for i, s in enumerate(snps)}
+            parser.ind2snp_all = {i: s for s, i in parser.snp2ind_all.items()}
+
+            parser.snp2block = {}
+            parser.block2snp = {block:[] for block in parser.blocks}
+            parser.block2sig_ind = {block: [] for block in parser.blocks}
+            for i, row in parser.snp2gene_df.iterrows():
+                parser.snp2block[row.snp] = (row.chr, row.block)
+                parser.block2snp[(row.chr, row.block)].append(row.snp)
+                if 'block_ind' in parser.snp2gene_df.columns:
+                    parser.block2sig_ind[(row.chr, row.block)].append(row.block_ind)
+            parser.block2sig_ind = {block: sorted(list(set(sig_inds))) for block, sig_inds in parser.block2sig_ind.items()}
+        #else:
+        #    parser.snp2gene_df = parser.snp2gene_df.sort_values(by=["chr", "snp"]).reset_index(drop=True)
+        parser.snp2gene_df = parser.snp2gene_df.loc[parser.snp2gene_df['gene'].isin(parser.gene2ind.keys())]
+        print(parser.snp2gene_df.head())
+        '''
+        print(parser.snp2gene_df.head())
         # optional multiple‐phenotype branch
+        genes_in_ont = list(parser.gene2ind.keys())
+        genes_in_snp2gene = parser.snp2gene_df.gene.tolist()
+        print([gene for gene in genes_in_snp2gene if gene not in genes_in_ont])
+        genes = list(set(genes_in_ont + genes_in_snp2gene))
+        #print(len(genes_in_ont), len(set(genes_in_snp2gene)), len(genes))
+        parser.n_genes = len(genes)
+        parser.gene2ind = {gene: i for i, gene in enumerate(genes)}
+        parser.ind2gene = {i: gene for i, gene in enumerate(genes)}
+
+        parser.gene2sys_mask = np.full((int(np.ceil(parser.n_systems/8)*8), (int(np.ceil(parser.n_genes/8)*8))), -10**4)#np.zeros((len(parser.sys2ind), len(parser.gene2ind)))
+        parser.sys2gene_dict = { parser.sys2ind[system]: [] for system in parser.sys2ind.keys() }
+        parser.gene2sys_dict = { gene: [] for gene in range(parser.n_genes) }
+        for system, gene in zip(parser.gene2sys_df['parent'], parser.gene2sys_df['child']):
+            #print(system, gene, parser.sys2ind[system], parser.gene2ind[gene])
+            parser.gene2sys_mask[parser.sys2ind[system], parser.gene2ind[gene]] = 0.
+            parser.sys2gene_dict[parser.sys2ind[system]].append(parser.gene2ind[gene])
+            parser.gene2sys_dict[parser.gene2ind[gene]].append(parser.sys2ind[system])
+
+        if parser.dense_attention:
+            parser.gene2sys_mask = torch.ones_like(torch.tensor(parser.gene2sys_mask))
+        parser.sys2gene_mask = parser.gene2sys_mask.T
+        '''
+
+        # ———— 3) filter to known genes ————
+        #parser.snp2gene_df = parser.snp2gene_df.loc[
+        #    parser.snp2gene_df['gene'].isin(parser.gene2ind)
+        #]
+        #print(parser.snp2gene_df.shape)
+
         if multiple_phenotypes:
-            parser.phenotypes = list(parser.snp2gene_df.columns[3:])
+            if 'block' in parser.snp2gene_df.columns:
+                parser.phenotypes = list(parser.snp2gene_df.columns[5:])
+            else:
+                parser.phenotypes = list(parser.snp2gene_df.columns[3:])
             parser.pheno2snp = {
                 ph: parser.snp2gene_df.loc[parser.snp2gene_df[ph], 'snp']
                      .unique()
@@ -81,11 +146,6 @@ class SNPTreeParser(TreeParser):
                      .tolist()
                 for ph in parser.phenotypes
             }
-
-        # ———— 3) filter to known genes ————
-        parser.snp2gene_df = parser.snp2gene_df.loc[
-            parser.snp2gene_df['gene'].isin(parser.gene2ind)
-        ]
 
         # ———— 4) build SNP↔gene dicts & masks ————
         by_snp  = parser.snp2gene_df.groupby('snp')
@@ -100,11 +160,15 @@ class SNPTreeParser(TreeParser):
             for snp, grp in by_snp
         }
 
+
         # integer indices
-        snps = parser.snp2gene_df['snp'].unique()
+        snps = parser.snp2gene_df.drop_duplicates(subset=['snp'])['snp'].values.tolist()
+
         parser.snp2ind = { s:i for i,s in enumerate(snps) }
         parser.ind2snp = { i:s for s,i in parser.snp2ind.items() }
+
         parser.n_snps = len(snps)
+        print("The number of SNPs:", parser.n_snps)
         parser.snp_pad_index = parser.n_snps
 
         # chromosomes
@@ -141,8 +205,10 @@ class SNPTreeParser(TreeParser):
         parser.gene2snp_dict    = {gi:[] for gi in range(parser.n_genes)}
         parser.snp2gene_dict    = {si:[] for si in range(parser.n_snps)}
 
+
         for snp, gene in zip(parser.snp2gene_df['snp'],
                               parser.snp2gene_df['gene']):
+            #if gene in genes_in_ont:
             gi = parser.gene2ind[gene]
             si = parser.snp2ind[snp]
             parser.snp2gene_mask[gi, si] = 0
@@ -150,6 +216,27 @@ class SNPTreeParser(TreeParser):
             parser.snp2gene_dict[si].append(gi)
 
         parser.gene2snp_mask = parser.snp2gene_mask.T
+
+        if multiple_phenotypes:
+            print("Build Partial Embeddings and Mask")
+            parser.snp2gene_by_phenotype_dict = {}
+            for pheno in self.phenotypes:
+                pheno_dict = {}
+
+                pheno_dict['snp'] = [parser.snp2ind[snp] for snp in parser.pheno2snp[pheno]]
+                pheno_dict['gene'] = [parser.gene2ind[gene] for gene in parser.pheno2gene[pheno]]
+                snp2gene_pheno_mask = np.full((int(np.ceil(len(pheno_dict['gene']) / 8) * 8),
+                                               (int(np.ceil(len(pheno_dict['snp']) / 8) * 8))),
+                                        -10 ** 4)
+                #print(pheno_dict)
+                for i, gene_ind in enumerate(pheno_dict['gene']):
+                    for snp_ind in parser.gene2snp_dict[gene_ind]:
+                        if snp_ind in pheno_dict['snp']:
+                            snp2gene_pheno_mask[i, pheno_dict['snp'].index(snp_ind)] = 0
+                pheno_dict['mask'] = torch.tensor(snp2gene_pheno_mask, dtype=torch.float32)
+
+
+                parser.snp2gene_by_phenotype_dict[pheno] = pheno_dict
 
         # ———— 5) return only if non‑inplace ————
         if parent_result is not None:
