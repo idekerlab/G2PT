@@ -116,7 +116,7 @@ class MultiplePhenotypeLoss(nn.Module):
                 # F.binary_cross_entropy_with_logits expects raw logits as input.
                 loss = F.binary_cross_entropy_with_logits(pred[valid_mask], target[valid_mask].float())
                 loss = torch.exp(-s) * loss + s
-                total_loss += loss
+                total_loss += loss * 2
                 loss_count += 1
 
         # Process columns with Mean Squared Error loss

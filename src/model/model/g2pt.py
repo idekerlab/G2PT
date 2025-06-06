@@ -81,14 +81,14 @@ class Genotype2PhenotypeTransformer(nn.Module):
         return numerator / denom
 
     def get_gene2sys(self, system_embedding, gene_embedding, gene2sys_mask):
-        system_embedding_input = self.sys_norm(system_embedding)
-        gene_embedding_input_input = self.gene_norm(gene_embedding)
+        system_embedding_input = self.dropout(self.sys_norm(system_embedding))
+        gene_embedding_input_input = self.dropout(self.gene_norm(gene_embedding))
         system_effect = self.gene2sys.forward(system_embedding_input, gene_embedding_input_input, gene2sys_mask)
         return system_embedding,  system_effect
 
     def get_sys2gene(self, gene_embedding, system_embedding, sys2gene_mask):
-        gene_embedding_input = self.gene_norm(gene_embedding)
-        system_embedding_input = self.sys_norm(system_embedding)
+        gene_embedding_input = self.dropout(self.gene_norm(gene_embedding))
+        system_embedding_input = self.dropout(self.sys_norm(system_embedding))
         system_effect = self.sys2gene.forward(gene_embedding_input, system_embedding_input, sys2gene_mask)
         return gene_embedding,  system_effect
 
@@ -96,8 +96,7 @@ class Genotype2PhenotypeTransformer(nn.Module):
         batch_size = system_embedding.size(0)
         feature_size = system_embedding.size(2)
         system_embedding_output = torch.clone(system_embedding)
-        if input_format == 'binary':
-            system_embedding_output = system_embedding_output + update_tensor
+
         update_result = torch.zeros_like(system_embedding)
         if direction=='forward':
             sys2sys = self.sys2env
@@ -106,41 +105,27 @@ class Genotype2PhenotypeTransformer(nn.Module):
         for hierarchical_masks in nested_hierarchical_masks:
             hitr_result = 0.
             for interaction_type, hierarchical_mask in hierarchical_masks.items():
-
                 hitr = sys2sys[interaction_type]
                 ## Calculate hitr by the propagation independently
-                if input_format != 'binary':
+                system_embedding_queries = self.system_embedding(hierarchical_mask['query']).unsqueeze(
+                    0).expand(batch_size, -1, -1)
+                system_embedding_keys = self.system_embedding(hierarchical_mask['key']).unsqueeze(0).expand(
+                    batch_size, -1, -1)
+                system_effect_queries = torch.index_select(update_tensor, 1,
+                                                           hierarchical_mask['query'].to(torch.int64))
+                system_effect_keys = torch.index_select(update_tensor, 1,
+                                                        hierarchical_mask['key'].to(torch.int64))
 
-                    system_embedding_queries = self.system_embedding(hierarchical_mask['query']).unsqueeze(
-                        0).expand(batch_size, -1, -1)
-                    system_embedding_keys = self.system_embedding(hierarchical_mask['key']).unsqueeze(0).expand(
-                        batch_size, -1, -1)
-                    system_effect_queries = torch.index_select(update_tensor, 1,
-                                                               hierarchical_mask['query'].to(torch.int64))
-                    system_effect_keys = torch.index_select(update_tensor, 1,
-                                                            hierarchical_mask['key'].to(torch.int64))
-
-                    system_embedding_queries = system_embedding_queries + system_effect_queries
-                    system_embedding_keys = system_embedding_keys + system_effect_keys
-                    system_embedding_queries = self.sys_norm(system_embedding_queries)
-                    system_embedding_keys = self.sys_norm(system_embedding_keys)
-                    mask = hierarchical_mask['mask']
-                else:
-                    system_embedding_queries = self.sys_norm(system_embedding_output)
-                    system_embedding_keys = self.sys_norm(system_embedding_output)
-                    mask = hierarchical_mask
-                #print(system_embedding_queries.size(), system_embedding_keys.size(), mask.size(), interaction_type)
+                system_embedding_queries = system_embedding_queries + system_effect_queries
+                system_embedding_keys = system_embedding_keys + system_effect_keys
+                system_embedding_queries = self.dropout(self.sys_norm(system_embedding_queries))
+                system_embedding_keys = self.dropout(self.sys_norm(system_embedding_keys))
+                mask = hierarchical_mask['mask']
                 hitr_result = self.effect_norm(hitr.forward(system_embedding_queries, system_embedding_keys, mask))
 
-                if input_format != 'binary':
-                    query_indices = hierarchical_mask['query'].unsqueeze(0).expand(batch_size, -1).unsqueeze(-1).expand(-1, -1, self.hidden_dims)
-
-                    update_tensor = update_tensor.scatter_add(1, query_indices, hitr_result)# + self.effect_norm(system_effect)
-                    update_result = update_result.scatter_add(1, query_indices, hitr_result)# + self.effect_norm(system_effect)
-                else:
-                    system_embedding_output = system_embedding_output + hitr_result
-                    update_tensor = update_tensor + hitr_result
-                    update_result = update_result + hitr_result
+                query_indices = hierarchical_mask['query'].unsqueeze(0).expand(batch_size, -1).unsqueeze(-1).expand(-1, -1, self.hidden_dims)
+                update_tensor = update_tensor.scatter_add(1, query_indices, hitr_result)  # + self.effect_norm(system_effect)
+                update_result = update_result.scatter_add(1, query_indices, hitr_result)  # + self.effect_norm(system_effect)
         if return_updates:
             # return original system embeddings and update tensor separately
             return system_embedding, update_result

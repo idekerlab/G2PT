@@ -87,12 +87,16 @@ class SNPTreeParser(TreeParser):
             parser.snp2block = {}
             parser.block2snp = {block:[] for block in parser.blocks}
             parser.block2sig_ind = {block: [] for block in parser.blocks}
-            for i, row in parser.snp2gene_df.iterrows():
+            for i, row in parser.snp2gene_df.drop_duplicates(subset=['snp']).iterrows():
                 parser.snp2block[row.snp] = (row.chr, row.block)
                 parser.block2snp[(row.chr, row.block)].append(row.snp)
                 if 'block_ind' in parser.snp2gene_df.columns:
                     parser.block2sig_ind[(row.chr, row.block)].append(row.block_ind)
-            parser.block2sig_ind = {block: sorted(list(set(sig_inds))) for block, sig_inds in parser.block2sig_ind.items()}
+                else:
+                    #print((row.chr, row.block))
+                    parser.block2sig_ind[(row.chr, row.block)].append(-1)
+                    #print(parser.block2sig_ind[(row.chr, row.block)])
+            #parser.block2sig_ind = {block: sorted(list(set(sig_inds))) for block, sig_inds in parser.block2sig_ind.items()}
         #else:
         #    parser.snp2gene_df = parser.snp2gene_df.sort_values(by=["chr", "snp"]).reset_index(drop=True)
         parser.snp2gene_df = parser.snp2gene_df.loc[parser.snp2gene_df['gene'].isin(parser.gene2ind.keys())]

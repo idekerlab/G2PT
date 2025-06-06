@@ -291,3 +291,42 @@ class PoincareNorm(Module):
 
         return x_out
 
+
+class BatchNorm1d_BatchOnly_NLC(nn.Module):
+    def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True, track_running_stats=True, length=1):
+        super().__init__()
+        self.eps = eps
+        self.momentum = momentum
+        self.affine = affine
+        self.track_running_stats = track_running_stats
+        self.num_features = num_features
+
+        if affine:
+            self.gamma = nn.Parameter(torch.ones(1, 1, num_features))  # shape: [1, 1, C]
+            self.beta = nn.Parameter(torch.zeros(1, 1, num_features))
+        else:
+            self.register_parameter('gamma', None)
+            self.register_parameter('beta', None)
+
+        if track_running_stats:
+            self.register_buffer('running_mean', torch.zeros(1, length, num_features))
+            self.register_buffer('running_var', torch.ones(1, length, num_features))
+
+    def forward(self, x):
+        # x: [B, L, C]
+        if self.training or not self.track_running_stats:
+            mean = x.mean(dim=0, keepdim=True)      # [1, L, C]
+            var = x.var(dim=0, unbiased=False, keepdim=True)
+
+            if self.track_running_stats:
+                with torch.no_grad():
+                    self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * mean
+                    self.running_var = (1 - self.momentum) * self.running_var + self.momentum * var
+        else:
+            mean = self.running_mean
+            var = self.running_var
+
+        x_norm = (x - mean) / torch.sqrt(var + self.eps)
+        if self.affine:
+            x_norm = self.gamma * x_norm + self.beta
+        return x_norm

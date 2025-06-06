@@ -66,7 +66,8 @@ class HierarchicalTransformerUpdate(nn.Module):
 
         bias = None
         if mask is not None:                            # (B,1|H,Lq,Lk)
-            mask = mask.unsqueeze(1).repeat(1, 4, 1, 1)#mask.expand(B, H, -1, -1).reshape(B * H, Lq, -1)
+            if type(mask)==torch.Tensor:
+                mask = mask.unsqueeze(1).repeat(1, 4, 1, 1)#mask.expand(B, H, -1, -1).reshape(B * H, Lq, -1)
             #mask = self.drop_opposite(mask)
             #bias = xops.fmha.attn_bias.PreconvertedBias(mask, True)
 

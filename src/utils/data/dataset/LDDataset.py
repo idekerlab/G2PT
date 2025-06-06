@@ -163,6 +163,7 @@ class LDDataset(IterableDataset):
             #genotype = alleles * snp_offset + base
 
             batch = self.mlm_collator(genotype)
+            #print(batch.size())
             output = {
                 "inputs": batch["input_ids"],  # masked inputs for the model
                 "labels": batch["labels"],  # MLM labels (-100 for non-masked tokens)

@@ -22,8 +22,9 @@ from prettytable import PrettyTable
 
 from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
-from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler, BinaryCohortSampler, DistributedBinaryCohortSampler, PLINKDataset
+from src.utils.data.dataset import SNP2PCollator, PLINKDataset, EmbeddingDataset, BlockQueryDataset, BlockDataset
 from src.utils.tree import SNPTreeParser
+from src.model.LD_infuser.LDRoBERTa import RoBERTa, RoBERTaConfig
 from src.utils.trainer import SNP2PTrainer
 
 from torch.utils.data.dataloader import DataLoader
@@ -58,7 +59,7 @@ def main():
     parser.add_argument('--bfile', help='Training genotype dataset', type=str, default=None)
     parser.add_argument('--cov', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--pheno', help='Training covariates dataset', type=str, default=None)
-    parser.add_argument('--input-format', default='indices', choices=["indices", "binary"])
+    parser.add_argument('--input-format', default='indices', choices=["indices", "embedding", "block"])
     parser.add_argument('--snp', help='Mutation information for cell lines', type=str)
     parser.add_argument('--batch-size', type=int)
     parser.add_argument('--snp2gene', help='Gene to ID mapping file', type=str)
@@ -70,8 +71,6 @@ def main():
     parser.add_argument('--out', help='output csv')
     parser.add_argument('--system_annot', type=str, default=None)
 
-    parser.add_argument('--bt', nargs='*', default=[])
-    parser.add_argument('--qt', nargs='*', default=[])
     parser.add_argument('--cov-effect', default='pre')
 
 
@@ -92,9 +91,52 @@ def main():
 
 
     #genotypes = pd.read_csv(args.snp, index_col=0, sep='\t')
-    dataset = PLINKDataset(tree_parser, args.bfile, args.cov, args.pheno, cov_ids=g2p_model_dict['arguments'].cov_ids,
-                           cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[], bt=args.bt, qt=args.qt, dynamic_phenotype_sampling=False,
-                           cov_std_dict=g2p_model_dict['arguments'].cov_std_dict, input_format=g2p_model_dict['arguments'].input_format)
+    if args.input_format == 'indices':
+        dataset = PLINKDataset(tree_parser, args.bfile, args.cov, args.pheno, cov_ids=g2p_model_dict['arguments'].cov_ids,
+                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[], bt=args.bt, qt=args.qt, dynamic_phenotype_sampling=False,
+                               cov_std_dict=g2p_model_dict['arguments'].cov_std_dict, input_format=g2p_model_dict['arguments'].input_format)
+    elif args.input_format == 'embedding':
+        dataset = EmbeddingDataset(tree_parser, args.bfile, embedding=g2p_model_dict['arguments'].embedding, cov=args.cov, pheno=args.pheno,
+                               cov_ids=g2p_model_dict['arguments'].cov_ids,
+                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[], bt=args.bt,
+                               qt=args.qt,
+                               cov_std_dict=g2p_model_dict['arguments'].cov_std_dict,)
+    elif args.input_format == 'block':
+        blocks = tree_parser.blocks
+        block_bfile_dict = OrderedDict()
+        block_model_dict = OrderedDict()
+        for chromosome, block in blocks:
+            block_bfile = BlockDataset(
+                bfile=f'/cellar/users/i5lee/G2PT_T2D/genotype_data/LD_blocks_HapMap/split_block_chr{chromosome}_block{block}')
+
+            try:
+                print("Load model weight",
+                      f'/cellar/users/i5lee/G2PT_T2D/SNP_embedding/LD_model/ukb_snp_chr{chromosome}.block_{block}.newid.imputed.HapMap.renamed_ld_roberta_epoch_30.pth')
+                block_model_weight = torch.load(
+                    f'/cellar/users/i5lee/G2PT_T2D/SNP_embedding/LD_model/ukb_snp_chr{chromosome}.block_{block}.newid.imputed.HapMap.renamed_ld_roberta_epoch_30.pth',
+                    weights_only=True)
+            except:
+                print("Failed.. Load model weight",
+                      f'/cellar/users/i5lee/G2PT_T2D/SNP_embedding/LD_model/ukb_snp_chr{chromosome}.block_{block}.newid.imputed.HapMap.renamed_ld_roberta_epoch_5.pth')
+                block_model_weight = torch.load(
+                    f'/cellar/users/i5lee/G2PT_T2D/SNP_embedding/LD_model/ukb_snp_chr{chromosome}.block_{block}.newid.imputed.HapMap.renamed_ld_roberta_epoch_5.pth',
+                    weights_only=True)
+            block_config = RoBERTaConfig(vocab_size=((block_bfile.n_snps * 3) + 2), hidden_size=64, num_hidden_layers=4,
+                                         num_attention_heads=4, intermediate_size=128, max_position_embeddings=2048)
+            block_model = RoBERTa(config=block_config, num_classes=((block_bfile.n_snps * 3) + 2), temperature=False)
+            unmatched = block_model.load_state_dict(block_model_weight)
+            print("Unmatched parameters: ", unmatched)
+            print("Load model weight finished")
+            block_model_dict[f'chr{chromosome}_block{block}'] = block_model
+            block_bfile_dict[(chromosome, block)] = block_bfile
+        dataset = BlockQueryDataset(tree_parser, args.train_bfile, block_bfile_dict, args.train_cov,
+                                          args.train_pheno,
+                                    cov_ids=g2p_model_dict['arguments'].cov_ids,
+                                    cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[], bt=args.bt,
+                                    qt=args.qt,
+                                    cov_std_dict=g2p_model_dict['arguments'].cov_std_dict)
+
+
     args.bt_inds = dataset.bt_inds
     args.qt_inds = dataset.qt_inds
     args.bt = dataset.bt
@@ -110,10 +152,10 @@ def main():
     whole_dataloader = DataLoader(dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.cpu, collate_fn=whole_collator)
 
-    nested_subtrees_forward = tree_parser.get_hierarchical_interactions(args.subtree_order, direction='forward', format=g2p_model_dict['arguments'].input_format)
+    nested_subtrees_forward = tree_parser.get_hierarchical_interactions(args.subtree_order, direction='forward', format='indices')
     nested_subtrees_forward = move_to(nested_subtrees_forward, device)
 
-    nested_subtrees_backward = tree_parser.get_hierarchical_interactions(args.subtree_order, direction='backward', format=g2p_model_dict['arguments'].input_format)
+    nested_subtrees_backward = tree_parser.get_hierarchical_interactions(args.subtree_order, direction='backward', format='indices')
     nested_subtrees_backward = move_to(nested_subtrees_backward, device)
 
     sys2gene_mask = move_to(torch.tensor(tree_parser.sys2gene_mask, dtype=torch.bool), device)
@@ -124,7 +166,9 @@ def main():
                                          activation='softmax', n_phenotypes=dataset.n_pheno,
                                    snp2pheno=g2p_model_dict['arguments'].snp2pheno,
                                    gene2pheno=g2p_model_dict['arguments'].gene2pheno,
-                                   sys2pheno=g2p_model_dict['arguments'].sys2pheno, input_format=g2p_model_dict['arguments'].input_format, cov_effect=args.cov_effect)
+                                   sys2pheno=g2p_model_dict['arguments'].sys2pheno,
+                                   input_format=g2p_model_dict['arguments'].input_format,
+                                   cov_effect=args.cov_effect)
 
     g2p_model.load_state_dict(g2p_model_dict['state_dict'])
     g2p_model = g2p_model.to(device)
@@ -165,7 +209,7 @@ def main():
                 gene_attentions.append(gene_attention.detach().cpu().numpy())
         #phenotypes.append(prediction.detach().cpu().numpy())  
     
-    phenotypes = np.concatenate(phenotypes)[:, :, 0]
+    phenotypes = np.concatenate(phenotypes)#[:, :, 0]
     cov_df = dataset.cov_df
     #cov_df["prediction"] = phenotypes
     for pheno, ind in dataset.pheno2ind.items():
