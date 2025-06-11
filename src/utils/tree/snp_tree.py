@@ -100,7 +100,7 @@ class SNPTreeParser(TreeParser):
         #else:
         #    parser.snp2gene_df = parser.snp2gene_df.sort_values(by=["chr", "snp"]).reset_index(drop=True)
         parser.snp2gene_df = parser.snp2gene_df.loc[parser.snp2gene_df['gene'].isin(parser.gene2ind.keys())]
-        print(parser.snp2gene_df.head())
+        #print(parser.snp2gene_df.head())
         '''
         print(parser.snp2gene_df.head())
         # optional multiple‐phenotype branch
@@ -170,7 +170,10 @@ class SNPTreeParser(TreeParser):
 
         parser.snp2ind = { s:i for i,s in enumerate(snps) }
         parser.ind2snp = { i:s for s,i in parser.snp2ind.items() }
-
+        ordered_genes = self._compute_gene_order_from_snps()
+        parser.sys2ind, parser.ind2sys, parser.gene2ind, parser.ind2gene, parser.gene2sys_mask = parser.build_mask(list(parser.sys2ind.keys()), ordered_genes,
+                                                                                                                   parser.gene2sys)
+        parser.sys2gene_mask = parser.gene2sys_mask.T
         parser.n_snps = len(snps)
         print("The number of SNPs:", parser.n_snps)
         parser.snp_pad_index = parser.n_snps
@@ -257,6 +260,33 @@ class SNPTreeParser(TreeParser):
             for i in range(len(self.ind2snp)):
                 print(i, ":", self.ind2snp[i], " -> ", ",".join(self.snp2gene))
             print(" ")
+
+    def _compute_gene_order_from_snps(self):
+        """
+        Compute new gene order based on SNP chromosome/block structure
+        """
+        # SNPs are already ordered by chromosome and block
+        # Group genes by their first appearing SNP
+        gene_to_first_snp = {}
+
+        for snp_idx, snp_id in enumerate(self.ind2snp.values()):
+            # Get genes connected to this SNP
+            connected_genes = self.snp2gene[snp_id]
+
+            for gene in connected_genes:
+                if gene not in gene_to_first_snp:
+                    gene_to_first_snp[gene] = snp_idx
+
+        # Sort genes by their first appearing SNP index
+        ordered_genes = sorted(gene_to_first_snp.keys(),
+                               key=lambda g: gene_to_first_snp[g])
+
+        # Add any genes not connected to SNPs at the end
+        all_genes = set(self.ind2gene.values())
+        unconnected_genes = all_genes - set(ordered_genes)
+        ordered_genes.extend(sorted(unconnected_genes))
+
+        return ordered_genes
 
 
     def get_sys2snp(self, sys):

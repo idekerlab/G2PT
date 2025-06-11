@@ -206,7 +206,7 @@ class SNP2PTrainer(object):
                                                                    sys2env=self.args.sys2env,
                                                                    env2sys=self.args.env2sys,
                                                                    sys2gene=self.args.sys2gene,
-                                                                   snp_only=snp_only, ld=True,)
+                                                                   snp_only=snp_only, chunk=True)
                                                        #sys_temp= self.system_temp_tensor)
                 #for phenotype_predicted_i, module_name in zip(phenotype_predicted, self.g2p_module_names):
                 if len(phenotype_predicted.size())==3:
@@ -354,7 +354,7 @@ class SNP2PTrainer(object):
                                                    sys2env=self.args.sys2env,
                                                    env2sys=self.args.env2sys,
                                                    sys2gene=self.args.sys2gene, snp_only=snp_only,
-                                                   ld=True, predict_snp=False)
+                                                   chunk=True, predict_snp=False)
 
             if len(phenotype_predicted.size())==3:
                 predictions = phenotype_predicted[:, :, 0]

@@ -14,12 +14,15 @@ import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
 
+
 from prettytable import PrettyTable
+from src.utils.chunker import MaskBasedChunker
 
 from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
 from torch.utils.data.distributed import DistributedSampler
-from src.utils.data.dataset import SNP2PDataset, SNP2PCollator, CohortSampler, DistributedCohortSampler, BinaryCohortSampler, DistributedBinaryCohortSampler, PLINKDataset, DynamicPhenotypeBatchSampler, DynamicPhenotypeBatchIterableDataset, DynamicPhenotypeBatchIterableDatasetDDP
+from src.utils.data.dataset import SNP2PCollator, PLINKDataset, DynamicPhenotypeBatchIterableDataset, DynamicPhenotypeBatchIterableDatasetDDP
+from src.utils.data.dataset import ChunkSNP2PCollator
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
 from datetime import timedelta
@@ -104,6 +107,7 @@ def main():
     parser.add_argument('--bt', nargs='*', default=[])
     parser.add_argument('--qt', nargs='*', default=[])
     # Propagation option
+    parser.add_argument('--cov-effect', default='pre')
     parser.add_argument('--sys2env', action='store_true', default=False)
     parser.add_argument('--env2sys', action='store_true', default=False)
     parser.add_argument('--sys2gene', action='store_true', default=False)
@@ -129,6 +133,7 @@ def main():
     parser.add_argument('--batch-size', help='Batch size', type=int, default=128)
     parser.add_argument('--val-step', help='Validation step', type=int, default=20)
     parser.add_argument('--jobs', help="The number of threads", type=int, default=0)
+
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
     # Multi-GPU option
@@ -241,7 +246,7 @@ def main_worker(args):
         multiple_phenotypes = False
 
     tree_parser = SNPTreeParser(args.onto, args.snp2gene, dense_attention=args.dense_attention, multiple_phenotypes=multiple_phenotypes)
-
+    chunker = MaskBasedChunker(snp2gene_mask=tree_parser.snp2gene_mask, gene2sys_mask=tree_parser.gene2sys_mask, target_chunk_size=5000)
     fix_system = False
     '''
     if args.train_bfile is None:
@@ -270,7 +275,8 @@ def main_worker(args):
     args.cov_std_dict = snp2p_dataset.cov_std_dict
     print("Loading done...")
 
-    snp2p_collator = SNP2PCollator(tree_parser, input_format=args.input_format)
+    #snp2p_collator = SNP2PCollator(tree_parser, input_format=args.input_format)
+    snp2p_collator = ChunkSNP2PCollator(tree_parser, chunker=chunker, input_format=args.input_format)
 
     print("Summary of trainable parameters")
     if args.sys2env:

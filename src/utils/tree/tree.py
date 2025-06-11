@@ -68,7 +68,7 @@ class TreeParser(object):
             obj.system2system_mask[obj.sys2ind[parent_system], obj.sys2ind[child_system]] = 0
 
         obj.gene2sys_mask = np.full((int(np.ceil(obj.n_systems/8)*8), (int(np.ceil(obj.n_genes/8)*8))), -10**4)#np.zeros((len(obj.sys2ind), len(obj.gene2ind)))
-        obj.sys2gene_dict = { obj.sys2ind[system]: [] for system in systems }
+        obj.sys2gene_dict = {obj.sys2ind[system]: [] for system in systems }
         obj.gene2sys_dict = { gene: [] for gene in range(obj.n_genes) }
         for system, gene in zip(obj.gene2sys_df['parent'], obj.gene2sys_df['child']):
             obj.gene2sys_mask[obj.sys2ind[system], obj.gene2ind[gene]] = 0.
@@ -121,6 +121,20 @@ class TreeParser(object):
             print("Subtree types: ", obj.subtree_types)
         if not inplace:
             return obj
+
+    def build_mask(self, ordered_query, ordered_key, query2key_dict, interaction_value=0, mask_value=-10**4):
+        mask = np.full((int(np.ceil(len(ordered_query)/8)*8), (int(np.ceil(len(ordered_key)/8)*8))), mask_value)
+        query2ind = {q: i for i, q in enumerate(ordered_query)}
+        ind2query = {i: q for i, q in enumerate(ordered_query)}
+        key2ind = {k: i for i, k in enumerate(ordered_key)}
+        ind2key = {i: k for i, k in enumerate(ordered_key)}
+        for i, query in enumerate(ordered_query):
+            if query in query2key_dict.keys():
+                keys = query2key_dict[query]
+                for key in keys:
+                    mask[i, key2ind[key]] = interaction_value
+
+        return query2ind, ind2query, key2ind, ind2key, mask
 
     def summary(self, system=True, gene=True):
         """
@@ -564,12 +578,16 @@ class TreeParser(object):
                         continue
                     queries[interaction_type] = sorted(list(set(queries[interaction_type])))
                     keys[interaction_type] = sorted(list(set(keys[interaction_type])))
+                    result_mask = mask[queries[interaction_type], :]
+                    result_mask = result_mask[:, keys[interaction_type]]
+                    result_mask = torch.tensor(result_mask, dtype=torch.float32)
+                    queries[interaction_type], keys[interaction_type], result_mask = self.pad_query_key_mask(queries[interaction_type], keys[interaction_type], result_mask,
+                                                                                                             query_padding_index=self.n_systems, key_padding_index=self.n_systems)
+                    '''
                     n_query_pad = int(np.ceil(len(queries[interaction_type])/8)*8) - len(queries[interaction_type])
                     n_key_pad = int(np.ceil(len(keys[interaction_type])/8)*8) - len(keys[interaction_type])
                     #queries[interaction_type] = queries[interaction_type] + [self.n_systems]*n_query_pad
                     #keys[interaction_type] = keys[interaction_type] + [self.n_systems] * n_key_pad
-                    result_mask = mask[queries[interaction_type], :]
-                    result_mask = result_mask[:, keys[interaction_type]]
                     #print(len(queries[interaction_type]), len(keys[interaction_type]), result_mask.shape, n_query_pad, n_key_pad)
                     result_mask = torch.tensor(result_mask, dtype=torch.float32)
                     result_mask = F.pad(result_mask, (0, n_key_pad, 0, n_query_pad), value=-10**4)
@@ -577,6 +595,7 @@ class TreeParser(object):
                     keys[interaction_type] = keys[interaction_type] + [self.n_systems] * n_key_pad
                     #print(len(queries[interaction_type]), len(keys[interaction_type]), result_mask.size())
                     #print(queries[interaction_type], keys[interaction_type], result_mask)
+                    '''
                     if self.dense_attention:
                         result_mask = torch.ones_like(result_mask)
                     if direction=='forward':
@@ -607,6 +626,16 @@ class TreeParser(object):
         if direction == 'forward':
             result_masks.reverse()
         return result_masks
+
+    @staticmethod
+    def pad_query_key_mask(query, key, tensor, query_padding_index=0, key_padding_index=0, padding_value=-10 ** 4):
+        n_query, n_key = len(query), len(key)
+        n_query_pad = int(np.ceil(n_query / 8) * 8) - n_query
+        n_key_pad = int(np.ceil(n_key / 8) * 8) - n_key
+        padded_tensor = F.pad(tensor, (0, n_key_pad, 0, n_query_pad), value=padding_value)
+        padded_query = query + [query_padding_index] * n_query_pad
+        padded_key = key + [key_padding_index] * n_key_pad
+        return padded_query, padded_key, padded_tensor
 
     def get_nested_subtree_mask(self, subtree_order, direction='forward', format='indices'):
         nested_subtrees = [self.get_subtree_mask(subtree_type, direction=direction, format=format) for subtree_type in subtree_order]
@@ -656,6 +685,47 @@ class TreeParser(object):
             edges.update([(path[i], path[i + 1]) for i in range(len(path) - 1)])
         return list(edges)
 
+    def _compute_gene_order_from_snps(self):
+        """
+        Compute new gene order based on SNP chromosome/block structure
+        """
+        # SNPs are already ordered by chromosome and block
+        # Group genes by their first appearing SNP
+        gene_to_first_snp = {}
+        for snp_idx, snp_id in enumerate(self.ind2snp.values()):
+            # Get genes connected to this SNP
+            connected_genes = [self.ind2gene[gene_idx]
+                               for gene_idx in range(self.n_genes)
+                               if self.snp2gene_mask[gene_idx, snp_idx] != -10 ** 4]
+            for gene in connected_genes:
+                if gene not in gene_to_first_snp:
+                    gene_to_first_snp[gene] = snp_idx
+        # Sort genes by their first appearing SNP index
+        ordered_genes = sorted(gene_to_first_snp.keys(),
+                               key=lambda g: gene_to_first_snp[g])
+        # Add any genes not connected to SNPs at the end
+        all_genes = set(self.ind2gene.values())
+        unconnected_genes = all_genes - set(ordered_genes)
+        ordered_genes.extend(sorted(unconnected_genes))
+        return ordered_genes
+
+    def _create_gene_remapping(self, new_gene_order):
+        """
+        Create mapping from old gene indices to new gene indices
+        """
+        old_to_new = {}
+        new_to_old = {}
+
+        for new_idx, gene_id in enumerate(new_gene_order):
+            old_idx = self.gene2ind[gene_id]
+            old_to_new[old_idx] = new_idx
+            new_to_old[new_idx] = old_idx
+
+        return {
+            'old_to_new': old_to_new,
+            'new_to_old': new_to_old,
+            'new_gene_order': new_gene_order
+        }
 
     @staticmethod
     def alias_indices(indices, source_ind2id_dict:dict, target_id2ind_dict: dict):
