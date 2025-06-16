@@ -83,15 +83,75 @@ class Genotype2PhenotypeTransformer(nn.Module):
     def get_gene2sys(self, system_embedding, gene_embedding, gene2sys_mask):
         system_embedding_input = self.dropout(self.sys_norm(system_embedding))
         gene_embedding_input_input = self.dropout(self.gene_norm(gene_embedding))
-        system_effect = self.gene2sys.forward(system_embedding_input, gene_embedding_input_input, gene2sys_mask)
-        return system_embedding,  system_effect
+        gene_effect = self.gene2sys.forward(system_embedding_input, gene_embedding_input_input, gene2sys_mask)
+        return gene_effect
 
     def get_sys2gene(self, gene_embedding, system_embedding, sys2gene_mask):
         gene_embedding_input = self.dropout(self.gene_norm(gene_embedding))
         system_embedding_input = self.dropout(self.sys_norm(system_embedding))
         system_effect = self.sys2gene.forward(gene_embedding_input, system_embedding_input, sys2gene_mask)
-        return gene_embedding,  system_effect
+        return system_effect
 
+    def get_sys2sys(self, system_embedding, nested_hierarchical_masks,
+                    direction: str = "forward") -> torch.Tensor:
+        """
+        Args
+        ----
+        system_embedding : (B, S, H)  – current system-level embeddings
+        nested_hierarchical_masks : iterable of dicts produced by the dataloader
+        direction : 'forward' | 'backward'
+        Returns
+        -------
+        (B, S, H)  – updated system embeddings
+        """
+
+        B, S, H = system_embedding.shape  # batch, #systems, hidden
+        flat_size = B * S
+        device = system_embedding.device
+        dtype = system_embedding.dtype
+
+        # choose the interaction module
+        sys2sys_layer = self.sys2env if direction == "forward" else self.env2sys
+
+        # ---- flatten once; KEEP THIS BUFFER READ-ONLY AFTER WE TAKE A VIEW ----
+        #system_flat = system_embedding.view(flat_size, H)  # (B·S, H)
+
+        # updates will be accumulated here to avoid in-place writes on the view
+        delta = torch.zeros_like(system_embedding)  # (B·S, H)
+
+        for hierarchical_masks in nested_hierarchical_masks:
+            for inter_type, hmask in hierarchical_masks.items():
+                hitr = sys2sys_layer[inter_type]
+
+                q_idx = hmask["query"]  # (n_q,)
+                k_idx = hmask["key"]  # (n_k,)
+                attn_mask = hmask["mask"]  # Bool / Float  – n_q × n_k
+
+                # -------- gather the *partial* embeddings (no big temporaries) ----
+                sys_q = torch.index_select(system_embedding, 1, q_idx)  # (B, n_q, H)
+                sys_k = torch.index_select(system_embedding, 1, k_idx)  # (B, n_k, H)
+
+                sys_q = self.dropout(self.sys_norm(sys_q))
+                sys_k = self.dropout(self.sys_norm(sys_k))
+
+                # hitr.forward returns (B, n_q, H)
+                effect = self.effect_norm(hitr.forward(sys_q, sys_k, attn_mask))
+
+                # -------- flat indices for B·n_q rows -----------------------------
+                #   idx = q_idx + b*S   (broadcasted over batch dimension)
+                #flat_idx = (q_idx.unsqueeze(0) +
+                #            torch.arange(B, device=device)[:, None] * S).reshape(-1)  # (B·n_q,)
+                #flat_src = effect.reshape(-1, H)  # (B·n_q, H)
+
+                # safe in-place add into the *delta* buffer
+                delta[:, hmask[hmask['query_mask']], :] = delta[:, hmask[hmask['query_mask']], :] + effect#.index_add_(0, flat_idx, flat_src)
+        # combine read-only base + accumulated deltas, reshape back
+        #updated = (system_flat + delta_flat).view(B, S, H)
+        updated = system_embedding + delta
+        return updated
+
+
+    '''
     def get_sys2sys(self, system_embedding, nested_hierarchical_masks, direction='forward', return_updates=True, input_format='indices', update_tensor=None):
         batch_size = system_embedding.size(0)
         feature_size = system_embedding.size(2)
@@ -128,10 +188,11 @@ class Genotype2PhenotypeTransformer(nn.Module):
                 update_result = update_result.scatter_add(1, query_indices, hitr_result)  # + self.effect_norm(system_effect)
         if return_updates:
             # return original system embeddings and update tensor separately
-            return system_embedding, update_result
+            return update_result
         else:
             # return original system embeddings + update
             if input_format == 'indices':
                 return system_embedding + update_tensor
             else:
                 return system_embedding_output
+    '''

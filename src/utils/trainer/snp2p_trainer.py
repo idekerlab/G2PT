@@ -206,7 +206,7 @@ class SNP2PTrainer(object):
                                                                    sys2env=self.args.sys2env,
                                                                    env2sys=self.args.env2sys,
                                                                    sys2gene=self.args.sys2gene,
-                                                                   snp_only=snp_only, chunk=True)
+                                                                   snp_only=snp_only, chunk=False)
                                                        #sys_temp= self.system_temp_tensor)
                 #for phenotype_predicted_i, module_name in zip(phenotype_predicted, self.g2p_module_names):
                 if len(phenotype_predicted.size())==3:
@@ -312,17 +312,7 @@ class SNP2PTrainer(object):
         mean_ccc_loss = 0.
         mean_score_loss = 0.
         mean_snp_loss = 0.
-        #print(batch['genotypoe'])
-        #print(self.snp2gene_mask.shape, self.snp2gene_mask)
-        #print(np.where(self.snp2gene_mask.detach().cpu().numpy()==0), self.snp2gene_mask)
-        #print(self.gene2sys_mask.shape, self.gene2sys_mask)
-        #print(self.nested_subtrees_forward)
-        '''
-        if epoch>5:
-            ld = True
-        else:
-            ld = False
-        '''
+
         if self.dynamic_phenotype_sampling:
             num_batches = np.ceil(len(dataloader.dataset.dataset)/(self.args.batch_size*self.args.world_size))
             dataloader_with_tqdm = tqdm(dataloader, total=num_batches)
@@ -331,30 +321,30 @@ class SNP2PTrainer(object):
         for i, batch in enumerate(dataloader_with_tqdm):
             batch = move_to(batch, self.device)
             #print(batch)
-            if self.dynamic_phenotype_sampling:
-
-                nested_subtrees_forward = batch['mask']['subtree_forward']
-                nested_subtrees_backward = batch['mask']['subtree_backward']
-                gene2sys_mask = self.gene2sys_mask#batch['mask']['gene2sys_mask']
-                sys2gene_mask = self.sys2gene_mask#batch['mask']['sys2gene_mask']
+            if 'snp2gene_mask' in batch.keys():
+                snp2gene_mask = batch['snp2gene_mask']
             else:
-                nested_subtrees_forward = self.nested_subtrees_forward
-                nested_subtrees_backward = self.nested_subtrees_backward
+                snp2gene_mask = self.snp2gene_mask
+
+            if 'gene2sys_mask' in batch.keys():
+                gene2sys_mask = batch['gene2sys_mask']
+                sys2gene_mask = batch['gene2sys_mask'].T
+            else:
                 gene2sys_mask = self.gene2sys_mask
                 sys2gene_mask = self.sys2gene_mask
-            #print(batch['genotype']['snp'].shape)
-            #print(batch['genotype']['snp'])
+
+
             phenotype_predicted = self.snp2p_model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
-                                                   nested_subtrees_forward,
-                                                   nested_subtrees_backward,
+                                                   self.nested_subtrees_forward,
+                                                   self.nested_subtrees_backward,
                                                    #sys_temp= self.system_temp_tensor,
-                                                   snp2gene_mask = self.snp2gene_mask,
+                                                   snp2gene_mask=snp2gene_mask,
                                                    gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
                                                    sys2gene_mask=sys2gene_mask,
                                                    sys2env=self.args.sys2env,
                                                    env2sys=self.args.env2sys,
                                                    sys2gene=self.args.sys2gene, snp_only=snp_only,
-                                                   chunk=True, predict_snp=False)
+                                                   chunk=False, predict_snp=False)
 
             if len(phenotype_predicted.size())==3:
                 predictions = phenotype_predicted[:, :, 0]
@@ -374,7 +364,6 @@ class SNP2PTrainer(object):
                         dynamic_bt_inds.append(ind)
                 #print(dynamic_bt_inds, dynamic_qt_inds)
                 loss = MultiplePhenotypeLoss(dynamic_bt_inds, dynamic_qt_inds)
-
             else:
                 loss = self.loss
 

@@ -8,6 +8,7 @@ from src.model.hierarchical_transformer import Genotype2Phenotype
 from src.model.hierarchical_transformer import HierarchicalTransformer
 from src.model.utils import MoEHeadPrediction, FiLM, BatchNorm1d_BatchOnly_NLC
 from src.model.LD_infuser.LDRoBERTa import RoBERTa, TransformerLayer, RoBERTaConfig, TransformerBlockGumbel
+import torch.utils.checkpoint as cp
 
 class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
@@ -158,26 +159,11 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
         #for i in range(2):
         if not chunk:
-            gene_embedding = self.gene_embedding(genotype_dict['gene'])
-            system_embedding = self.system_embedding(genotype_dict['sys'])
-
-            if (self.cov_effect == 'pre') or (self.cov_effect == 'both'):
-                cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariates)
-                gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
-
-            snp_embedding, snp_prediction = self.get_snp_embedding(genotype_dict)
-            gene_embedding, snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, snp2gene_mask)
-            gene_embedding = gene_embedding + self.effect_norm(snp_effect_on_gene)
-            gene_embedding, system_embedding = self.propagate(gene_embedding, system_embedding, gene2sys_mask, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, sys2gene_mask)
+            gene_embedding, system_embedding = self.propagate(genotype_dict, covariates, snp2gene_mask, gene2sys_mask, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, sys2gene_mask)
         else:
             ## chunk-wise propagation
-            gene_embedding, system_embedding = self.chunk_wise_propagate(genotype_dict, covariates, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward)
+            gene_embedding, system_embedding = self.chunk_wise_propagate_v2(genotype_dict, covariates, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward)
 
-        if (self.cov_effect=='post') or (self.cov_effect=='both'):
-            cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariates)
-            gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
-            cov_effect_on_sys = self.get_cov2gene(system_embedding, covariates)
-            system_embedding = system_embedding + self.effect_norm(cov_effect_on_sys)
 
         phenotype_embedding = self.phenotype_embeddings(phenotype_ids)
         prediction = self.prediction(phenotype_embedding, system_embedding, gene_embedding, sys_temp=sys_temp)#genotype_dict['embedding'])
@@ -212,28 +198,104 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
 
 
-    def propagate(self, gene_embedding, system_embedding, gene2sys_mask, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, sys2gene_mask):
-        system_embedding, gene_effect_on_system = self.get_gene2sys(self.dropout(system_embedding),
+    def propagate(self, genotype_dict, covariates, snp2gene_mask, gene2sys_mask, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, sys2gene_mask):
+        gene_embedding = self.gene_embedding(genotype_dict['gene'])
+        system_embedding = self.system_embedding(genotype_dict['sys'])
+
+        if (self.cov_effect == 'pre') or (self.cov_effect == 'both'):
+            cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariates)
+            gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
+
+        snp_embedding, snp_prediction = self.get_snp_embedding(genotype_dict)
+        snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, snp2gene_mask)
+        gene_embedding[genotype_dict['gene_indices']] = gene_embedding[genotype_dict['gene_indices']] + self.effect_norm(snp_effect_on_gene[genotype_dict['gene_indices']])
+        gene_effect_on_system = self.get_gene2sys(self.dropout(system_embedding),
                                                                     self.dropout(gene_embedding), gene2sys_mask)
-        total_update = self.effect_norm(gene_effect_on_system)
+        print(genotype_dict['sys_indices'])
+        system_embedding[genotype_dict['sys_indices']] = system_embedding[genotype_dict['sys_indices']] + self.effect_norm(gene_effect_on_system[genotype_dict['sys_indices']])
+        print(genotype_dict['sys_indices'])
+        system_effect_forward = self.get_sys2sys(system_embedding, nested_hierarchical_masks_forward, direction='forward')
+        system_embedding = system_embedding + self.effect_norm(system_effect_forward)
 
-        system_embedding, system_effect_forward = self.get_sys2sys(system_embedding,
-                                                                   nested_hierarchical_masks_forward,
-                                                                   direction='forward', return_updates=True,
-                                                                   input_format=self.input_format,
-                                                                   update_tensor=total_update)
-        total_update = total_update + system_effect_forward
+        system_effect_backward = self.get_sys2sys(system_embedding, nested_hierarchical_masks_backward, direction='backward')
+        system_embedding = system_embedding + self.effect_norm(system_effect_backward)
 
-        system_embedding, system_effect_backward = self.get_sys2sys(system_embedding,
-                                                                    nested_hierarchical_masks_backward,
-                                                                    direction='backward', return_updates=True,
-                                                                    input_format=self.input_format,
-                                                                    update_tensor=total_update)
-        total_update = total_update + system_effect_backward
-        system_embedding = system_embedding + total_update
+        system_effect_on_gene = self.get_sys2gene(gene_embedding, system_embedding, sys2gene_mask)
+        gene_embedding[genotype_dict['gene_indices']] = gene_embedding[genotype_dict['gene_indices']] + self.effect_norm(system_effect_on_gene[genotype_dict['gene_indices']])
 
-        gene_embedding, system_effect_on_gene = self.get_sys2gene(gene_embedding, system_embedding, sys2gene_mask)
-        gene_embedding = gene_embedding + self.effect_norm(system_effect_on_gene)
+        if (self.cov_effect=='post') or (self.cov_effect=='both'):
+            cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariates)
+            gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
+            cov_effect_on_sys = self.get_cov2gene(system_embedding, covariates)
+            system_embedding = system_embedding + self.effect_norm(cov_effect_on_sys)
+
+        return gene_embedding, system_embedding
+
+    def chunk_wise_propagate_v2(self, genotype_dict, covariates,
+                                masks_fwd, masks_bwd):
+
+        B, H = covariates.size(0), self.hidden_dims
+        G, S = self.n_genes+1, self.n_systems+1
+
+        # --- one flat tensor per batch, *no* H-expansion for indices
+        gene_results = torch.zeros((B * G, H), dtype=torch.float32, device=covariates.device)
+        sys_results = torch.zeros((B * S, H), dtype=torch.float32, device=covariates.device)
+
+        for chunk in genotype_dict:
+            snp_emb, _ = self.get_snp_embedding(chunk)
+
+            gene_emb = self.gene_embedding(chunk['gene'])  # (B,N,H)
+            if self.cov_effect in ('pre', 'both'):
+                gene_emb = gene_emb + self.effect_norm(
+                    self.get_cov2gene(gene_emb, covariates))
+
+            gene_emb = gene_emb + self.effect_norm(
+                self.get_snp2gene(gene_emb, snp_emb, chunk['snp2gene_mask']))
+
+            # -------- index_add_ without H-duplication -------- #
+            flat_gene = gene_emb.view(-1, H)
+            flat_gidx = (chunk['gene'] +
+                         torch.arange(B, device=gene_emb.device)[:, None] * G).view(-1)
+            gene_results.index_add_(0, flat_gidx, flat_gene)
+            #gene_results = torch.index_add(gene_results, 0, flat_gidx, flat_gene)
+
+            sys_emb = self.system_embedding(chunk['sys'])
+            sys_emb = sys_emb + self.effect_norm(
+                self.get_gene2sys(sys_emb, gene_emb, chunk['gene2sys_mask']))
+
+            flat_sys = sys_emb.view(-1, H)
+            flat_sidx = (chunk['sys'] +
+                         torch.arange(B, device=sys_emb.device)[:, None] * S).view(-1)
+            sys_results.index_add_(0, flat_sidx, flat_sys)
+            #sys_results = torch.index_add(sys_results, 0, flat_sidx, flat_sys)
+
+        # reshape back to (B,S,H) once, then run checkpointed attention
+        sys_results = sys_results.view(B, S, H)
+        sys_results = cp.checkpoint(self.get_sys2sys, sys_results, masks_fwd, 'forward')
+        sys_results = cp.checkpoint(self.get_sys2sys, sys_results, masks_bwd, 'backward')
+
+        # second pass: sys→gene (still needs indices, but no big temporaries)
+        for chunk in genotype_dict:
+            gene_idx = chunk['gene']
+            sys_idx = chunk['sys']
+            B, N = gene_idx.size()
+
+            gene_emb = gene_results.view(B, G, H).gather(1, gene_idx.unsqueeze(-1).expand(-1, -1, H))
+            sys_emb = sys_results.gather(1, sys_idx.unsqueeze(-1).expand(-1, -1, H))
+
+            delta = self.get_sys2gene(gene_emb, sys_emb, chunk['gene2sys_mask'].T)
+            flat_gidx = (gene_idx + torch.arange(B, device=gene_idx.device)[:, None] * G).view(-1)
+            #gene_results.index_add_(0, flat_gidx, delta.view(-1, H))
+            gene_results = torch.index_add(gene_results, 0, flat_gidx, delta.view(-1, H))
+
+        gene_embedding, system_embedding = gene_results.view(B, G, H), sys_results.view(B, S, H)
+
+        if (self.cov_effect=='post') or (self.cov_effect=='both'):
+            cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariates)
+            gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
+            cov_effect_on_sys = self.get_cov2gene(system_embedding, covariates)
+            system_embedding = system_embedding + self.effect_norm(cov_effect_on_sys)
+
         return gene_embedding, system_embedding
 
     def chunk_wise_propagate(self, genotype_dict, covariates, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward):
@@ -241,11 +303,8 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         gene_embedding_results = torch.zeros_like(self.gene_embedding.weight)
         gene_embedding_results = gene_embedding_results.unsqueeze(0).expand(batch_size, -1, -1)
 
-        sys_embedding_results = self.system_embedding.weight
+        sys_embedding_results = torch.zeros_like(self.system_embedding.weight)#.unsqueeze(0).expand(batch_size, -1, -1)
         sys_embedding_results = sys_embedding_results.unsqueeze(0).expand(batch_size, -1, -1)
-
-        sys_effect_results = torch.zeros_like(self.system_embedding.weight)#.unsqueeze(0).expand(batch_size, -1, -1)
-        sys_effect_results = sys_effect_results.unsqueeze(0).expand(batch_size, -1, -1)
 
         for chunk_dict in genotype_dict:
             snp_embedding, snp_prediction = self.get_snp_embedding(chunk_dict)
@@ -253,40 +312,22 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             if (self.cov_effect == 'pre') or (self.cov_effect == 'both'):
                 cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariates)
                 gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
-            gene_embedding, snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, chunk_dict['snp2gene_mask'])
+            snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, chunk_dict['snp2gene_mask'])
             gene_embedding = gene_embedding + self.effect_norm(snp_effect_on_gene)
             B, N, H = gene_embedding.size()
             idx_exp = chunk_dict['gene'].view(B, N, 1).expand(B, N, H)
-            #print(idx_exp.size())
-            #print(snp_effect_on_gene.size())
-            #print(gene_embedding.size())
-            #gene_embedding_results[:, chunk_dict['gene']] = gene_embedding#gene_embedding_results[:, chunk_dict['gene']] + self.effect_norm(snp_effect_on_gene)
             gene_embedding_results = gene_embedding_results.scatter_add(dim=1, index=idx_exp, src=gene_embedding)
 
             system_embedding = self.system_embedding(chunk_dict['sys'])
-            system_embedding, gene_effect_on_system = self.get_gene2sys(system_embedding,
-                                                                        gene_embedding, chunk_dict['gene2sys_mask'])
+            gene_effect_on_system = self.get_gene2sys(system_embedding, gene_embedding, chunk_dict['gene2sys_mask'])
+            system_embedding = system_embedding + self.effect_norm(gene_effect_on_system)
             B, N, H = system_embedding.size()
             idx_exp = chunk_dict['sys'].view(B, N, 1).expand(B, N, H)
-            #sys_embedding_results = sys_embedding_results.scatter_add(dim=1, index=idx_exp, src=system_embedding)
-            #sys_effect_results[:, chunk_dict['sys']] = sys_effect_results[:, chunk_dict['sys']] + self.effect_norm(gene_effect_on_system)
-            sys_effect_results = sys_effect_results.scatter_add(dim=1, index=idx_exp, src=gene_effect_on_system)
+            sys_embedding_results = sys_embedding_results.scatter_add(dim=1, index=idx_exp, src=system_embedding)
 
-        total_update = self.effect_norm(sys_effect_results)
-        sys_embedding_results, system_effect_forward = self.get_sys2sys(sys_embedding_results,
-                                                                   nested_hierarchical_masks_forward,
-                                                                   direction='forward', return_updates=True,
-                                                                   input_format=self.input_format,
-                                                                   update_tensor=total_update)
-        total_update = total_update + system_effect_forward
+        sys_embedding_results = self.get_sys2sys(sys_embedding_results, nested_hierarchical_masks_forward, direction='forward')
+        sys_embedding_results = self.get_sys2sys(sys_embedding_results, nested_hierarchical_masks_backward, direction='backward')
 
-        sys_embedding_results, system_effect_backward = self.get_sys2sys(sys_embedding_results,
-                                                                    nested_hierarchical_masks_backward,
-                                                                    direction='backward', return_updates=True,
-                                                                    input_format=self.input_format,
-                                                                    update_tensor=total_update)
-        total_update = total_update + system_effect_backward
-        sys_embedding_results = sys_embedding_results + total_update
         H = self.hidden_dims
         for chunk_dict in genotype_dict:
             gene_idx = chunk_dict['gene']
@@ -297,11 +338,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             sys_idx_exp = sys_idx.unsqueeze(-1).expand(B, N, H)
             gene_embedding = gene_embedding_results.gather(dim=1, index=gene_idx_exp)
             system_embedding = sys_embedding_results.gather(dim=1, index=sys_idx_exp)
-            #gene_embedding = gene_embedding_results[:, gene_idx]#torch.index_select(gene_embedding_results, 1, gene_idx.flatten()).view(B, N, H)
-            #system_embedding = sys_embedding_results[:, sys_idx]
-            gene_embedding, system_effect_on_gene = self.get_sys2gene(gene_embedding, system_embedding, chunk_dict['gene2sys_mask'].T)
-            #idx_exp = chunk_dict['gene'].view(B, N, 1).expand(B, N, H)
-            #gene_embedding_results[:, chunk_dict['gene']] = gene_embedding_results[:, chunk_dict['gene']] + self.effect_norm(system_effect_on_gene)
+            system_effect_on_gene = self.get_sys2gene(gene_embedding, system_embedding, chunk_dict['gene2sys_mask'].T)
             gene_embedding_results = gene_embedding_results.scatter_add(dim=1, index=gene_idx_exp, src=system_effect_on_gene)
 
         return gene_embedding_results, sys_embedding_results
@@ -369,13 +406,13 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         gene_embedding_input = self.dropout(self.gene_norm(gene_embedding))
         snp_embedding_input = self.dropout(snp_embedding)
         snp_effect_on_gene = self.snp2gene.forward(gene_embedding_input, snp_embedding_input, snp2gene_mask)
-        return gene_embedding, snp_effect_on_gene
+        return snp_effect_on_gene
 
     def get_gene2sys(self, system_embedding, gene_embedding, gene2sys_mask):
         system_embedding_input = self.dropout(self.sys_norm(system_embedding))
         gene_embedding = self.dropout(self.gene_norm(gene_embedding))
         gene_effect = self.gene2sys.forward(system_embedding_input, gene_embedding, gene2sys_mask)
-        return system_embedding, gene_effect
+        return gene_effect
 
     def get_covariate_embedding(self, covariates):
         covariates_vector = self.covariate_norm_1(self.activation(self.covariate_linear_1(self.dropout(covariates))))

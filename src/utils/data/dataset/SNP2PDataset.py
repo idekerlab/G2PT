@@ -2,22 +2,16 @@ import random
 
 import pandas as pd
 from torch.utils.data.dataset import Dataset
-import torch.distributed as dist
-from torch.utils.data import IterableDataset, get_worker_info
 from torch.utils.data.sampler import Sampler, BatchSampler, RandomSampler
 from scipy.stats import zscore, skewnorm
 import torch
 import torch.nn.functional as F
 from src.utils.tree import TreeParser, SNPTreeParser
-from torch.nn.utils.rnn import pad_sequence
+from typing import Union
 import time
 from torch.utils.data.distributed import DistributedSampler
 from sgkit.io import plink
-import math
 import numpy as np
-import re
-from glob import glob
-import zarr
 import os
 from collections import OrderedDict
 from transformers import DataCollatorForLanguageModeling, PreTrainedTokenizer
@@ -28,22 +22,27 @@ class GenotypeDataset(Dataset):
                  cov_ids=(), pheno_ids=(), bt=(), qt=(), dynamic_phenotype_sampling=False):
 
         self.tree_parser = tree_parser
-        self.n_snp2pad = int(np.ceil(self.tree_parser.n_snps/8)) * 8 - self.tree_parser.n_snps
-        self.n_gene2pad = int(np.ceil(self.tree_parser.n_genes / 8)) * 8 - self.tree_parser.n_genes
-        self.n_sys2pad = int(np.ceil(self.tree_parser.n_systems / 8)) * 8 - self.tree_parser.n_systems
+        self.n_snp2pad = int(np.ceil((self.tree_parser.n_snps+1) /8)) * 8 - self.tree_parser.n_snps
+        self.n_gene2pad = int(np.ceil((self.tree_parser.n_genes+1) / 8)) * 8 - self.tree_parser.n_genes
+        self.n_sys2pad = int(np.ceil((self.tree_parser.n_systems+1) / 8)) * 8 - self.tree_parser.n_systems
 
-        gene_pad   = self.tree_parser.n_genes
-        sys_pad    = self.tree_parser.n_systems
+        self.gene_pad   = self.tree_parser.n_genes
+        self.sys_pad    = self.tree_parser.n_systems
 
-        gene_idx = torch.arange(self.tree_parser.n_genes, dtype=torch.long)
+        gene_idx = torch.arange(self.tree_parser.n_genes+1, dtype=torch.long)
         gene_idx = torch.cat((gene_idx,
-                              torch.full((self.n_gene2pad,), gene_pad, dtype=torch.long)))
+                              torch.full((self.n_gene2pad,), self.gene_pad, dtype=torch.long)))
         self.gene_idx = gene_idx  # (L_gene,)
-        sys_idx = torch.arange(self.tree_parser.n_systems, dtype=torch.long)
+        sys_idx = torch.arange(self.tree_parser.n_systems+1, dtype=torch.long)
         sys_idx = torch.cat((sys_idx,
-                             torch.full((self.n_sys2pad,), sys_pad, dtype=torch.long)))
+                             torch.full((self.n_sys2pad,), self.sys_pad, dtype=torch.long)))
         self.sys_idx = sys_idx  # (L_sys,)
         self.dynamic_phenotype_sampling = dynamic_phenotype_sampling
+
+        self.snp_range = list(range(self.tree_parser.n_snps + self.n_snp2pad))
+        self.block_range = list(range(self.tree_parser.n_snps + self.n_snp2pad))
+        self.gene_range = list(range(self.tree_parser.n_genes + self.n_gene2pad))
+        self.sys_range = list(range(self.tree_parser.n_systems + self.n_sys2pad))
 
         print('Processing Covariates...')
         if cov is not None:
@@ -102,10 +101,77 @@ class GenotypeDataset(Dataset):
                 self.pheno2type[pheno] = 'bt'
 
         self.n_pheno = len(self.pheno_ids)
+        self.pheno_range = list(range(self.n_pheno))
         self.has_phenotype = False
         if ('PHENOTYPE' in self.cov_df.columns) or (pheno is not None):
             self.has_phenotype = True
         print("Phenotypes: ", self.pheno_ids)
+
+    @staticmethod
+    def pad_indices(
+            sequence: Union[list, np.ndarray, torch.Tensor],
+            padding_value: int = 0,
+            multiple: int = 8
+    ) -> Union[list, np.ndarray, torch.Tensor]:
+        """
+        Pads a 1D sequence so its total length is a multiple of a given number.
+
+        This function is type-aware and works for Python lists, NumPy arrays,
+        and PyTorch tensors. The returned type will match the input type.
+
+        Args:
+            sequence (Union[list, np.ndarray, torch.Tensor]): The input sequence to pad.
+            padding_value (int, optional): The value to use for padding. Defaults to 0.
+            multiple (int, optional): The target multiple for the sequence length.
+                                      Defaults to 8.
+
+        Returns:
+            Union[list, np.ndarray, torch.Tensor]: The padded sequence, matching the input type.
+        """
+        # Remember the original type to return it in the same format
+        is_list = isinstance(sequence, list)
+        is_torch_tensor = isinstance(sequence, torch.Tensor)
+
+        # Use a consistent object for processing (NumPy array or PyTorch Tensor)
+        if is_list:
+            # Convert list to NumPy array for processing
+            processed_sequence = np.array(sequence)
+        else:
+            processed_sequence = sequence
+
+        current_length = len(processed_sequence)
+
+        # Calculate how many padding elements are needed
+        n_pad = (multiple - (current_length % multiple)) % multiple
+
+        # If no padding is needed, return the original sequence
+        if n_pad == 0:
+            return sequence
+
+        # --- Create and concatenate the padding based on the type ---
+        if is_torch_tensor:
+            # For PyTorch Tensors
+            padding = torch.full(
+                (n_pad,),
+                padding_value,
+                dtype=processed_sequence.dtype,
+                device=processed_sequence.device
+            )
+            padded_sequence = torch.cat([processed_sequence, padding])
+        else:
+            # For NumPy Arrays (and lists that were converted to NumPy)
+            padding = np.full(
+                (n_pad,),
+                padding_value,
+                dtype=processed_sequence.dtype
+            )
+            padded_sequence = np.concatenate([processed_sequence, padding])
+
+        # Convert back to list if the original input was a list
+        if is_list:
+            return padded_sequence.tolist()
+
+        return padded_sequence
 
     def is_binary(self, array):
         return np.isin(array, [0, 1]).all()
@@ -139,18 +205,10 @@ class GenotypeDataset(Dataset):
         covariates_tensor = covariates_tensor  # torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
 
         if self.has_phenotype:
-            if self.dynamic_phenotype_sampling:
-                phenotype_ind_tensor = torch.tensor([self.pheno2ind[pheno] for pheno in self.subtree_phenotypes],
-                                                    dtype=torch.int)
-                phenotype_tensor = torch.tensor([phenotypes[pheno_id] for pheno_id in self.subtree_phenotypes],
-                                                dtype=torch.float32)
-            else:
-                phenotype_ind_tensor = torch.tensor([i for i in range(self.n_pheno)], dtype=torch.int)
-                phenotype_tensor = torch.tensor([phenotypes[pheno_id] for pheno_id in self.pheno_ids],
-                                                dtype=torch.float32)
-
-            result_dict['phenotype_indices'] = phenotype_ind_tensor
-            result_dict['phenotype'] = phenotype_tensor
+            phenotype_ind_tensor = torch.tensor([i for i in range(self.n_pheno)], dtype=torch.int)
+            phenotype_tensor = torch.tensor([phenotypes[pheno_id] for pheno_id in self.pheno_ids], dtype=torch.float32)
+            result_dict['phenotype_indices'] = phenotype_ind_tensor[self.pheno_range]
+            result_dict['phenotype'] = phenotype_tensor[self.pheno_range]
 
         end = time.time()
         result_dict["datatime"] = torch.tensor(end - start)
@@ -159,7 +217,7 @@ class GenotypeDataset(Dataset):
 
 class PLINKDataset(GenotypeDataset):
     def __init__(self, tree_parser : SNPTreeParser, bfile=None, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None, flip=False,
-                 input_format='indices', cov_ids=(), pheno_ids=(), bt=(), qt=(), dynamic_phenotype_sampling=0):
+                 input_format='indices', cov_ids=(), pheno_ids=(), bt=(), qt=()):
         """
         tree_parser: SNP tree parser object
         bfile: PLINK bfile prefix
@@ -181,14 +239,12 @@ class PLINKDataset(GenotypeDataset):
         print('loading done')
         self.input_format = input_format
         genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
-        #print(self.tree_parser.snp2ind)
+
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
-        #print(snp_sorted)
+
         self.iid2ind = {str(iid): idx for idx, iid in enumerate(plink_data.sample_id.values)}
         self.ind2iid = {idx: str(iid) for idx, iid in enumerate(plink_data.sample_id.values)}
-        #plink_snp_ids = plink_data.variant_id.values
-        #plink_snp_id2ind = {snp_id:ind for ind, snp_id in enumerate(plink_snp_ids)}
-        #ordered_snp_ind = [tree_parser.snp2ind[col] for col in plink_snp_ids if col in tree_parser.snp2ind.keys()]
+
         genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
         genotype_df = genotype_df[snp_sorted]
         print("genotype df shape: ", genotype_df.shape)
@@ -200,40 +256,31 @@ class PLINKDataset(GenotypeDataset):
             print("Swapping Ref and Alt!")
         self.N, self.n_snps = genotype.shape
 
-        n_snps     = tree_parser.n_snps               # original SNP catalogue size
-        snp_offset = n_snps                           # allele * n_snps + j
-        snp_pad    = n_snps * 3                  # padding value
+        n_snps          = tree_parser.n_snps               # original SNP catalogue size
+        self.snp_offset      = n_snps                           # allele * n_snps + j
+        self.snp_pad    = n_snps * 3                  # padding value
 
         # ---------- SNP indices for all individuals ----------
         alleles = torch.as_tensor(genotype, dtype=torch.long)  # (N × 1 200)
         alleles = torch.clip(alleles, min=0, max=2) # need to be fixed?
         base = torch.arange(self.n_snps, dtype=torch.long)  # [0 … 1 199]
-        #print(base)
-        #print(torch.max(alleles))
-        #print((genotype>2).sum())
-        snp_idx = alleles * snp_offset + base  # vectorised
-        #print(snp_idx)
-        #print(n_snps, torch.max(snp_idx))
-        #print(snp_idx)
-        #if self.n_snp2pad:
-        pad = torch.full((self.N, self.n_snp2pad),
-                         snp_pad, dtype=torch.long)
+        snp_idx = alleles * self.snp_offset + base  # vectorised
+
+        pad = torch.full((self.N, self.n_snp2pad), self.snp_pad, dtype=torch.long)
         snp_idx = torch.cat((snp_idx, pad), dim=1)  # (N × (1 200 + pad))
-        #print("SNP_IDX size: ", snp_idx.size())
+
         self.snp_idx = snp_idx.contiguous()  # final (N × L_snp)
         block_pad = self.tree_parser.n_blocks
         block_idx = torch.tensor([self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)], dtype=torch.long)
-        #print(block_idx)
-        self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad,), block_pad, dtype=torch.long)))
-        #self.genotype.index = plink_data.sample_id.values
-        #self.genotype.columns = plink_data.variant_id.values
+
+        self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad+1,), block_pad, dtype=torch.long)))
+
         self.flip = flip
         print("From PLINK %d variants with %d samples are queried" % (genotype.shape[1], genotype.shape[0]))
         del genotype_df
         del genotype
 
         # Processing Covariates
-        #print('Processing Covariates...')
         if self.cov_df is not None:
             self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
         else:
@@ -247,26 +294,15 @@ class PLINKDataset(GenotypeDataset):
             self.cov_df['IID'] = self.cov_df['IID'].astype(str)
             self.cov_df['FID'] = self.cov_df['FID'].astype(str)
             self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
-            #self.genotype = self.genotype.loc[self.cov_df.IID]
-
 
         if self.pheno_df is not None:
             self.pheno_df = self.pheno_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
-            #if 'PHENOTYPE' not in self.cov_df.columns:
-            #self.cov_df.merge(self.pheno_df, left_on=['FID', 'IID'], right_on=['FID', 'IID'])
-            #self.genotype = self.genotype.loc[self.cov_df.IID]
         else:
             self.pheno_df = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
             self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
             self.pheno_df = self.pheno_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
             self.pheno_ids = ['PHENOTYPE']
 
-        if dynamic_phenotype_sampling:
-            self.dynamic_phenotype_sampling = True
-            self.n_phenotypes_sample = dynamic_phenotype_sampling
-        else:
-            self.dynamic_phenotype_sampling = False
-            self.n_phenotypes_sample = self.n_pheno
         self.subtree = None
         self.subtree_phenotypes = []
 
@@ -279,7 +315,6 @@ class PLINKDataset(GenotypeDataset):
         print("%d of participant with %d of variants"%(self.genotype.shape[0], self.genotype.shape[1]))
         print("The number of covariates:", self.n_cov)
 
-
     def sample_population(self, n=100, inplace=False):
         if not inplace:
             sampled_individual = self.cov_df.IID.sample(n=n).tolist()
@@ -289,50 +324,43 @@ class PLINKDataset(GenotypeDataset):
             self.cov_df = self.cov_df.set_index("IID").loc[self.genotype.index].reset_index().rename(columns={'index':"IID"})
             self.pheno_df = self.pheno_df.set_index("IID").loc[self.genotype.index].reset_index().rename(columns={'index':"IID"})
 
-    def sample_phenotypes(self, n=2, build_subtree=True):
+
+    def sample_phenotypes(self, n):
         sampled_phenotypes = random.sample(self.pheno_ids, n)
-        if build_subtree:
-            snps_for_phenotypes = set(sum([self.tree_parser.pheno2snp[pheno] for pheno in sampled_phenotypes], []))
-            subtree = self.tree_parser.retain_snps(snps_for_phenotypes, inplace=False, verbose=False)
-            subtree = subtree.init_ontology_with_snp(subtree.collapse(to_keep=None, min_term_size=5, inplace=False, verbose=False), subtree.snp2gene_df, inplace=False, verbose=False)
-            self.subtree = subtree
-            self.subtree_phenotypes = sampled_phenotypes
-            #print("subtree aligned..", subtree)
-            return sampled_phenotypes, subtree
-        else:
-            return sampled_phenotypes
+        sampled_pheno_inds = sorted([self.pheno2ind[pheno] for pheno in sampled_phenotypes])
+        sampled_phenotypes = [self.ind2pheno[ind] for ind in sampled_pheno_inds]
+        #print("Sample phenotypes: ", sampled_phenotypes)
+        self.pheno_range = sampled_pheno_inds
+        snp_set = set()
+        for pheno in sampled_phenotypes:
+            #print(self.tree_parser.pheno2snp[pheno])
+            snp_set = snp_set.union(self.tree_parser.pheno2snp[pheno])
+        snp_set = sorted(list(snp_set))
+        #print(snp_set)
+        gene_set = set()
+        for snp in snp_set:
+            gene_set = gene_set.union(self.tree_parser.snp2gene[snp])
+        gene_set = sorted(list(gene_set))
+        sys_set = set()
+        for gene in gene_set:
+            sys_set = sys_set.union(self.tree_parser.gene2sys[gene])
+        snp_indices = sorted([self.tree_parser.snp2ind[snp] for snp in snp_set])
+        gene_indices = sorted([self.tree_parser.gene2ind[gene] for gene in gene_set])
+        sys_indices = sorted([self.tree_parser.sys2ind[sys] for sys in sys_set])
+        self.snp_range = self.pad_indices(snp_indices, self.snp_offset)
+        self.block_range = self.pad_indices(snp_indices, self.snp_offset)
+        self.gene_range = self.pad_indices(gene_indices, self.gene_pad)
+        self.sys_range = self.pad_indices(sys_indices, self.sys_pad)
+
 
     def __getitem__(self, index):
         result_dict = super().__getitem__(index)
-
-        if self.dynamic_phenotype_sampling:
-            tree_parser = self.subtree
-            snp_ind_alias_dict = self.tree_parser.snp2ind
-            gene_ind_alias_dict = self.tree_parser.gene2ind
-        else:
-            tree_parser = self.tree_parser
-            snp_ind_alias_dict = None
-            gene_ind_alias_dict = None
-
         sample2snp_dict = {}
-        '''
-        for pheno in self.pheno_ids:
-            pheno_dict = {}
-            pheno_ind_dict = self.tree_parser.snp2gene_by_phenotype_dict[pheno]
-            pheno_dict['snp'] = self.snp_idx[index][pheno_ind_dict['snp']]
-            pheno_dict['gene'] = self.gene_idx[pheno_ind_dict['gene']]
-            pheno_dict['mask'] = pheno_ind_dict['mask']
-            sample2snp_dict[pheno] = pheno_dict
-            #F.pad(snp_idx, (0, mask.size(1) - len(snp_idx)), value=)
-        '''
-        #sample2snp_dict
-        sample2snp_dict['block_ind'] = self.block_idx
-        sample2snp_dict['snp'] = self.snp_idx[index]
-        sample2snp_dict['gene'] = self.gene_idx
-        sample2snp_dict['sys'] = self.sys_idx
-
+        sample2snp_dict['block_ind'] = self.block_idx[self.block_range]
+        sample2snp_dict['snp'] = self.snp_idx[index, self.snp_range]
+        sample2snp_dict['gene'] = self.gene_idx[self.gene_range]
+        sample2snp_dict['sys'] = self.sys_idx[self.sys_range]
         result_dict['genotype'] = sample2snp_dict
-        #print(sample2snp_dict['snp'].size(), sample2snp_dict['gene'].size(), sample2snp_dict['sys'].size())
         return result_dict
 
 
@@ -344,8 +372,6 @@ class EmbeddingDataset(PLINKDataset):
         super().__init__(tree_parser=tree_parser, bfile=bfile, cov=cov, pheno=pheno, cov_mean_dict=cov_mean_dict, cov_std_dict=cov_std_dict,
                             cov_ids=cov_ids, pheno_ids=pheno_ids, bt=bt, qt=qt)
 
-        #embedding_zarrs = glob(os.path.join(zarr_path, "*"))
-        #embedding_zarrs = sorted(embedding_zarrs, key=self.sort_key)
         self.embedding = embedding#{self.sort_key(p): zarr.open(p, mode="r") for p in embedding_zarrs}
 
         self.snp2block = {}
@@ -421,26 +447,20 @@ class BlockDataset(Dataset):
         plink_data = plink.read_plink(path=bfile)
         print('loading done')
         genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
-        #print(self.tree_parser.snp2ind)
-        #snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
-        #print(snp_sorted)
         self.iid2ind = {str(iid):idx for idx, iid in enumerate(plink_data.sample_id.values)}
         self.ind2iid = {idx:str(iid) for idx, iid in enumerate(plink_data.sample_id.values)}
 
         self.snp2ind = {str(snp): idx for idx, snp in enumerate(plink_data.variant_id.values)}
         self.ind2snp = {idx: str(snp) for idx, snp in enumerate(plink_data.variant_id.values)}
-        #plink_snp_ids = plink_data.variant_id.values
-        #plink_snp_id2ind = {snp_id:ind for ind, snp_id in enumerate(plink_snp_ids)}
-        #ordered_snp_ind = [tree_parser.snp2ind[col] for col in plink_snp_ids if col in tree_parser.snp2ind.keys()]
         genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
-        #genotype_df = genotype_df[snp_sorted]
+
         genotype = genotype_df.values
         if not flip:
             genotype = 2 - genotype
         else:
             print("Swapping Ref and Alt!")
         self.N, self.n_snps = genotype.shape
-        snp_offset = self.n_snps                           # allele * n_snps + j
+        self.snp_offset = self.n_snps                           # allele * n_snps + j
         self.snp_pad    = self.n_snps * 3 + 1                  # padding value
         self.snp_mask =  self.n_snps * 3 + 2
 
@@ -469,7 +489,7 @@ class BlockDataset(Dataset):
         self.n_snp2pad = int(np.ceil(self.n_snps/8)*8) - self.n_snps
         alleles = torch.as_tensor(genotype, dtype=torch.long)  # (N × 1 200)
         base = torch.arange(self.n_snps, dtype=torch.long)  # [0 … 1 199]
-        snp_idx = alleles * snp_offset + base  # vectorised
+        snp_idx = alleles * self.snp_offset + base  # vectorised
         #if self.n_snp2pad:
         pad = torch.full((self.N, self.n_snp2pad),
                          self.snp_pad, dtype=torch.long)
@@ -495,64 +515,13 @@ class BlockQueryDataset(PLINKDataset):
         """
         super().__init__(tree_parser=tree_parser, bfile=bfile, cov=cov, pheno=pheno, cov_mean_dict=cov_mean_dict, cov_std_dict=cov_std_dict, cov_ids=cov_ids, pheno_ids=pheno_ids, bt=bt, qt=qt)
         self.blocks = blocks
-
         self.iids = self.cov_df.IID.map(str).tolist()
-
         self.iid2ind = {iid:i for i, iid in enumerate(self.iids)}
         self.ind2iid = {i:iid for i, iid in enumerate(self.iids)}
         block_pad = self.tree_parser.n_blocks
         block_idx = torch.tensor([self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)], dtype=torch.long)
         print(block_idx)
         self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad,), block_pad, dtype=torch.long)))
-        '''
-        print('Loading PLINK data at %s' % bfile)
-        # Processing Genotypes
-        plink_data = plink.read_plink(path=bfile)
-        print('loading done')
-
-        genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
-        # print(self.tree_parser.snp2ind)
-        snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
-        # print(snp_sorted)
-        self.ind2iid = {idx: str(iid) for idx, iid in enumerate(plink_data.sample_id.values)}
-        # plink_snp_ids = plink_data.variant_id.values
-        # plink_snp_id2ind = {snp_id:ind for ind, snp_id in enumerate(plink_snp_ids)}
-        # ordered_snp_ind = [tree_parser.snp2ind[col] for col in plink_snp_ids if col in tree_parser.snp2ind.keys()]
-        genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
-        genotype_df = genotype_df.loc[self.iids, snp_sorted]
-        #genotype_df = genotype_df.
-        genotype = genotype_df.values
-        if not flip:
-            genotype = 2 - genotype
-        else:
-            print("Swapping Ref and Alt!")
-        self.N, self.n_snps = genotype.shape
-        n_snps = tree_parser.n_snps  # original SNP catalogue size
-        snp_offset = n_snps  # allele * n_snps + j
-        snp_pad = n_snps * 3  # padding value
-
-        # ---------- SNP indices for all individuals ----------
-        alleles = torch.as_tensor(genotype, dtype=torch.long)  # (N × 1 200)
-
-        base = torch.arange(self.n_snps, dtype=torch.long)  # [0 … 1 199]
-        # print(base)
-        # print(genotype)
-        snp_idx = alleles * snp_offset + base  # vectorised
-        # print(snp_idx)
-        # if self.n_snp2pad:
-        pad = torch.full((self.N, self.n_snp2pad),
-                         snp_pad, dtype=torch.long)
-        snp_idx = torch.cat((snp_idx, pad), dim=1)  # (N × (1 200 + pad))
-        # print(snp_idx.size())
-        self.snp_idx = snp_idx.contiguous()  # final (N × L_snp)
-
-        # self.genotype.index = plink_data.sample_id.values
-        # self.genotype.columns = plink_data.variant_id.values
-        self.flip = flip
-        print("From PLINK %d variants with %d samples are queried" % (genotype.shape[1], genotype.shape[0]))
-        del genotype_df
-        del genotype
-        '''
 
     def __getitem__(self, index):
         covariates = self.cov_df.iloc[index]
@@ -596,22 +565,11 @@ class SNP2PCollator(object):
         result_dict = dict()
         result_dict['genotype'] = {}
         result_dict['genotype']['snp2gene'] = {}
-        '''
-        for pheno in self.pheno_ids:
-            pheno_result_dict = {}
-            snp_stacked = torch.stack([d['genotype'][pheno]['snp'] for d in data])
-            snp_pad_size = int(np.ceil(int(snp_stacked.size(1)) / 8) * 8) - int(snp_stacked.size(1))
-            pheno_result_dict['snp'] = F.pad(snp_stacked, (0, snp_pad_size), value=self.padding_index['snp'])
-
-            gene_stacked = torch.stack([d['genotype'][pheno]['gene'] for d in data])
-            gene_pad_size = int(np.ceil(int(gene_stacked.size(1)) / 8) * 8) - int(gene_stacked.size(1))
-            pheno_result_dict['gene'] = F.pad(gene_stacked, (0, gene_pad_size), value=self.padding_index['gene'])
-            pheno_result_dict['mask'] =  torch.stack([d['genotype'][pheno]['mask'] for d in data])
-            result_dict['genotype']['snp2gene'][pheno] = pheno_result_dict
-        '''
 
         result_dict['genotype']['gene'] = torch.stack([d['genotype']['gene'] for d in data])#.long()
         result_dict['genotype']['sys'] = torch.stack([d['genotype']['sys'] for d in data])#.long()
+        result_dict['genotype']['gene_indices'] = torch.arange(self.tree_parser.n_genes, dtype=torch.long)
+        result_dict['genotype']['sys_indices'] = torch.arange(self.tree_parser.n_systems, dtype=torch.long)
 
         if self.input_format == 'embedding':
             result_dict['genotype']['snp'] = torch.stack([d['genotype']['snp'] for d in data])  # .long()#genotype_dict
@@ -751,180 +709,7 @@ class DynamicPhenotypeBatchSampler(BatchSampler):
 
             yield batch_indices
 
-class DynamicPhenotypeBatchIterableDataset(IterableDataset):
-    def __init__(self, dataset, collator, batch_size, shuffle=True):
-        super().__init__()
-        self.dataset    = dataset      # map‑style dataset, len() defined
-        self.collator   = collator
-        self.batch_size = batch_size
-        self.shuffle    = shuffle
 
-    # OPTIONAL: lets DataLoader len(loader) work
-    def __len__(self):
-        return math.ceil(len(self.dataset) / self.batch_size)
-
-    def __iter__(self):
-        ############ 0.  worker bookkeeping ############
-        worker = get_worker_info()          # None if num_workers == 0
-        total  = len(self.dataset)          # N samples in underlying ds
-
-        if worker is None:                  # single‑process data‑load
-            w_start, w_end   = 0, total
-        else:                               # multi‑worker sharding
-            per_worker       = math.ceil(total / worker.num_workers)
-            w_start          = worker.id * per_worker
-            w_end            = min(w_start + per_worker, total)
-
-        # ---- build THIS worker’s index list ----
-        indices = list(range(w_start, w_end))
-        if self.shuffle:
-            random.shuffle(indices)
-
-        ############ 1.  walk in batch‑size chunks ############
-        for lo in range(0, len(indices), self.batch_size):
-            batch_inds = indices[lo : lo + self.batch_size]
-
-            # if the tail slice is empty (can only happen if len==0)
-            if not batch_inds:
-                break
-
-            # ----- draw phenotypes & subtree ONCE for this batch -----
-            n = random.randint(1, self.dataset.n_pheno - 1)
-            pheno_list, subtree = self.dataset.sample_phenotypes(
-                n=n, build_subtree=True
-            )
-
-            # pull raw samples
-            raw_batch = [self.dataset[i] for i in batch_inds]
-
-            # base collate
-            collated  = self.collator(raw_batch)
-
-            # ---------- build & attach masks ----------
-            masks = {}
-            masks['subtree_forward']  = subtree.get_hierarchical_interactions(
-                subtree.interaction_types, 'forward', 'indices'
-            )
-            masks['subtree_backward'] = subtree.get_hierarchical_interactions(
-                subtree.interaction_types, 'backward', 'indices'
-            )
-
-            # sys↔gene binary masks (shape S×G and its transpose)
-            S, G = (self.dataset.tree_parser.n_systems,
-                    self.dataset.tree_parser.n_genes)
-            sys2gene = torch.zeros((S, G), dtype=torch.bool)
-            for sys, genes in subtree.sys2gene.items():
-                si = self.dataset.tree_parser.sys2ind[sys]
-                for g in genes:
-                    gi = self.dataset.tree_parser.gene2ind[g]
-                    sys2gene[si, gi] = True
-
-            masks['sys2gene_mask'] = sys2gene
-            masks['gene2sys_mask'] = sys2gene.T
-            #masks['phenotype_list'] = pheno_list
-            collated['mask'] = masks
-
-            yield collated
-
-class DynamicPhenotypeBatchIterableDatasetDDP(IterableDataset):
-    def __init__(self, dataset, collator, batch_size, shuffle=True):
-        """
-        base_ds   : map‑style dataset with __len__ / __getitem__
-        collator  : callable(list(raw_samples)) → dict  (no masks yet)
-        batch_size: number of samples per batch
-        shuffle   : shuffle indices each epoch
-        """
-        super().__init__()
-        self.dataset    = dataset
-        self.collator   = collator
-        self.batch_size = batch_size
-        self.shuffle    = shuffle
-
-    def __len__(self):
-        return math.ceil(len(self.dataset) / self.batch_size)
-
-    def _index_slice_for_worker_and_rank(self):
-        """Return the list of indices this *process* should iterate."""
-        N = len(self.dataset)
-
-        # ── split by worker (DataLoader subprocess) ──
-        w_info = get_worker_info()
-        if w_info is None:
-            w_start, w_end, w_workers = 0, N, 1
-            w_id = 0
-        else:
-            per_worker = math.ceil(N / w_info.num_workers)
-            w_start    = w_id = w_info.id
-            w_start   *= per_worker
-            w_end      = min(w_start + per_worker, N)
-            w_workers  = w_info.num_workers
-
-        indices = list(range(w_start, w_end))
-
-        # ── split further by DDP rank ──
-        if dist.is_initialized():
-            rank       = dist.get_rank()
-            world      = dist.get_world_size()
-            indices    = indices[rank::world]   # stride slicing
-        else:
-            rank, world = 0, 1
-
-        if self.shuffle and (rank == 0 and w_id == 0):
-            random.shuffle(indices)             # shuffle once then broadcast
-        # simple broadcast for reproducibility
-        if dist.is_initialized():
-            idx_tensor = torch.tensor(indices, dtype=torch.int64, device="cpu")
-            idx_sizes  = torch.tensor([len(indices)], dtype=torch.int64, device="cpu")
-            dist.broadcast(idx_sizes, src=0)
-            if rank != 0:
-                idx_tensor = torch.empty(idx_sizes.item(), dtype=torch.int64)
-            dist.broadcast(idx_tensor, src=0)
-            indices = idx_tensor.tolist()
-
-        return indices
-
-    def __iter__(self):
-        indices = self._index_slice_for_worker_and_rank()
-
-        for chunk_start in range(0, len(indices), self.batch_size):
-            inds = indices[chunk_start : chunk_start + self.batch_size]
-            if not inds:
-                break
-
-            # 1️⃣  draw phenotypes / subtree once per batch
-            n = random.randint(1, self.dataset.n_pheno - 1)
-            pheno_list, subtree = self.dataset.sample_phenotypes(
-                n=n, build_subtree=True
-            )
-
-            # 2️⃣  fetch raw samples
-            raw_batch = [self.dataset[i] for i in inds]
-
-            # 3️⃣  basic collation
-            batch = self.collator(raw_batch)
-
-            # 4️⃣  build and attach masks
-            masks = {
-                "subtree_forward":  subtree.get_hierarchical_interactions(
-                    subtree.interaction_types, "forward",  "indices"),
-                "subtree_backward": subtree.get_hierarchical_interactions(
-                    subtree.interaction_types, "backward", "indices")
-            }
-            S, G = (self.dataset.tree_parser.n_systems,
-                    self.dataset.tree_parser.n_genes)
-            sys2gene = torch.zeros((S, G), dtype=torch.bool)
-            for s, genes in subtree.sys2gene.items():
-                si = self.dataset.tree_parser.sys2ind[s]
-                for g in genes:
-                    gi = self.dataset.tree_parser.gene2ind[g]
-                    sys2gene[si, gi] = True
-
-            masks["sys2gene_mask"] = sys2gene
-            masks["gene2sys_mask"] = sys2gene.T
-
-            batch["mask"] = masks
-
-            yield batch
 
 class CohortSampler(Sampler):
 

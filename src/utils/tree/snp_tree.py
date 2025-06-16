@@ -132,10 +132,13 @@ class SNPTreeParser(TreeParser):
         #    parser.snp2gene_df['gene'].isin(parser.gene2ind)
         #]
         #print(parser.snp2gene_df.shape)
-
+        snps = parser.snp2gene_df.drop_duplicates(subset=['snp'])['snp'].values.tolist()
         if multiple_phenotypes:
             if 'block' in parser.snp2gene_df.columns:
-                parser.phenotypes = list(parser.snp2gene_df.columns[5:])
+                if 'sig_in' in parser.snp2gene_df.columns:
+                    parser.phenotypes = list(parser.snp2gene_df.columns[5:])
+                else:
+                    parser.phenotypes = list(parser.snp2gene_df.columns[4:])
             else:
                 parser.phenotypes = list(parser.snp2gene_df.columns[3:])
             parser.pheno2snp = {
@@ -150,6 +153,13 @@ class SNPTreeParser(TreeParser):
                      .tolist()
                 for ph in parser.phenotypes
             }
+            parser.snp2pheno = {snp:[] for snp in snps}
+            for ph in parser.phenotypes:
+                # mask of rows where this phenotype is "True"/non-zero
+                mask = parser.snp2gene_df[ph].astype(bool)
+                # unique SNPs for this phenotype
+                for snp in parser.snp2gene_df.loc[mask, 'snp'].unique():
+                    parser.snp2pheno[snp].append(ph)
 
         # ———— 4) build SNP↔gene dicts & masks ————
         by_snp  = parser.snp2gene_df.groupby('snp')
@@ -166,13 +176,13 @@ class SNPTreeParser(TreeParser):
 
 
         # integer indices
-        snps = parser.snp2gene_df.drop_duplicates(subset=['snp'])['snp'].values.tolist()
+
 
         parser.snp2ind = { s:i for i,s in enumerate(snps) }
         parser.ind2snp = { i:s for s,i in parser.snp2ind.items() }
         ordered_genes = self._compute_gene_order_from_snps()
         parser.sys2ind, parser.ind2sys, parser.gene2ind, parser.ind2gene, parser.gene2sys_mask = parser.build_mask(list(parser.sys2ind.keys()), ordered_genes,
-                                                                                                                   parser.gene2sys)
+                                                                                                                   parser.sys2gene)
         parser.sys2gene_mask = parser.gene2sys_mask.T
         parser.n_snps = len(snps)
         print("The number of SNPs:", parser.n_snps)
@@ -208,7 +218,7 @@ class SNPTreeParser(TreeParser):
                 parser.snp2sys.setdefault(snp, []).append(sys_idx)
 
         # finally masks and dicts
-        parser.snp2gene_mask   = np.full((int(np.ceil(parser.n_genes/8)*8), (int(np.ceil(parser.n_snps/8)*8))), -10**4)
+        parser.snp2gene_mask   = np.full((int(np.ceil((parser.n_genes+1)/8)*8), (int(np.ceil(parser.n_snps/8)*8))), -10**4)
         parser.gene2snp_dict    = {gi:[] for gi in range(parser.n_genes)}
         parser.snp2gene_dict    = {si:[] for si in range(parser.n_snps)}
 

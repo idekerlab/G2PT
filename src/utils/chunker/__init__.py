@@ -1,1 +1,1 @@
-from .chunker import MaskBasedChunker
+from .chunker import MaskBasedChunker, AttentionAwareChunker

@@ -16,12 +16,13 @@ import torch.utils.data.distributed
 
 
 from prettytable import PrettyTable
-from src.utils.chunker import MaskBasedChunker
+from src.utils.chunker import MaskBasedChunker, AttentionAwareChunker
 
 from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
 from torch.utils.data.distributed import DistributedSampler
-from src.utils.data.dataset import SNP2PCollator, PLINKDataset, DynamicPhenotypeBatchIterableDataset, DynamicPhenotypeBatchIterableDatasetDDP
+from src.utils.data.dataset import SNP2PCollator, PLINKDataset
+from src.utils.data.dataset import DynamicPhenotypeBatchIterableDataset, DynamicPhenotypeBatchIterableDatasetDDP
 from src.utils.data.dataset import ChunkSNP2PCollator
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
@@ -136,23 +137,6 @@ def main():
 
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
-    # Multi-GPU option
-    '''
-    parser.add_argument('--world-size', default=1, type=int,
-                        help='number of nodes for distributed training')
-    parser.add_argument('--rank', default=0, type=int,
-                        help='node rank for distributed training')
-    parser.add_argument('--local-rank', default=1)
-    parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
-                        help='url used to set up distributed training')
-    parser.add_argument('--dist-backend', default='nccl', type=str,
-                        help='distributed backend')
-    parser.add_argument('--multiprocessing-distributed', action='store_true',
-                        help='Use multi-processing distributed training to launch '
-                             'N processes per node, which has N GPUs. This is the '
-                             'fastest way to use PyTorch for either single node or '
-                             'multi node data parallel training')
-    '''
 
     # Model input and output
     parser.add_argument('--model', help='path to trained model', default=None)
@@ -246,7 +230,7 @@ def main_worker(args):
         multiple_phenotypes = False
 
     tree_parser = SNPTreeParser(args.onto, args.snp2gene, dense_attention=args.dense_attention, multiple_phenotypes=multiple_phenotypes)
-    chunker = MaskBasedChunker(snp2gene_mask=tree_parser.snp2gene_mask, gene2sys_mask=tree_parser.gene2sys_mask, target_chunk_size=5000)
+    #chunker = MaskBasedChunker(snp2gene_mask=tree_parser.snp2gene_mask, gene2sys_mask=tree_parser.gene2sys_mask, target_chunk_size=20000)
     fix_system = False
     '''
     if args.train_bfile is None:
@@ -258,10 +242,11 @@ def main_worker(args):
     else:
     '''
     print("Loading PLINK bfile... at %s" % args.train_bfile)
+
+
     snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip,
                                  input_format=args.input_format,
-                                 cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt,
-                                 dynamic_phenotype_sampling=args.dynamic_phenotype_sampling)
+                                 cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
     args.bt_inds = snp2p_dataset.bt_inds
     args.qt_inds = snp2p_dataset.qt_inds
     args.bt = snp2p_dataset.bt
@@ -275,8 +260,8 @@ def main_worker(args):
     args.cov_std_dict = snp2p_dataset.cov_std_dict
     print("Loading done...")
 
-    #snp2p_collator = SNP2PCollator(tree_parser, input_format=args.input_format)
-    snp2p_collator = ChunkSNP2PCollator(tree_parser, chunker=chunker, input_format=args.input_format)
+    snp2p_collator = SNP2PCollator(tree_parser, input_format=args.input_format)
+    #snp2p_collator = ChunkSNP2PCollator(tree_parser, chunker=chunker, input_format=args.input_format)
 
     print("Summary of trainable parameters")
     if args.sys2env:
@@ -332,7 +317,7 @@ def main_worker(args):
 
     if args.distributed:
         if args.dynamic_phenotype_sampling:
-            dataset = DynamicPhenotypeBatchIterableDatasetDDP(snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True)
+            dataset = DynamicPhenotypeBatchIterableDatasetDDP(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True, n_phenotype2sample=1)
             snp2p_dataloader = DataLoader(dataset, batch_size=None,
                                           num_workers=args.jobs,
                                           prefetch_factor=2
@@ -351,7 +336,7 @@ def main_worker(args):
         snp2p_sampler = None
         if args.dynamic_phenotype_sampling:
             #snp2p_batch_sampler = DynamicPhenotypeBatchSampler(dataset=snp2p_dataset, batch_size=args.batch_size)
-            dataset = DynamicPhenotypeBatchIterableDataset(snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True)
+            dataset = DynamicPhenotypeBatchIterableDataset(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True, n_phenotype2sample=1)
             snp2p_dataloader = DataLoader(dataset, batch_size=None,
                                           num_workers=args.jobs,
                                           prefetch_factor=2
