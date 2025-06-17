@@ -317,6 +317,7 @@ def main_worker(args):
 
     if args.distributed:
         if args.dynamic_phenotype_sampling:
+            print("Dynamic phenotype sampling with DDP")
             dataset = DynamicPhenotypeBatchIterableDatasetDDP(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True, n_phenotype2sample=1)
             snp2p_dataloader = DataLoader(dataset, batch_size=None,
                                           num_workers=args.jobs,
@@ -335,6 +336,7 @@ def main_worker(args):
     else:
         snp2p_sampler = None
         if args.dynamic_phenotype_sampling:
+            print("Dynamic phenotype sampling")
             #snp2p_batch_sampler = DynamicPhenotypeBatchSampler(dataset=snp2p_dataset, batch_size=args.batch_size)
             dataset = DynamicPhenotypeBatchIterableDataset(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True, n_phenotype2sample=1)
             snp2p_dataloader = DataLoader(dataset, batch_size=None,
@@ -399,6 +401,10 @@ def main_worker(args):
     snp2p_trainer.train(args.epochs, args.out)
 
 if __name__ == '__main__':
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass # Already set, ignore
     print("Python __main__", flush=True)
     #print("NCCL socket name :", os.environ["NCCL_SOCKET_IFNAME"])
     main()

@@ -28,10 +28,12 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.snp_adapters = nn.Parameter(torch.randn(snp_embedding_length, self.hidden_dims, self.hidden_dims))
         self.snp_embedding = nn.Embedding(self.n_snps * 3 + 2, hidden_dims, padding_idx=self.n_snps * 3)
         self.gene_embedding = nn.Embedding(self.n_genes + 1, hidden_dims, padding_idx=self.n_genes)
-        self.n_snps2pad = int(np.ceil(self.tree_parser.n_snps / 8) * 8) - self.tree_parser.n_snps
+        self.n_snp2pad = int(np.ceil((self.tree_parser.n_snps+1) / 8) * 8) - self.tree_parser.n_snps
+        self.n_gene2pad = int(np.ceil((self.tree_parser.n_genes + 1) / 8) * 8) - self.tree_parser.n_genes
+        self.n_sys2pad = int(np.ceil((self.tree_parser.n_systems + 1) / 8) * 8) - self.tree_parser.n_systems
         self.n_blocks = self.tree_parser.n_blocks
         self.block_embedding = nn.Embedding(self.n_blocks + 1, hidden_dims, padding_idx=self.n_blocks)
-        self.snp_batch_norm = BatchNorm1d_BatchOnly_NLC(hidden_dims, length=(self.n_snps + self.n_snps2pad))
+        self.snp_batch_norm = BatchNorm1d_BatchOnly_NLC(hidden_dims, length=(self.n_snps + self.n_snp2pad))
         self.gate_mlp = nn.Sequential(nn.Linear(self.hidden_dims * 3, self.hidden_dims), nn.ReLU(), nn.Linear(self.hidden_dims, 3))
 
         if self.input_format == 'block':
@@ -141,22 +143,6 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                 snp2gene_mask, gene2sys_mask, sys2gene_mask, sys_temp=None, sys2env=True, env2sys=True, sys2gene=True, score=False, attention=False, snp_only=False,
                 predict_snp=False, chunk=False):
 
-        '''
-        #covariate_embedding = self.get_covariate_embedding(covariates)
-
-
-        #snp_embedding = self.snp_batch_norm(snp_embedding)
-
-        if self.cov_effect == 'snp':
-            cov_effect_on_snp = self.get_cov2snp(snp_embedding, covariates)
-            snp_embedding = snp_embedding + cov_effect_on_snp
-        
-
-        if snp_only:
-            return self.prediction_with_snp(phenotype_embedding, snp_embedding)
-        '''
-
-
         #for i in range(2):
         if not chunk:
             gene_embedding, system_embedding = self.propagate(genotype_dict, covariates, snp2gene_mask, gene2sys_mask, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, sys2gene_mask)
@@ -208,17 +194,14 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
         snp_embedding, snp_prediction = self.get_snp_embedding(genotype_dict)
         snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, snp2gene_mask)
-        #print(genotype_dict['gene_indices'])
-        #print(gene_embedding.size(), snp_effect_on_gene.size())
         gene_embedding = gene_embedding + self.effect_norm(snp_effect_on_gene)
-        #gene_embedding[:, genotype_dict['gene_indices']] = gene_embedding[:, genotype_dict['gene_indices']] + self.effect_norm(snp_effect_on_gene[:, genotype_dict['gene_indices']])
-        #print(genotype_dict['gene_indices'])
+
         gene_effect_on_system = self.get_gene2sys(self.dropout(system_embedding), self.dropout(gene_embedding), gene2sys_mask)
-        #print(genotype_dict['sys_indices'].size(), gene_effect_on_system.size())
+
         batch_size = covariates.size(0)
         system_embedding_total = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1).clone()
         system_embedding_total[:, genotype_dict['sys_indices']] = system_embedding_total[:, genotype_dict['sys_indices']] + self.effect_norm(gene_effect_on_system)
-        #print(genotype_dict['sys_indices'])
+
         system_effect_forward = self.get_sys2sys(system_embedding_total, nested_hierarchical_masks_forward, direction='forward')
         system_embedding_total = system_embedding_total + self.effect_norm(system_effect_forward)
 

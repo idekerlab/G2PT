@@ -22,8 +22,8 @@ class Genotype2PhenotypeTransformer(nn.Module):
         print("Model is initialized with %d systems and %d gene mutations" % (self.n_systems, self.n_genes))
         self.poincare = poincare
 
-        self.system_embedding = nn.Embedding(self.n_systems+1, hidden_dims, padding_idx=self.n_systems)
-        self.gene_embedding = nn.Embedding(self.n_genes+1, hidden_dims, padding_idx=self.n_genes)
+        self.system_embedding = nn.Embedding(int(np.ceil((self.tree_parser.n_systems + 1) / 8) * 8), hidden_dims, padding_idx=self.n_systems)
+        self.gene_embedding = nn.Embedding(int(np.ceil((self.tree_parser.n_genes + 1) / 8) * 8), hidden_dims, padding_idx=self.n_genes)
 
         self.mut_update_norm_inner = nn.LayerNorm(hidden_dims)
         self.mut_update_norm_outer = nn.LayerNorm(hidden_dims)  # LayerNormNormedScaleOnly(hidden_dims)

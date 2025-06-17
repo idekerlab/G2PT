@@ -218,7 +218,7 @@ class SNPTreeParser(TreeParser):
                 parser.snp2sys.setdefault(snp, []).append(sys_idx)
 
         # finally masks and dicts
-        parser.snp2gene_mask   = np.full((int(np.ceil((parser.n_genes+1)/8)*8), (int(np.ceil((parser.n_snps+1)/8)*8))), -10**4)
+        parser.snp2gene_mask   = np.full((int(np.ceil((parser.n_genes+1)/8)*8), (int(np.ceil(parser.n_snps/8)*8))), -10**4)
         parser.gene2snp_dict    = {gi:[] for gi in range(parser.n_genes)}
         parser.snp2gene_dict    = {si:[] for si in range(parser.n_snps)}
 
@@ -402,6 +402,64 @@ class SNPTreeParser(TreeParser):
             self.init_ontology_with_snp(ontology_df_new, new_snp2gene_df, inplace=inplace, verbose=verbose)
         else:
             return self.init_ontology_with_snp(ontology_df_new, new_snp2gene_df, inplace=inplace, verbose=verbose)
+
+    def collect_systems_to_root(self, target_systems):
+        """
+        Collect all systems from the specified target systems up to the root node(s).
+
+        This function takes a list of target systems and collects all ancestor systems
+        (including the target systems themselves) up to the root nodes. It traverses
+        the system graph in the reverse direction (from children to parents) and
+        returns all unique systems encountered in the path to any root node.
+
+        Parameters
+        ----------
+        target_systems : list
+            List of system names to start collection from.
+
+        Returns
+        -------
+        set
+            Set of all systems from target systems to root nodes (including target systems).
+
+        Examples
+        --------
+        >>> # Collect all systems from specific targets to root
+        >>> target_systems = ['GO:0006412', 'GO:0006413']
+        >>> collected = tree_parser.collect_systems_to_root(target_systems)
+        >>> print(f"Collected {len(collected)} systems from targets to root")
+        """
+        if not target_systems:
+            return set()
+
+        # Validate that all target systems exist in the graph
+        invalid_systems = [sys for sys in target_systems if sys not in self.sys_graph.nodes]
+        if invalid_systems:
+            raise ValueError(f"The following systems are not found in the system graph: {invalid_systems}")
+
+        # Set to store all collected systems
+        collected_systems = set()
+
+        # Queue for breadth-first traversal (systems to process)
+        systems_to_process = set(target_systems)
+
+        # Add target systems to the collected set
+        collected_systems.update(target_systems)
+
+        # Traverse upward to collect all ancestors
+        while systems_to_process:
+            current_system = systems_to_process.pop()
+
+            # Get all parent systems (predecessors in the directed graph)
+            parent_systems = list(self.sys_graph.predecessors(current_system))
+
+            # Add new parent systems to collection and processing queue
+            for parent in parent_systems:
+                if parent not in collected_systems:
+                    collected_systems.add(parent)
+                    systems_to_process.add(parent)
+
+        return collected_systems
 
 
 

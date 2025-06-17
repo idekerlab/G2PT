@@ -7,7 +7,6 @@ from scipy.stats import zscore, skewnorm
 import torch
 import torch.nn.functional as F
 from src.utils.tree import TreeParser, SNPTreeParser
-from typing import Union
 import time
 from torch.utils.data.distributed import DistributedSampler
 from sgkit.io import plink
@@ -16,6 +15,7 @@ import os
 from collections import OrderedDict
 from transformers import DataCollatorForLanguageModeling, PreTrainedTokenizer
 from typing import Optional, Tuple, Dict
+from .. import pad_indices
 
 class GenotypeDataset(Dataset):
     def __init__(self, tree_parser : SNPTreeParser, cov, pheno=None, cov_mean_dict=None, cov_std_dict=None,
@@ -106,72 +106,6 @@ class GenotypeDataset(Dataset):
         if ('PHENOTYPE' in self.cov_df.columns) or (pheno is not None):
             self.has_phenotype = True
         print("Phenotypes: ", self.pheno_ids)
-
-    @staticmethod
-    def pad_indices(
-            sequence: Union[list, np.ndarray, torch.Tensor],
-            padding_value: int = 0,
-            multiple: int = 8
-    ) -> Union[list, np.ndarray, torch.Tensor]:
-        """
-        Pads a 1D sequence so its total length is a multiple of a given number.
-
-        This function is type-aware and works for Python lists, NumPy arrays,
-        and PyTorch tensors. The returned type will match the input type.
-
-        Args:
-            sequence (Union[list, np.ndarray, torch.Tensor]): The input sequence to pad.
-            padding_value (int, optional): The value to use for padding. Defaults to 0.
-            multiple (int, optional): The target multiple for the sequence length.
-                                      Defaults to 8.
-
-        Returns:
-            Union[list, np.ndarray, torch.Tensor]: The padded sequence, matching the input type.
-        """
-        # Remember the original type to return it in the same format
-        is_list = isinstance(sequence, list)
-        is_torch_tensor = isinstance(sequence, torch.Tensor)
-
-        # Use a consistent object for processing (NumPy array or PyTorch Tensor)
-        if is_list:
-            # Convert list to NumPy array for processing
-            processed_sequence = np.array(sequence)
-        else:
-            processed_sequence = sequence
-
-        current_length = len(processed_sequence)
-
-        # Calculate how many padding elements are needed
-        n_pad = (multiple - (current_length % multiple)) % multiple
-
-        # If no padding is needed, return the original sequence
-        if n_pad == 0:
-            return sequence
-
-        # --- Create and concatenate the padding based on the type ---
-        if is_torch_tensor:
-            # For PyTorch Tensors
-            padding = torch.full(
-                (n_pad,),
-                padding_value,
-                dtype=processed_sequence.dtype,
-                device=processed_sequence.device
-            )
-            padded_sequence = torch.cat([processed_sequence, padding])
-        else:
-            # For NumPy Arrays (and lists that were converted to NumPy)
-            padding = np.full(
-                (n_pad,),
-                padding_value,
-                dtype=processed_sequence.dtype
-            )
-            padded_sequence = np.concatenate([processed_sequence, padding])
-
-        # Convert back to list if the original input was a list
-        if is_list:
-            return padded_sequence.tolist()
-
-        return padded_sequence
 
     def is_binary(self, array):
         return np.isin(array, [0, 1]).all()
@@ -347,10 +281,10 @@ class PLINKDataset(GenotypeDataset):
         snp_indices = sorted([self.tree_parser.snp2ind[snp] for snp in snp_set])
         gene_indices = sorted([self.tree_parser.gene2ind[gene] for gene in gene_set])
         sys_indices = sorted([self.tree_parser.sys2ind[sys] for sys in sys_set])
-        self.snp_range = self.pad_indices(snp_indices, self.snp_offset)
-        self.block_range = self.pad_indices(snp_indices, self.snp_offset)
-        self.gene_range = self.pad_indices(gene_indices, self.gene_pad)
-        self.sys_range = self.pad_indices(sys_indices, self.sys_pad)
+        self.snp_range = pad_indices(snp_indices, self.snp_offset)
+        self.block_range = pad_indices(snp_indices, self.snp_offset)
+        self.gene_range = pad_indices(gene_indices, self.gene_pad)
+        self.sys_range = pad_indices(sys_indices, self.sys_pad)
 
 
     def __getitem__(self, index):
@@ -568,8 +502,9 @@ class SNP2PCollator(object):
 
         result_dict['genotype']['gene'] = torch.stack([d['genotype']['gene'] for d in data])#.long()
         result_dict['genotype']['sys'] = torch.stack([d['genotype']['sys'] for d in data])#.long()
-        result_dict['genotype']['gene_indices'] = torch.arange(self.tree_parser.n_genes, dtype=torch.long)
-        result_dict['genotype']['sys_indices'] = torch.arange(self.tree_parser.n_systems, dtype=torch.long)
+        result_dict['genotype']['gene_indices'] = pad_indices(torch.arange(self.tree_parser.n_genes, dtype=torch.long), padding_value=self.tree_parser.n_genes, multiple=8)
+        result_dict['genotype']['sys_indices'] = pad_indices(torch.arange(self.tree_parser.n_systems, dtype=torch.long), padding_value=self.tree_parser.n_systems, multiple=8)
+
 
         if self.input_format == 'embedding':
             result_dict['genotype']['snp'] = torch.stack([d['genotype']['snp'] for d in data])  # .long()#genotype_dict
@@ -674,14 +609,14 @@ class ChunkSNP2PCollator(SNP2PCollator):
     @staticmethod
     def pad_batched_indices(batched_indices, padding_value=0):
         n_indices = batched_indices.size(1)
-        n_pad = int(np.ceil(n_indices / 8) * 8) - n_indices
+        n_pad = int(np.ceil((n_indices+1) / 8) * 8) - n_indices
         padded_indices = F.pad(batched_indices, (0, n_pad, 0, 0), value=padding_value)
         return padded_indices, n_pad
 
     @staticmethod
     def pad_indices(indices, padding_value=0):
         n_indices = indices.size(0)
-        n_pad = int(np.ceil(n_indices / 8) * 8) - n_indices
+        n_pad = int(np.ceil((n_indices+1) / 8) * 8) - n_indices
         padded_indices = F.pad(indices, (0, n_pad), value=padding_value)
         return padded_indices, n_pad
 

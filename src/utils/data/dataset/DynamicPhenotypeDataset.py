@@ -6,6 +6,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 
 from .SNP2PDataset import PLINKDataset
 import torch.distributed as dist
+from .. import pad_indices
 
 
 class DynamicPhenotypeBatchIterableDataset(IterableDataset):
@@ -61,13 +62,10 @@ class DynamicPhenotypeBatchIterableDataset(IterableDataset):
             collated  = self.collator(raw_batch)
             collated['snp2gene_mask'] = torch.tensor(self.tree_parser.snp2gene_mask[self.dataset.gene_range][:, self.dataset.snp_range], dtype=torch.float32)
             collated['gene2sys_mask'] = torch.tensor(self.tree_parser.gene2sys_mask[self.dataset.sys_range][:, self.dataset.gene_range], dtype=torch.float32)
-            collated['genotype']['gene_indices'] = torch.tensor(
-                self.dataset.pad_indices([gene_ind for gene_ind in self.dataset.gene_range if gene_ind != self.tree_parser.n_genes], self.tree_parser.n_genes),
-                dtype=torch.long)
-            collated['genotype']['sys_indices'] = torch.tensor(
-                self.dataset.pad_indices([sys_ind for sys_ind in self.dataset.sys_range if sys_ind != self.tree_parser.n_systems], self.tree_parser.n_systems),
-                dtype=torch.long)
+            collated['genotype']['gene_indices'] = torch.tensor(self.dataset.gene_range, dtype=torch.long)
+            collated['genotype']['sys_indices'] = torch.tensor(self.dataset.sys_range, dtype=torch.long)
             yield collated
+
 
 class DynamicPhenotypeBatchIterableDatasetDDP(IterableDataset):
     def __init__(self, tree_parser, dataset, collator, batch_size, shuffle=True, n_phenotype2sample=1):
@@ -79,10 +77,10 @@ class DynamicPhenotypeBatchIterableDatasetDDP(IterableDataset):
         """
         super().__init__()
         self.tree_parser = tree_parser
-        self.dataset    = dataset
-        self.collator   = collator
+        self.dataset = dataset
+        self.collator = collator
         self.batch_size = batch_size
-        self.shuffle    = shuffle
+        self.shuffle = shuffle
         self.n_phenotype2sample = n_phenotype2sample
 
     def __len__(self):
@@ -102,32 +100,43 @@ class DynamicPhenotypeBatchIterableDatasetDDP(IterableDataset):
             w_id = 0
         else:
             per_worker = math.ceil(N / w_info.num_workers)
-            w_start    = w_id = w_info.id
-            w_start   *= per_worker
-            w_end      = min(w_start + per_worker, N)
-            w_workers  = w_info.num_workers
+            w_start = w_id = w_info.id
+            w_start *= per_worker
+            w_end = min(w_start + per_worker, N)
+            w_workers = w_info.num_workers
 
         indices = list(range(w_start, w_end))
 
         # ── split further by DDP rank ──
+        # Determine the device for the current process (rank)
+        # This assumes your DDP setup has already set the correct CUDA device for this rank.
+        # It's typically args.local_rank or dist.get_rank() if using single-GPU per process.
+        # We'll get the current device from torch.cuda.current_device()
+        current_device = torch.device(f"cuda:{torch.cuda.current_device()}")
+
         if dist.is_initialized():
-            rank       = dist.get_rank()
-            world      = dist.get_world_size()
-            indices    = indices[rank::world]   # stride slicing
+            rank = dist.get_rank()
+            world = dist.get_world_size()
+            indices = indices[rank::world]  # stride slicing
         else:
             rank, world = 0, 1
 
         if self.shuffle and (rank == 0 and w_id == 0):
-            random.shuffle(indices)             # shuffle once then broadcast
+            random.shuffle(indices)  # shuffle once then broadcast
         # simple broadcast for reproducibility
         if dist.is_initialized():
-            idx_tensor = torch.tensor(indices, dtype=torch.int64, device="cpu")
-            idx_sizes  = torch.tensor([len(indices)], dtype=torch.int64, device="cpu")
+            # --- CRITICAL CHANGE HERE: Move tensors to the CUDA device ---
+            idx_tensor = torch.tensor(indices, dtype=torch.int64,
+                                      device=current_device)  # Changed device="cpu" to current_device
+            idx_sizes = torch.tensor([len(indices)], dtype=torch.int64,
+                                     device=current_device)  # Changed device="cpu" to current_device
+
             dist.broadcast(idx_sizes, src=0)
             if rank != 0:
-                idx_tensor = torch.empty(idx_sizes.item(), dtype=torch.int64)
+                # Ensure the empty tensor is also created on the current_device
+                idx_tensor = torch.empty(idx_sizes.item(), dtype=torch.int64, device=current_device)  # Changed
             dist.broadcast(idx_tensor, src=0)
-            indices = idx_tensor.tolist()
+            indices = idx_tensor.tolist()  # Convert back to list for iteration
 
         return indices
 
@@ -135,19 +144,22 @@ class DynamicPhenotypeBatchIterableDatasetDDP(IterableDataset):
         indices = self._index_slice_for_worker_and_rank()
 
         for chunk_start in range(0, len(indices), self.batch_size):
-            inds = indices[chunk_start : chunk_start + self.batch_size]
+            inds = indices[chunk_start: chunk_start + self.batch_size]
             if not inds:
                 break
-            raw_batch = [self.dataset[i] for i in inds]
             self.dataset.sample_phenotypes(n=self.n_phenotype2sample)
+            raw_batch = [self.dataset[i] for i in inds]
+
             # base collate
-            collated  = self.collator(raw_batch)
-            collated['snp2gene_mask'] = torch.tensor(self.tree_parser.snp2gene_mask[self.dataset.snp_range][:, self.dataset.gene_range], dtype=torch.float32)
-            collated['gene2sys_mask'] = torch.tensor(self.tree_parser.gene2sys_mask[self.dataset.gene_range][:, self.dataset.sys_range], dtype=torch.float32)
-            collated['genotype']['gene_indices'] = torch.tensor(
-                [gene_ind for gene_ind in self.dataset.gene_range if gene_ind != self.tree_parser.n_genes],
-                dtype=torch.long)
-            collated['genotype']['sys_indices'] = torch.tensor(
-                [sys_ind for sys_ind in self.dataset.sys_range if sys_ind != self.tree_parser.n_systems],
-                dtype=torch.long)
+            collated = self.collator(raw_batch)
+
+            # Ensure these masks are also on the correct device if they are part of the model's input
+            # If your model expects these on GPU, you'll need to .to(device) them here or in the collator
+            # For now, assuming they are fine on CPU or will be moved later.
+            collated['snp2gene_mask'] = torch.tensor(
+                self.tree_parser.snp2gene_mask[self.dataset.gene_range][:, self.dataset.snp_range], dtype=torch.float32)
+            collated['gene2sys_mask'] = torch.tensor(
+                self.tree_parser.gene2sys_mask[self.dataset.sys_range][:, self.dataset.gene_range], dtype=torch.float32)
+            collated['genotype']['gene_indices'] = torch.tensor(self.dataset.gene_range, dtype=torch.long)
+            collated['genotype']['sys_indices'] = torch.tensor(self.dataset.sys_range, dtype=torch.long)
             yield collated

@@ -125,8 +125,6 @@ class SNP2PTrainer(object):
         #self.best_model = self.snp2p_model
         best_performance = 0
 
-        if self.dynamic_phenotype_sampling:
-            self.snp2p_dataloader.dataset.dataset.dynamic_phenotype_sampling = True
         '''
         for epoch in range(5):
             self.iter_minibatches(self.snp2p_dataloader, epoch, name="SNP Adaptation :", snp_only=True)
@@ -149,7 +147,13 @@ class SNP2PTrainer(object):
         '''
         self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=self.args.lr,
                                      weight_decay=self.args.wd)
-
+        '''
+        if not self.args.distributed or (self.args.distributed
+                                                         and self.args.rank % torch.cuda.device_count() == 0):
+            performance = self.evaluate(self.snp2p_model, self.validation_dataloader, 0, name='Validation', print_importance=False)
+            gc.collect()
+            torch.cuda.empty_cache()
+        '''
         for epoch in range(self.args.start_epoch, epochs):
             self.train_epoch(epoch + 1, ccc=ccc)
             gc.collect()
