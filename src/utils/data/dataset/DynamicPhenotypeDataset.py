@@ -57,14 +57,15 @@ class DynamicPhenotypeBatchIterableDataset(IterableDataset):
             raw_batch = [self.dataset[i] for i in batch_inds]
             # base collate
             #print(self.dataset.snp_range, self.dataset.gene_range)
+            #print(self.tree_parser.gene2sys_mask.shape)
             collated  = self.collator(raw_batch)
             collated['snp2gene_mask'] = torch.tensor(self.tree_parser.snp2gene_mask[self.dataset.gene_range][:, self.dataset.snp_range], dtype=torch.float32)
             collated['gene2sys_mask'] = torch.tensor(self.tree_parser.gene2sys_mask[self.dataset.sys_range][:, self.dataset.gene_range], dtype=torch.float32)
-            collated['gene_indices'] = torch.tensor(
-                [gene_ind for gene_ind in self.dataset.gene_range if gene_ind != self.tree_parser.n_genes],
+            collated['genotype']['gene_indices'] = torch.tensor(
+                self.dataset.pad_indices([gene_ind for gene_ind in self.dataset.gene_range if gene_ind != self.tree_parser.n_genes], self.tree_parser.n_genes),
                 dtype=torch.long)
-            collated['sys_indices'] = torch.tensor(
-                [sys_ind for sys_ind in self.dataset.sys_range if sys_ind != self.tree_parser.n_systems],
+            collated['genotype']['sys_indices'] = torch.tensor(
+                self.dataset.pad_indices([sys_ind for sys_ind in self.dataset.sys_range if sys_ind != self.tree_parser.n_systems], self.tree_parser.n_systems),
                 dtype=torch.long)
             yield collated
 
@@ -143,10 +144,10 @@ class DynamicPhenotypeBatchIterableDatasetDDP(IterableDataset):
             collated  = self.collator(raw_batch)
             collated['snp2gene_mask'] = torch.tensor(self.tree_parser.snp2gene_mask[self.dataset.snp_range][:, self.dataset.gene_range], dtype=torch.float32)
             collated['gene2sys_mask'] = torch.tensor(self.tree_parser.gene2sys_mask[self.dataset.gene_range][:, self.dataset.sys_range], dtype=torch.float32)
-            collated['gene_indices'] = torch.tensor(
+            collated['genotype']['gene_indices'] = torch.tensor(
                 [gene_ind for gene_ind in self.dataset.gene_range if gene_ind != self.tree_parser.n_genes],
                 dtype=torch.long)
-            collated['sys_indices'] = torch.tensor(
+            collated['genotype']['sys_indices'] = torch.tensor(
                 [sys_ind for sys_ind in self.dataset.sys_range if sys_ind != self.tree_parser.n_systems],
                 dtype=torch.long)
             yield collated

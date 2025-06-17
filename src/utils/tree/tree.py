@@ -123,7 +123,7 @@ class TreeParser(object):
             return obj
 
     def build_mask(self, ordered_query, ordered_key, query2key_dict, interaction_value=0, mask_value=-10**4):
-        mask = np.full((int(np.ceil(len(ordered_query)/8)*8), (int(np.ceil(len(ordered_key)/8)*8))), mask_value)
+        mask = np.full((int(np.ceil((len(ordered_query)+1)/8)*8), (int(np.ceil((len(ordered_key)+1)/8)*8))), mask_value)
         query2ind = {q: i for i, q in enumerate(ordered_query)}
         ind2query = {i: q for i, q in enumerate(ordered_query)}
         key2ind = {k: i for i, k in enumerate(ordered_key)}

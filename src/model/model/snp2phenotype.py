@@ -208,20 +208,26 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
         snp_embedding, snp_prediction = self.get_snp_embedding(genotype_dict)
         snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, snp2gene_mask)
-        gene_embedding[genotype_dict['gene_indices']] = gene_embedding[genotype_dict['gene_indices']] + self.effect_norm(snp_effect_on_gene[genotype_dict['gene_indices']])
-        gene_effect_on_system = self.get_gene2sys(self.dropout(system_embedding),
-                                                                    self.dropout(gene_embedding), gene2sys_mask)
-        print(genotype_dict['sys_indices'])
-        system_embedding[genotype_dict['sys_indices']] = system_embedding[genotype_dict['sys_indices']] + self.effect_norm(gene_effect_on_system[genotype_dict['sys_indices']])
-        print(genotype_dict['sys_indices'])
-        system_effect_forward = self.get_sys2sys(system_embedding, nested_hierarchical_masks_forward, direction='forward')
-        system_embedding = system_embedding + self.effect_norm(system_effect_forward)
+        #print(genotype_dict['gene_indices'])
+        #print(gene_embedding.size(), snp_effect_on_gene.size())
+        gene_embedding = gene_embedding + self.effect_norm(snp_effect_on_gene)
+        #gene_embedding[:, genotype_dict['gene_indices']] = gene_embedding[:, genotype_dict['gene_indices']] + self.effect_norm(snp_effect_on_gene[:, genotype_dict['gene_indices']])
+        #print(genotype_dict['gene_indices'])
+        gene_effect_on_system = self.get_gene2sys(self.dropout(system_embedding), self.dropout(gene_embedding), gene2sys_mask)
+        #print(genotype_dict['sys_indices'].size(), gene_effect_on_system.size())
+        batch_size = covariates.size(0)
+        system_embedding_total = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1).clone()
+        system_embedding_total[:, genotype_dict['sys_indices']] = system_embedding_total[:, genotype_dict['sys_indices']] + self.effect_norm(gene_effect_on_system)
+        #print(genotype_dict['sys_indices'])
+        system_effect_forward = self.get_sys2sys(system_embedding_total, nested_hierarchical_masks_forward, direction='forward')
+        system_embedding_total = system_embedding_total + self.effect_norm(system_effect_forward)
 
-        system_effect_backward = self.get_sys2sys(system_embedding, nested_hierarchical_masks_backward, direction='backward')
-        system_embedding = system_embedding + self.effect_norm(system_effect_backward)
-
+        system_effect_backward = self.get_sys2sys(system_embedding_total, nested_hierarchical_masks_backward, direction='backward')
+        system_embedding_total = system_embedding_total + self.effect_norm(system_effect_backward)
+        system_embedding = system_embedding_total[:, genotype_dict['sys_indices']]
         system_effect_on_gene = self.get_sys2gene(gene_embedding, system_embedding, sys2gene_mask)
-        gene_embedding[genotype_dict['gene_indices']] = gene_embedding[genotype_dict['gene_indices']] + self.effect_norm(system_effect_on_gene[genotype_dict['gene_indices']])
+        gene_embedding = gene_embedding + self.effect_norm(system_effect_on_gene)
+        #gene_embedding[:, genotype_dict['gene_indices']] = gene_embedding[:, genotype_dict['gene_indices']] + self.effect_norm(system_effect_on_gene[:, genotype_dict['gene_indices']])
 
         if (self.cov_effect=='post') or (self.cov_effect=='both'):
             cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariates)

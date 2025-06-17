@@ -144,7 +144,7 @@ class Genotype2PhenotypeTransformer(nn.Module):
                 #flat_src = effect.reshape(-1, H)  # (B·n_q, H)
 
                 # safe in-place add into the *delta* buffer
-                delta[:, hmask[hmask['query_mask']], :] = delta[:, hmask[hmask['query_mask']], :] + effect#.index_add_(0, flat_idx, flat_src)
+                delta[:, hmask['query_indices'], :] = delta[:, hmask['query_indices'], :] + effect[:,:hmask['query_indices'].size(0), :]#.index_add_(0, flat_idx, flat_src)
         # combine read-only base + accumulated deltas, reshape back
         #updated = (system_flat + delta_flat).view(B, S, H)
         updated = system_embedding + delta

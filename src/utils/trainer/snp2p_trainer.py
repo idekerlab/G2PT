@@ -364,11 +364,12 @@ class SNP2PTrainer(object):
                         dynamic_bt_inds.append(ind)
                 #print(dynamic_bt_inds, dynamic_qt_inds)
                 loss = MultiplePhenotypeLoss(dynamic_bt_inds, dynamic_qt_inds)
+
             else:
                 loss = self.loss
 
-            phenotype_loss = 0
-            phenotype_loss_result = loss(predictions, batch['phenotype'])
+            #phenotype_loss = 0
+            phenotype_loss = loss(predictions, batch['phenotype'])
 
 
             '''
@@ -384,19 +385,21 @@ class SNP2PTrainer(object):
             asdf
             '''
 
-            phenotype_loss += phenotype_loss_result #+ correlation_matching_loss(predictions, batch['phenotype'])
-            mean_response_loss += float(phenotype_loss_result)
+            #phenotype_loss += phenotype_loss #+ correlation_matching_loss(predictions, batch['phenotype'])
+            mean_response_loss += float(phenotype_loss)
             #mean_snp_loss += float(snp_loss)
-            loss =  phenotype_loss #+ 0.01 * snp_loss
+            #print(pheno_inds, phenotype_loss)
+            if phenotype_loss!=0.0:
+                loss =  phenotype_loss #+ 0.01 * snp_loss
 
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
             dataloader_with_tqdm.set_description(
                 "%s Train epoch: %3.f, Phenotype loss: %.3f, SNPLoss: %.3f" % (
                     name, epoch, mean_response_loss / (i + 1), mean_snp_loss / (i + 1)))
             del loss
-            del phenotype_loss, phenotype_loss_result
+            del phenotype_loss
             del phenotype_predicted
             del batch
 
