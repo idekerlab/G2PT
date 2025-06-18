@@ -185,6 +185,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
 
     def propagate(self, genotype_dict, covariates, snp2gene_mask, gene2sys_mask, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, sys2gene_mask):
+        #print("progation start")
         gene_embedding = self.gene_embedding(genotype_dict['gene'])
         system_embedding = self.system_embedding(genotype_dict['sys'])
 
@@ -195,13 +196,13 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         snp_embedding, snp_prediction = self.get_snp_embedding(genotype_dict)
         snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, snp2gene_mask)
         gene_embedding = gene_embedding + self.effect_norm(snp_effect_on_gene)
-
+        #print("snp2gene finished")
         gene_effect_on_system = self.get_gene2sys(self.dropout(system_embedding), self.dropout(gene_embedding), gene2sys_mask)
 
         batch_size = covariates.size(0)
         system_embedding_total = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1).clone()
         system_embedding_total[:, genotype_dict['sys_indices']] = system_embedding_total[:, genotype_dict['sys_indices']] + self.effect_norm(gene_effect_on_system)
-
+        #print("gene2sys finished")
         system_effect_forward = self.get_sys2sys(system_embedding_total, nested_hierarchical_masks_forward, direction='forward')
         system_embedding_total = system_embedding_total + self.effect_norm(system_effect_forward)
 
@@ -210,6 +211,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         system_embedding = system_embedding_total[:, genotype_dict['sys_indices']]
         system_effect_on_gene = self.get_sys2gene(gene_embedding, system_embedding, sys2gene_mask)
         gene_embedding = gene_embedding + self.effect_norm(system_effect_on_gene)
+        #print("sys2sys_finished")
         #gene_embedding[:, genotype_dict['gene_indices']] = gene_embedding[:, genotype_dict['gene_indices']] + self.effect_norm(system_effect_on_gene[:, genotype_dict['gene_indices']])
 
         if (self.cov_effect=='post') or (self.cov_effect=='both'):
@@ -217,7 +219,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
             cov_effect_on_sys = self.get_cov2gene(system_embedding, covariates)
             system_embedding = system_embedding + self.effect_norm(cov_effect_on_sys)
-
+        #print('propagation ended')
         return gene_embedding, system_embedding
 
     def chunk_wise_propagate_v2(self, genotype_dict, covariates,

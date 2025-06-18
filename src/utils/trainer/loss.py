@@ -131,5 +131,4 @@ class MultiplePhenotypeLoss(nn.Module):
                 total_loss += loss
                 loss_count += 1
 
-        # Averaging the loss across columns that contributed
         return total_loss / loss_count if loss_count > 0 else total_loss

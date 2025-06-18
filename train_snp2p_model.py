@@ -200,22 +200,6 @@ def main_worker(args):
             rank=args.rank,
             timeout=timedelta(hours=3),
         )
-    '''
-    if args.distributed:
-        if args.dist_url == "env://" and args.rank == -1:
-            args.rank = int(os.environ["RANK"])
-        if args.multiprocessing_distributed:
-            # For multiprocessing distributed training, rank needs to be the
-            # global rank among all the processes
-            args.rank = rank
-            gpu = rank % ngpus_per_node
-        print("GPU %d rank is %d" % (gpu, rank))
-        timeout = timedelta(hours=5)
-        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                world_size=args.world_size, rank=args.rank, timeout=timeout)
-        print("GPU %d process initialized" % (gpu))
-        torch.cuda.empty_cache()
-    '''
     print("Finish setup main worker", args.rank)
 
     if args.distributed:
@@ -318,11 +302,15 @@ def main_worker(args):
     if args.distributed:
         if args.dynamic_phenotype_sampling:
             print("Dynamic phenotype sampling with DDP")
-            dataset = DynamicPhenotypeBatchIterableDatasetDDP(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True, n_phenotype2sample=1)
+            dataset = DynamicPhenotypeBatchIterableDatasetDDP(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size,
+                                                              rank=args.rank,  # <-- ADD THIS
+                                                              world_size=args.world_size,  # <-- AND THIS
+                                                              shuffle=True, n_phenotype2sample=1)
             snp2p_dataloader = DataLoader(dataset, batch_size=None,
                                           num_workers=args.jobs,
-                                          prefetch_factor=2
-                                          )
+                                          prefetch_factor=2,
+                                          persistent_workers = True,  # Add this
+                                          pin_memory = True)  # Add this
         else:
             print("No dynamic Sampling")
             snp2p_sampler = DistributedSampler(dataset=snp2p_dataset, shuffle=True)
@@ -341,8 +329,9 @@ def main_worker(args):
             dataset = DynamicPhenotypeBatchIterableDataset(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True, n_phenotype2sample=1)
             snp2p_dataloader = DataLoader(dataset, batch_size=None,
                                           num_workers=args.jobs,
-                                          prefetch_factor=2
-                                          )
+                                          prefetch_factor=2,
+                                          persistent_workers = True,  # Add this
+                                          pin_memory = True)  # Add this
         else:
             print("No dynamic Sampling")
             #snp2p_sampler = DistributedSampler(dataset=snp2p_dataset, shuffle=True)
@@ -401,10 +390,10 @@ def main_worker(args):
     snp2p_trainer.train(args.epochs, args.out)
 
 if __name__ == '__main__':
-    try:
-        mp.set_start_method('spawn', force=True)
-    except RuntimeError:
-        pass # Already set, ignore
+    #try:
+    mp.set_start_method('spawn', force=True)
+    #except RuntimeError:
+    #    pass # Already set, ignore
     print("Python __main__", flush=True)
     #print("NCCL socket name :", os.environ["NCCL_SOCKET_IFNAME"])
     main()

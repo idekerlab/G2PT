@@ -9,6 +9,7 @@ from scipy.stats import spearmanr, pearsonr
 from tqdm import tqdm
 import numpy as np
 import copy
+from torch.utils.data import get_worker_info
 from src.utils.data import move_to
 from src.utils.trainer import CCCLoss, FocalLoss, VarianceLoss, MultiplePhenotypeLoss
 import torch.nn.functional as F
@@ -316,14 +317,17 @@ class SNP2PTrainer(object):
         mean_ccc_loss = 0.
         mean_score_loss = 0.
         mean_snp_loss = 0.
-
+        worker = get_worker_info()
         if self.dynamic_phenotype_sampling:
-            num_batches = np.ceil(len(dataloader.dataset.dataset)/(self.args.batch_size*self.args.world_size))
+            num_batches = np.ceil(len(dataloader.dataset))#np.ceil(len(dataloader.dataset.dataset)/(self.args.batch_size*self.args.world_size))
             dataloader_with_tqdm = tqdm(dataloader, total=num_batches)
         else:
             dataloader_with_tqdm = tqdm(dataloader)
         for i, batch in enumerate(dataloader_with_tqdm):
+
+            #print(f"Rank {self.args.rank} Getting batch")
             batch = move_to(batch, self.device)
+
             #print(batch)
             if 'snp2gene_mask' in batch.keys():
                 snp2gene_mask = batch['snp2gene_mask']
@@ -337,7 +341,7 @@ class SNP2PTrainer(object):
                 gene2sys_mask = self.gene2sys_mask
                 sys2gene_mask = self.sys2gene_mask
 
-
+            #print(f"Rank {self.args.rank}, sent to model")
             phenotype_predicted = self.snp2p_model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
                                                    self.nested_subtrees_forward,
                                                    self.nested_subtrees_backward,
@@ -349,7 +353,7 @@ class SNP2PTrainer(object):
                                                    env2sys=self.args.env2sys,
                                                    sys2gene=self.args.sys2gene, snp_only=snp_only,
                                                    chunk=False, predict_snp=False)
-
+            #print(f"Rank {self.args.rank} pass through model")
             if len(phenotype_predicted.size())==3:
                 predictions = phenotype_predicted[:, :, 0]
             else:
@@ -373,8 +377,9 @@ class SNP2PTrainer(object):
                 loss = self.loss
 
             #phenotype_loss = 0
+            #print((batch['phenotype']==-9).sum(), batch['phenotype'].size())
             phenotype_loss = loss(predictions, batch['phenotype'])
-
+            #print(f"Rank {self.args.rank}: loss calculated", phenotype_loss)
 
             '''
             labels = batch['genotype']['snp_label']
@@ -393,12 +398,15 @@ class SNP2PTrainer(object):
             mean_response_loss += float(phenotype_loss)
             #mean_snp_loss += float(snp_loss)
             #print(pheno_inds, phenotype_loss)
-            if phenotype_loss!=0.0:
-                loss =  phenotype_loss #+ 0.01 * snp_loss
+            #if phenotype_loss == 0.0:
+            #    phenotype_loss = move_to(torch.tensor(phenotype_loss), device=self.device)
+            #if phenotype_loss!=0:
+            loss =  phenotype_loss #+ 0.01 * snp_loss
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
 
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
+            #print(f"Rank {self.args.rank} loss back-propagated")
             dataloader_with_tqdm.set_description(
                 "%s Train epoch: %3.f, Phenotype loss: %.3f, SNPLoss: %.3f" % (
                     name, epoch, mean_response_loss / (i + 1), mean_snp_loss / (i + 1)))

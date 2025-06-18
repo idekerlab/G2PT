@@ -259,8 +259,13 @@ class PLINKDataset(GenotypeDataset):
             self.pheno_df = self.pheno_df.set_index("IID").loc[self.genotype.index].reset_index().rename(columns={'index':"IID"})
 
 
-    def sample_phenotypes(self, n):
-        sampled_phenotypes = random.sample(self.pheno_ids, n)
+    def sample_phenotypes(self, n, seed=None):
+        """
+        Samples phenotypes. If a seed is provided, the sampling will be deterministic.
+        """
+        # Use a new random object with the given seed to not affect the global random state
+        rand = random.Random(seed) if seed is not None else random
+        sampled_phenotypes = rand.sample(self.pheno_ids, n)
         sampled_pheno_inds = sorted([self.pheno2ind[pheno] for pheno in sampled_phenotypes])
         sampled_phenotypes = [self.ind2pheno[ind] for ind in sampled_pheno_inds]
         #print("Sample phenotypes: ", sampled_phenotypes)
