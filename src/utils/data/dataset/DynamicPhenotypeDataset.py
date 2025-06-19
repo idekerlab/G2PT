@@ -19,6 +19,10 @@ class DynamicPhenotypeBatchIterableDataset(IterableDataset):
         self.shuffle    = shuffle
         self.n_phenotype2sample = n_phenotype2sample
         self.n_pheno = self.dataset.n_pheno
+        self.nested_subtrees_forward = tree_parser.get_hierarchical_interactions(
+            tree_parser.interaction_types, direction='forward', format='indices')#self.args.input_format)
+        self.nested_subtrees_backward = tree_parser.get_hierarchical_interactions(
+            tree_parser.interaction_types, direction='backward', format='indices')#self.args.input_format)
 
     # OPTIONAL: lets DataLoader len(loader) work
     def __len__(self):
@@ -56,7 +60,7 @@ class DynamicPhenotypeBatchIterableDataset(IterableDataset):
             attempt = 0
             while not batch_is_valid:
                 # The phenotype seed is dependent on the attempt number
-                phenotype_seed = (self.rank * len(indices)) + lo + attempt
+                phenotype_seed = len(indices) + lo + attempt
                 self.dataset.sample_phenotypes(n=self.n_phenotype2sample, seed=phenotype_seed)
 
                 # Fetch and collate data
@@ -80,8 +84,13 @@ class DynamicPhenotypeBatchIterableDataset(IterableDataset):
                     self.tree_parser.gene2sys_mask[self.dataset.sys_range][:, self.dataset.gene_range], dtype=torch.float32
                 )
                 collated['genotype']['gene_indices'] = torch.tensor(self.dataset.gene_range, dtype=torch.long)
+                subsys_indices_wo_padding = [si for si in self.dataset.sys_range if si != self.tree_parser.n_systems]
+                remap_dict = self.tree_parser.create_subset_index_mapping(subsys_indices_wo_padding)
+                hierarchical_mask_forward_subset = self.tree_parser.remap_hierarchical_indices(self.nested_subtrees_forward, remap_dict)
+                hierarchical_mask_backward_subset = self.tree_parser.remap_hierarchical_indices(self.nested_subtrees_backward, remap_dict)
+                collated['genotype']['hierarchical_mask_forward'] = hierarchical_mask_forward_subset
+                collated['genotype']['hierarchical_mask_backward'] = hierarchical_mask_backward_subset
                 collated['genotype']['sys_indices'] = torch.tensor(self.dataset.sys_range, dtype=torch.long)
-
                 yield collated
 
 
@@ -115,81 +124,87 @@ class DynamicPhenotypeBatchIterableDatasetDDP(IterableDataset):
             full_indices = obj_list[0]
 
         self.full_indices = full_indices
+        self.nested_subtrees_forward = tree_parser.get_hierarchical_interactions(
+            tree_parser.interaction_types, direction='forward', format='indices')#self.args.input_format)
+        self.nested_subtrees_backward = tree_parser.get_hierarchical_interactions(
+            tree_parser.interaction_types, direction='backward', format='indices')#self.args.input_format)
 
     def __len__(self):
-        """Return the guaranteed number of batches all ranks will produce"""
+        """
+        Return the accurate number of batches that will be produced by the
+        iterator for the current DDP rank.
+        """
+        # This must be the batch size used by the DataLoader
+        batch_size = self.batch_size
+
+        num_total_samples = len(self.full_indices)
+
         if dist.is_initialized():
             world_size = dist.get_world_size()
-            # Conservative estimate: only count complete batches
-            samples_per_rank = len(self.dataset) // world_size
-            batches_per_rank = samples_per_rank // self.batch_size
-            return batches_per_rank
+            rank = dist.get_rank()
+
+            # This logic precisely calculates the number of samples allocated to this rank
+            num_samples_this_rank = num_total_samples // world_size
+            if rank < (num_total_samples % world_size):
+                num_samples_this_rank += 1
         else:
-            return len(self.dataset) // self.batch_size
+            # If not using DDP, this process sees all the samples.
+            num_samples_this_rank = num_total_samples
+
+        # Use math.ceil to include the final, possibly smaller, batch
+        num_batches = math.ceil(num_samples_this_rank / batch_size)
+
+        return int(num_batches)
 
     def set_n_phenotype2sample(self, n_phenotype2sample):
         self.n_phenotype2sample = n_phenotype2sample
 
     def _index_slice_for_worker_and_rank(self):
-        """Return the list of indices this *process* should iterate."""
-        #N = len(self.dataset)
-        N = len(self.full_indices)
+        """
+        Return the list of indices this process should iterate.
 
-        # ── split by worker (DataLoader subprocess) ──
+        This implementation partitions data by splitting by DDP rank first,
+        and then splitting the rank's data among its DataLoader workers.
+        """
+        # Stage 1: Split the entire dataset among the DDP ranks (GPUs) first.
+        #if dist.is_initialized():
+        #rank = dist.get_rank()
+        #world_size = dist.get_world_size()
+
+
+            # Each rank takes its strided slice from the *full* list of indices.
+            # e.g., rank 0 gets [0, 4, 8, ...] and rank 1 gets [1, 5, 9, ...]
+            # from the full_indices list if world_size is 4.
+        indices_for_rank = self.full_indices[self.rank::self.world_size]
+        #else:
+        #    # If not in DDP, the single process is responsible for all indices.
+        #    indices_for_rank = self.full_indices
+        '''
+        # Stage 2: Split the rank's slice of data among its DataLoader workers.
+        # This is only relevant if you use num_workers > 0. For simplicity and
+        # to avoid potential issues, we still recommend using num_workers=0.
         w_info = get_worker_info()
         if w_info is None:
-            #w_start, w_end, w_workers = 0, N, 1
-            #w_id = 0
-            w_start, w_end = 0, N
+            # This is the main process for this rank (or num_workers=0).
+            # It gets all the indices assigned to this rank from Stage 1.
+            final_indices = indices_for_rank
         else:
-            per_worker = math.ceil(N / w_info.num_workers)
-            w_start = w_id = w_info.id
-            #w_start *= per_worker
+            # This is a worker process. Subdivide the rank's data for this worker.
+            num_samples_for_rank = len(indices_for_rank)
+            per_worker = math.ceil(num_samples_for_rank / w_info.num_workers)
             w_start = w_info.id * per_worker
-            w_end = min(w_start + per_worker, N)
-            w_workers = w_info.num_workers
+            w_end = min(w_start + per_worker, num_samples_for_rank)
 
-        #indices = list(range(w_start, w_end))
-        indices = self.full_indices[w_start:w_end]
-        # ── split further by DDP rank ──
-        # Determine the device for the current process (rank)
-        # This assumes your DDP setup has already set the correct CUDA device for this rank.
-        # It's typically args.local_rank or dist.get_rank() if using single-GPU per process.
-        # We'll get the current device from torch.cuda.current_device()
-        if dist.is_initialized():
-            rank = dist.get_rank()
-            world = dist.get_world_size()
-            indices = indices[rank::world]
+            # The final slice of indices for this specific worker process.
+            final_indices = indices_for_rank[w_start:w_end]
         '''
-        current_device = torch.device(f"cuda:{torch.cuda.current_device()}")
-
-
-            indices = indices[rank::world]  # stride slicing
-        else:
-            rank, world = 0, 1
-
-        if self.shuffle and (rank == 0 and w_id == 0):
-            random.shuffle(indices)  # shuffle once then broadcast
-        # simple broadcast for reproducibility
-        if dist.is_initialized():
-            # --- CRITICAL CHANGE HERE: Move tensors to the CUDA device ---
-            idx_tensor = torch.tensor(indices, dtype=torch.int64,
-                                      device=current_device)  # Changed device="cpu" to current_device
-            idx_sizes = torch.tensor([len(indices)], dtype=torch.int64,
-                                     device=current_device)  # Changed device="cpu" to current_device
-
-            dist.broadcast(idx_sizes, src=0)
-            if rank != 0:
-                # Ensure the empty tensor is also created on the current_device
-                idx_tensor = torch.empty(idx_sizes.item(), dtype=torch.int64, device=current_device)  # Changed
-            dist.broadcast(idx_tensor, src=0)
-            indices = idx_tensor.tolist()  # Convert back to list for iteration
-        '''
-
-        return indices
+        return indices_for_rank
 
     def __iter__(self):
         indices = self._index_slice_for_worker_and_rank()
+        w_info = get_worker_info()
+        print(f'N workers: {w_info.num_workers}')
+        print(f'rank {self.rank}, worker {w_info.id} length: {len(indices)}, batch_size {self.batch_size}, {len(indices)//self.batch_size}')
 
         for chunk_start in range(0, len(indices), self.batch_size):
             inds = indices[chunk_start: chunk_start + self.batch_size]
@@ -223,111 +238,14 @@ class DynamicPhenotypeBatchIterableDatasetDDP(IterableDataset):
                     self.tree_parser.gene2sys_mask[self.dataset.sys_range][:, self.dataset.gene_range], dtype=torch.float32
                 )
                 collated['genotype']['gene_indices'] = torch.tensor(self.dataset.gene_range, dtype=torch.long)
+                subsys_indices_wo_padding = [si for si in self.dataset.sys_range if si != self.tree_parser.n_systems]
+                remap_dict = self.tree_parser.create_subset_index_mapping(subsys_indices_wo_padding)
+                hierarchical_mask_forward_subset = self.tree_parser.remap_hierarchical_indices(self.nested_subtrees_forward, remap_dict)
+                hierarchical_mask_backward_subset = self.tree_parser.remap_hierarchical_indices(self.nested_subtrees_backward, remap_dict)
+                collated['hierarchical_mask_forward'] = hierarchical_mask_forward_subset
+                collated['hierarchical_mask_backward'] = hierarchical_mask_backward_subset
+
                 collated['genotype']['sys_indices'] = torch.tensor(self.dataset.sys_range, dtype=torch.long)
 
                 yield collated
 
-
-'''
-
-
-class DynamicPhenotypeBatchIterableDatasetDDP(IterableDataset):
-    # Add rank and world_size to the constructor
-    def __init__(self, tree_parser, dataset: PLINKDataset, collator, batch_size, rank, world_size, shuffle=True,
-                 n_phenotype2sample=1):
-        super().__init__()
-        self.tree_parser = tree_parser
-        self.dataset = dataset
-        self.collator = collator
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.n_phenotype2sample = n_phenotype2sample
-        self.n_pheno = self.dataset.n_pheno
-
-        # Store the DDP info
-        self.rank = rank
-        self.world_size = world_size
-
-    def __len__(self):
-        """Return the guaranteed number of batches all ranks will produce"""
-        if dist.is_initialized():
-            world_size = dist.get_world_size()
-            # Conservative estimate: only count complete batches
-            samples_per_rank = len(self.dataset) // world_size
-            batches_per_rank = samples_per_rank // self.batch_size
-            return batches_per_rank
-        else:
-            return len(self.dataset) // self.batch_size
-
-    def set_n_phenotype2sample(self, n_phenotype2sample):
-        self.n_phenotype2sample = n_phenotype2sample
-
-    def __iter__(self):
-        ############ 0. Worker bookkeeping ############
-        worker = get_worker_info()
-        total = len(self.dataset)
-
-        if worker is None:
-            # Single-process loading (num_workers=0)
-            w_start, w_end = 0, total
-            worker_id = self.rank
-            base_seed = 42  # A base seed for reproducibility
-        else:
-            # Multi-worker case
-            per_worker = math.ceil(total / worker.num_workers)
-            w_start = worker.id * per_worker
-            w_end = min(w_start + per_worker, total)
-            worker_id = worker.id
-            base_seed = worker.seed  # PyTorch workers have a seed attribute
-
-        worker_indices = list(range(w_start, w_end))
-
-        # Shard the worker's data among the ranks.
-        num_samples_per_worker = len(worker_indices)
-        num_samples_per_rank = num_samples_per_worker // self.world_size
-        worker_indices = worker_indices[:num_samples_per_rank * self.world_size]
-
-        rank_indices = worker_indices[self.rank::self.world_size]
-
-        ############ 2. Shuffling ############
-        if self.shuffle:
-            # We can use a combination of a base seed and the rank for shuffling
-            # to ensure ranks shuffle differently but consistently.
-            shuffle_rand = random.Random(base_seed + self.rank)
-            shuffle_rand.shuffle(rank_indices)
-
-        ############ 3. Only produce complete batches ############
-        num_complete_batches = len(rank_indices) // self.batch_size
-
-        for batch_idx in range(num_complete_batches):
-            start_idx = batch_idx * self.batch_size
-            end_idx = start_idx + self.batch_size
-            batch_inds = rank_indices[start_idx:end_idx]
-
-            # --- KEY CHANGE: Generate a deterministic seed for this specific batch and rank ---
-            # This seed is unique for each batch but the same for a given rank across workers.
-            # Using a large prime number helps in creating distinct seeds.
-            phenotype_seed = base_seed + (self.rank * num_complete_batches) + batch_idx
-
-            # Sample phenotypes using the generated seed
-            self.dataset.sample_phenotypes(n=self.n_phenotype2sample, seed=phenotype_seed)
-
-            # Get samples and collate
-            raw_batch = [self.dataset[i] for i in batch_inds]
-            collated = self.collator(raw_batch)
-
-            # Add masks
-            collated['snp2gene_mask'] = torch.tensor(
-                self.tree_parser.snp2gene_mask[self.dataset.gene_range][:, self.dataset.snp_range],
-                dtype=torch.float32
-            )
-            collated['gene2sys_mask'] = torch.tensor(
-                self.tree_parser.gene2sys_mask[self.dataset.sys_range][:, self.dataset.gene_range],
-                dtype=torch.float32
-            )
-            collated['genotype']['gene_indices'] = torch.tensor(self.dataset.gene_range, dtype=torch.long)
-            collated['genotype']['sys_indices'] = torch.tensor(self.dataset.sys_range, dtype=torch.long)
-
-            yield collated
-            
-'''

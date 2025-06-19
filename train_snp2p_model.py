@@ -160,6 +160,8 @@ def main():
     args.rank = rank
     args.world_size = world_size
     args.local_rank = local_rank
+    args.batch_size = args.batch_size // world_size
+    #args.jobs = args.jobs // world_size
 
     torch.cuda.set_device(args.local_rank)
     main_worker(args)  # no mp.spawn!
@@ -191,6 +193,7 @@ def main_worker(args):
     #print(f"Initialize main worker {rank} at node {node_name}")
     gpu = args.local_rank
     node_name = socket.gethostname()
+
     print(f"[{args.rank}/{args.world_size}] running on {node_name} GPU {gpu}, rank: {args.rank}, local_rank: {args.local_rank}", flush=True)
     if args.distributed and not dist.is_initialized():
         dist.init_process_group(
@@ -303,8 +306,8 @@ def main_worker(args):
         if args.dynamic_phenotype_sampling:
             print("Dynamic phenotype sampling with DDP")
             dataset = DynamicPhenotypeBatchIterableDatasetDDP(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size,
-                                                              rank=args.rank,  # <-- ADD THIS
-                                                              world_size=args.world_size,  # <-- AND THIS
+                                                              rank=args.rank,
+                                                              world_size=args.world_size,
                                                               shuffle=True, n_phenotype2sample=1)
             snp2p_dataloader = DataLoader(dataset, batch_size=None,
                                           num_workers=args.jobs,

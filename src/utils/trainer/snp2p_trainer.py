@@ -319,7 +319,7 @@ class SNP2PTrainer(object):
         mean_snp_loss = 0.
         worker = get_worker_info()
         if self.dynamic_phenotype_sampling:
-            num_batches = np.ceil(len(dataloader.dataset))#np.ceil(len(dataloader.dataset.dataset)/(self.args.batch_size*self.args.world_size))
+            num_batches = np.ceil(len(dataloader.dataset))
             dataloader_with_tqdm = tqdm(dataloader, total=num_batches)
         else:
             dataloader_with_tqdm = tqdm(dataloader)
@@ -341,10 +341,21 @@ class SNP2PTrainer(object):
                 gene2sys_mask = self.gene2sys_mask
                 sys2gene_mask = self.sys2gene_mask
 
+            if 'hierarchical_mask_forward' in batch.keys():
+                hierarchical_mask_forward = batch['hierarchical_mask_forward']
+            else:
+                hierarchical_mask_forward = self.nested_subtrees_forward
+
+            if 'hierarchical_mask_backward' in batch.keys():
+                hierarchical_mask_backward = batch['hierarchical_mask_backward']
+            else:
+                hierarchical_mask_backward = self.nested_subtrees_backward
+
+
             #print(f"Rank {self.args.rank}, sent to model")
             phenotype_predicted = self.snp2p_model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
-                                                   self.nested_subtrees_forward,
-                                                   self.nested_subtrees_backward,
+                                                   hierarchical_mask_forward,
+                                                   hierarchical_mask_backward,
                                                    #sys_temp= self.system_temp_tensor,
                                                    snp2gene_mask=snp2gene_mask,
                                                    gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],

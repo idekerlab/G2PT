@@ -711,6 +711,124 @@ class TreeParser(object):
             'new_gene_order': new_gene_order
         }
 
+    def create_subset_index_mapping(self, subset_system_indices):
+        """
+        Create index mapping between full system indices and subset indices.
+
+        Parameters
+        ----------
+        subset_systems : list
+            List of system indices in the subset, ordered by their new indices.
+            The order determines the new indices (0, 1, 2, ..., len(subset)-1).
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'full_to_subset': mapping from full sys2ind indices to subset indices
+            - 'subset_to_full': mapping from subset indices to full sys2ind indices
+            - 'subset_sys2ind': new system to index mapping for subset
+            - 'subset_ind2sys': new index to system mapping for subset
+
+        Examples
+        --------
+        >>> subset_systems = ['GO:0008150', 'GO:0006412', 'GO:0003674']
+        >>> mapping = tree_parser.create_subset_index_mapping(subset_systems)
+        >>> print(mapping['subset_sys2ind'])  # {'GO:0008150': 0, 'GO:0006412': 1, 'GO:0003674': 2}
+        """
+        # Validate that all subset systems exist in the full system
+
+
+        # Create new index mappings for subset
+        subset_sys2ind = {system: i for i, system in enumerate(subset_system_indices)}
+        subset_ind2sys = {i: system for i, system in enumerate(subset_system_indices)}
+
+        # Create bidirectional mapping between full and subset indices
+        full_to_subset = {}
+        subset_to_full = {}
+
+        for subset_idx, system in enumerate(subset_system_indices):
+            full_idx = system
+            full_to_subset[full_idx] = subset_idx
+            subset_to_full[subset_idx] = full_idx
+
+        return {
+            'full_to_subset': full_to_subset,
+            'subset_to_full': subset_to_full,
+            'subset_sys2ind': subset_sys2ind,
+            'subset_ind2sys': subset_ind2sys
+        }
+
+    def remap_hierarchical_indices(self, hierarchical_masks, index_mapping, filter_missing=True):
+        """
+        Remap indices in hierarchical masks from full system indices to subset indices.
+
+        This function takes hierarchical masks that use full system indices and remaps
+        them to use subset indices. It handles both 'indices' format and mask format.
+
+        Parameters
+        ----------
+        hierarchical_masks : list
+            List of hierarchical masks as returned by get_hierarchical_interactions().
+        index_mapping : dict
+            Index mapping dictionary as returned by create_subset_index_mapping().
+        filter_missing : bool, optional
+            If True, filters out query/key pairs where either index is not in the subset.
+            If False, raises an error when encountering missing indices. Default is True.
+
+        Returns
+        -------
+        list
+            Remapped hierarchical masks with subset indices.
+
+        Examples
+        --------
+        >>> # Get full hierarchical masks
+        >>> full_masks = tree_parser.get_hierarchical_interactions(['is_a'], format='indices')
+        >>> # Create subset mapping
+        >>> mapping = tree_parser.create_subset_index_mapping(subset_systems)
+        >>> # Remap to subset indices
+        >>> subset_masks = tree_parser.remap_hierarchical_indices(full_masks, mapping)
+        """
+        full_to_subset = index_mapping['full_to_subset']
+        subset_size = len(index_mapping['subset_sys2ind'])
+
+        remapped_masks = []
+
+        for level_masks in hierarchical_masks:
+            remapped_level = {}
+
+            for interaction_type, mask_data in level_masks.items():
+                # Handle 'indices' format
+                original_queries = mask_data['query_indices'].tolist()
+                original_keys = mask_data['key_indices'].tolist()
+
+                new_queries = [full_to_subset[q] for q in original_queries if q in full_to_subset.keys()]
+                new_keys = [full_to_subset[k] for k in original_keys if k in full_to_subset.keys()]
+                if (len(new_queries) == 0) or (len(new_keys) == 0):
+                    continue
+                new_query_indices = [i for i, q in enumerate(original_queries) if q in full_to_subset.keys()]
+                new_key_indices = [i for i, k in enumerate(original_keys) if k in full_to_subset.keys()]
+                new_mask = mask_data['mask'][new_query_indices][:, new_key_indices]
+                if (new_mask == 0).sum() == 0:
+                    continue
+                query_padded, key_padded, result_mask = self.pad_query_key_mask(new_queries,
+                                                                                new_keys,
+                                                                                new_mask,
+                                                                                query_padding_index=subset_size,
+                                                                                key_padding_index=subset_size)
+                remapped_level[interaction_type] = {
+                    'query': torch.tensor(query_padded, dtype=torch.long),
+                    'key': torch.tensor(key_padded, dtype=torch.long),
+                    'query_indices': torch.tensor(new_queries, dtype=torch.long),
+                    'key_indices': torch.tensor(new_keys, dtype=torch.long),
+                    'mask': result_mask
+                }
+            if len(remapped_level) != 0:
+                remapped_masks.append(remapped_level)
+
+        return remapped_masks
+
     @staticmethod
     def alias_indices(indices, source_ind2id_dict:dict, target_id2ind_dict: dict):
         return [target_id2ind_dict[source_ind2id_dict[ind]] for ind in indices]
