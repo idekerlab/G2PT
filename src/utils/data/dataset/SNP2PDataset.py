@@ -43,6 +43,7 @@ class PLINKDataset(Dataset):
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
         if cov is not None:
             self.cov_df = pd.read_csv(cov, sep='\t')
+            print("Covariates loaded from ", cov)
         else:
             self.cov_df = pd.DataFrame({'FID': plink_data.sample_family_id.as_numpy(),
                                         'IID': plink_data.sample_id.as_numpy(),
@@ -60,6 +61,7 @@ class PLINKDataset(Dataset):
             self.pheno_df = pd.read_csv(pheno, sep='\t')
             self.pheno_df['FID'] = self.pheno_df['FID'].astype(str)
             self.pheno_df['IID'] = self.pheno_df['IID'].astype(str)
+            print("Phenotypes loaded from ", pheno)
             if 'PHENOTYPE' not in self.cov_df.columns:
                 self.cov_df = self.cov_df.merge(self.pheno_df, left_on=['FID', 'IID'], right_on=['FID', 'IID'])
                 self.genotype = self.genotype.loc[self.cov_df.IID]
