@@ -22,9 +22,9 @@ def factorize_attention_recursively(tree_parser, attention_mean_df, target, weig
         if direction == 'forward':
             snp_weight = attention_mean_df.loc[(target, gene, module)]['Value']
             attention_mean_df = factorize_genotype_attention(tree_parser, attention_mean_df, gene, snp_weight, genotypes=genotypes)
-    if len(tree_parser.system_graph.out_edges(target))!=0:
+    if len(tree_parser.sys_graph.out_edges(target))!=0:
         total_value = 0
-        for node, child in tree_parser.system_graph.out_edges(target):
+        for node, child in tree_parser.sys_graph.out_edges(target):
             if direction == 'forward':
                 module = 'sys2env'
             else:
@@ -63,7 +63,7 @@ def make_all_column_names(tree_parser, target_gos, target_genes):
                 # Sys->Gene
                 column_names.append(("backward", go, gene, "sys2gene"))
 
-    all_paths = tree_parser.get_paths_from_node_to_leaves(tree_parser.system_graph, target_gos[-1])
+    all_paths = tree_parser.get_paths_from_node_to_leaves(tree_parser.sys_graph, target_gos[-1])
     all_edges_forward = tree_parser.get_edges_from_paths(all_paths)
 
     # 3) Sys->Env and Env->Sys

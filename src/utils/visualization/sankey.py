@@ -297,7 +297,7 @@ class SankeyVisualizer(object):
         return nested_list
 
     def get_sankey_coords(self, attention_mean_df_factorized, system_nested, gene_sorted, snp_sorted):
-        all_paths = self.tree_parser.get_paths_from_node_to_leaves(self.tree_parser.system_graph, system_nested[-1][-1])
+        all_paths = self.tree_parser.get_paths_from_node_to_leaves(self.tree_parser.sys_graph, system_nested[-1][-1])
         if len(all_paths)==0:
             x_gap = (0.90 - 0.05)/2
         else:

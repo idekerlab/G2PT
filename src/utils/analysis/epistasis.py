@@ -19,7 +19,7 @@ class EpistasisFinder(object):
     """
     A class to identify and analyze epistatic interactions in genetic data using attention results, and statistical methods.
     """
-    def __init__(self, tree_parser : SNPTreeParser, bfile, attention_results, cov=None, flip=False):
+    def __init__(self, tree_parser : SNPTreeParser, bfile, attention_results, cov=None, pheno=None, flip=False):
         """
         Initialize the EpistasisFinder class.
 
@@ -33,6 +33,7 @@ class EpistasisFinder(object):
             tree_parser (SNPTreeParser): Reference to the provided tree parser.
             genotype (pd.DataFrame): Genotype data extracted from the PLINK file.
             cov_df (pd.DataFrame): Covariate data.
+            pheno_df (pd.DataFrame): Phenotype data.
             attention_results (pd.DataFrame): Attention results for SNPs.
             attention_results_0 (pd.DataFrame): Attention results for sex 0.
             attention_results_1 (pd.DataFrame): Attention results for sex 1.
@@ -55,15 +56,22 @@ class EpistasisFinder(object):
         else:
             self.cov_df = pd.DataFrame({'FID': self.plink_data.sample_family_id.as_numpy(),
                                         'IID': self.plink_data.sample_id.as_numpy(),
-                                        'SEX': self.plink_data.sample_sex.as_numpy(),
-                                        'PHENOTYPE': self.plink_data.sample_phenotype.as_numpy() })
-            self.cov_df = self.cov_df[['FID', 'IID', 'SEX', 'PHENOTYPE']]
-            self.cov_df = self.cov_df.loc[self.cov_df.PHENOTYPE!=-1]
-            self.cov_df['PHENOTYPE'] = self.cov_df['PHENOTYPE'] - 1
+                                        'SEX': self.plink_data.sample_sex.as_numpy()})
+            self.cov_df = self.cov_df[['FID', 'IID', 'SEX']]
             self.genotype = self.genotype.loc[self.cov_df.IID]
         self.cov_df['FID'] = self.cov_df['FID'].astype(str)
         self.cov_df['IID'] = self.cov_df['IID'].astype(str)
         self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov != 'PHENOTYPE']
+        if pheno is not None:
+            self.pheno_df = pd.read_csv(pheno, sep='\t')
+        else:
+            self.pheno_df = pd.DataFrame({'FID': self.plink_data.sample_family_id.as_numpy(),
+                                        'IID': self.plink_data.sample_id.as_numpy(),
+                                        'PHENOTYPE': self.plink_data.sample_phenotype.as_numpy()})
+        self.pheno_df['FID'] = self.pheno_df['FID'].astype(str)
+        self.pheno_df['IID'] = self.pheno_df['IID'].astype(str)
+
+        self.cov_df = self.cov_df.merge(self.pheno_df)
 
         if type(attention_results) == str:
             self.attention_results = pd.read_csv(attention_results)
