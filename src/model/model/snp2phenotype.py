@@ -200,10 +200,8 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         gene_effect_on_system = self.get_gene2sys(self.dropout(system_embedding), self.dropout(gene_embedding), gene2sys_mask)
 
         batch_size = covariates.size(0)
-        #system_embedding_total = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1).clone()
-        system_embedding_total = self.system_embedding(genotype_dict['sys_inices']).expand(batch_size, -1, -1).clone()
-        system_embedding_total = system_embedding_total + self.effect_norm(gene_effect_on_system)
-        #system_embedding_total[:, genotype_dict['sys_indices']] = system_embedding_total[:, genotype_dict['sys_indices']] + self.effect_norm(gene_effect_on_system)
+        system_embedding_total = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1).clone()
+        system_embedding_total[:, genotype_dict['sys_indices']] = system_embedding_total[:, genotype_dict['sys_indices']] + self.effect_norm(gene_effect_on_system)
         #print("gene2sys finished")
         system_effect_forward = self.get_sys2sys(system_embedding_total, nested_hierarchical_masks_forward, direction='forward')
         system_embedding_total = system_embedding_total + self.effect_norm(system_effect_forward)
