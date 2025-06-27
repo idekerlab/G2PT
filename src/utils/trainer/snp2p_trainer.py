@@ -53,7 +53,7 @@ def get_param_groups(model, base_lr):
 
 class SNP2PTrainer(object):
 
-    def __init__(self, snp2p_model, tree_parser, snp2p_dataloader, device, args, validation_dataloader=None, fix_system=False, pretrain_dataloader=None):
+    def __init__(self, snp2p_model, tree_parser, snp2p_dataloader, device, args, target_phenotype, validation_dataloader=None, fix_system=False, pretrain_dataloader=None):
         self.args = args
         self.device = device
         self.snp2p_model = snp2p_model.to(self.device)
@@ -72,6 +72,8 @@ class SNP2PTrainer(object):
         self.qt_inds = args.qt_inds
         self.bt = args.bt
         self.bt_inds = args.bt_inds
+        self.pheno2type = args.pheno2type
+        #self.phenotypes = self.qt + self.bt
         self.optimizer = optim.AdamW(get_param_groups(self.snp2p_model, args.lr),
                                      weight_decay=args.wd)
         self.validation_dataloader = validation_dataloader
@@ -97,6 +99,7 @@ class SNP2PTrainer(object):
         #self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=100, eta_min=1e-6)
         self.fix_system = fix_system
         self.dynamic_phenotype_sampling = args.dynamic_phenotype_sampling
+        self.target_phenotype = target_phenotype
 
         n_sys2pad = int(np.ceil(len(tree_parser.sys2ind)/8)*8) - len(tree_parser.sys2ind)
         system_temp_tensor = [np.log(1+len(tree_parser.sys2gene_full[tree_parser.ind2sys[i]])) for i in range(len(tree_parser.sys2ind))] + [10.0] * n_sys2pad
@@ -148,13 +151,13 @@ class SNP2PTrainer(object):
         '''
         self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=self.args.lr,
                                      weight_decay=self.args.wd)
-        '''
+
         if not self.args.distributed or (self.args.distributed
                                                          and self.args.rank % torch.cuda.device_count() == 0):
-            performance = self.evaluate(self.snp2p_model, self.validation_dataloader, 0, name='Validation', print_importance=False)
+            performance = self.evaluate(self.snp2p_model, self.validation_dataloader, 0, phenotypes=self.phenotypes, name='Validation', print_importance=False)
             gc.collect()
             torch.cuda.empty_cache()
-        '''
+
         for epoch in range(self.args.start_epoch, epochs):
             self.train_epoch(epoch + 1, ccc=ccc)
             gc.collect()
@@ -164,7 +167,7 @@ class SNP2PTrainer(object):
                 if self.validation_dataloader is not None:
                     if not self.args.distributed or (self.args.distributed and self.args.rank == 0):
                         performance = self.evaluate(self.snp2p_model, self.validation_dataloader, epoch + 1,
-                                                    name="Validation", print_importance=False)
+                                                    name="Validation", print_importance=False, phenotypes=self.phenotypes)
                         torch.cuda.empty_cache()
                         gc.collect()
                 if output_path:
@@ -182,7 +185,9 @@ class SNP2PTrainer(object):
                             output_path_epoch)
             self.scheduler.step()
 
-    def evaluate(self, model, dataloader, epoch, name="Validation", print_importance=False, snp_only=False):
+    def evaluate(self, model, dataloader, epoch, phenotypes, name="Validation", print_importance=False, snp_only=False):
+
+        print("Evaluating ", ",".join(phenotypes))
         trues = []
         dataloader_with_tqdm = tqdm(dataloader)
         results = []
@@ -202,12 +207,34 @@ class SNP2PTrainer(object):
                 trues.append(batch['phenotype'])
                 covariates.append(batch['covariates'].detach().cpu().numpy())
                 batch = move_to(batch, self.device)
+                if 'snp2gene_mask' in batch.keys():
+                    snp2gene_mask = batch['snp2gene_mask']
+                else:
+                    snp2gene_mask = self.snp2gene_mask
+
+                if 'gene2sys_mask' in batch.keys():
+                    gene2sys_mask = batch['gene2sys_mask']
+                    sys2gene_mask = batch['gene2sys_mask'].T
+                else:
+                    gene2sys_mask = self.gene2sys_mask
+                    sys2gene_mask = self.sys2gene_mask
+
+                if 'hierarchical_mask_forward' in batch.keys():
+                    hierarchical_mask_forward = batch['hierarchical_mask_forward']
+                else:
+                    hierarchical_mask_forward = self.nested_subtrees_forward
+
+                if 'hierarchical_mask_backward' in batch.keys():
+                    hierarchical_mask_backward = batch['hierarchical_mask_backward']
+                else:
+                    hierarchical_mask_backward = self.nested_subtrees_backward
+
                 phenotype_predicted = model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
-                                                   self.nested_subtrees_forward,
-                                                   self.nested_subtrees_backward,
-                                                   snp2gene_mask = self.snp2gene_mask,
-                                                                   gene2sys_mask=self.gene2sys_mask,#batch['gene2sys_mask'],
-                                                                   sys2gene_mask=self.sys2gene_mask,
+                                                   hierarchical_mask_forward,
+                                                   hierarchical_mask_backward,
+                                                   snp2gene_mask = snp2gene_mask,
+                                                                   gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
+                                                                   sys2gene_mask=sys2gene_mask,
                                                                    sys2env=self.args.sys2env,
                                                                    env2sys=self.args.env2sys,
                                                                    sys2gene=self.args.sys2gene,
@@ -219,10 +246,6 @@ class SNP2PTrainer(object):
                 else:
                     phenotype_predicted = phenotype_predicted
                 phenotype_predicted_detached = phenotype_predicted.detach().cpu().numpy()
-
-                #sys_scores.append(sys_score.detach().cpu().numpy())
-                #gene_scores.append(gene_score.detach().cpu().numpy())
-
                 results.append(phenotype_predicted_detached)
                 dataloader_with_tqdm.set_description("%s epoch: %d" % (name, epoch))
                 del phenotype_predicted
@@ -231,66 +254,90 @@ class SNP2PTrainer(object):
         trues = np.concatenate(trues)
         covariates = np.concatenate(covariates)
         results = np.concatenate(results)
+        #print(results.shape, trues.shape)
+        target_performance = 0.
+        for i, pheno in enumerate(phenotypes):
+            if self.pheno2type[pheno] == 'bt':
+                performance = self.evaluate_binary_phenotype(trues[:, i], results[:, i], covariates, phenotype_name=pheno)
+            else:
+                performance = self.evaluate_continuous_phenotype(trues[:, i], results[:, i], covariates, phenotype_name=pheno)
+            if pheno == target_performance:
+                target_performance = performance
 
-        for t, i in zip(self.qt, self.qt_inds):
-            mask = (trues[:, i] != -9)
-            r_square = metrics.r2_score(trues[mask, i], results[mask, i])
-            pearson = pearsonr(trues[mask, i], results[mask, i])
-            spearman = spearmanr(trues[mask, i], results[mask, i])
-            performance = pearson[0]
-            #print(module_name)
-            print("Performance overall for %s"%t)
-            print("R_square: ", r_square)
-            print("Pearson R", pearson[0])
-            print("Spearman Rho: ", spearman[0])
+        return target_performance
 
+
+    @staticmethod
+    def evaluate_continuous_phenotype(trues, results, covariates=None, phenotype_name=""):
+
+        mask = (trues != -9)
+        if mask.sum() == 0:
+            return 0.
+        print("Performance overall for %s" % phenotype_name)
+        r_square = metrics.r2_score(trues[mask], results[mask])
+        pearson = pearsonr(trues[mask], results[mask])
+        spearman = spearmanr(trues[mask], results[mask])
+        performance = pearson[0]
+
+        print("R_square: ", r_square)
+        print("Pearson R", pearson[0])
+        print("Spearman Rho: ", spearman[0])
+        if covariates is not None:
             print("Performance female")
-            female_indices = (covariates[:, 0]==1) & (trues[:, i] != -9)
-            r_square = metrics.r2_score(trues[female_indices, i], results[female_indices, i])
-            pearson = pearsonr(trues[female_indices, i], results[female_indices, i])
-            spearman = spearmanr(trues[female_indices, i], results[female_indices, i])
+            female_indices = (covariates[:, 0] == 1) & mask
+            r_square = metrics.r2_score(trues[female_indices], results[female_indices])
+            pearson = pearsonr(trues[female_indices], results[female_indices])
+            spearman = spearmanr(trues[female_indices], results[female_indices])
             female_performance = pearson[0]
-            #print(module_name)
+            # print(module_name)
             print("R_square: ", r_square)
             print("Pearson R", pearson[0])
             print("Spearman Rho: ", spearman[0])
 
             print("Performance male")
-            male_indices = (covariates[:, 1] == 1) & (trues[:, i] != -9)
-            r_square = metrics.r2_score(trues[male_indices, i], results[male_indices, i])
-            pearson = pearsonr(trues[male_indices, i], results[male_indices, i])
-            spearman = spearmanr(trues[male_indices, i], results[male_indices, i])
+            male_indices = (covariates[:, 1] == 1) & mask
+            r_square = metrics.r2_score(trues[male_indices], results[male_indices])
+            pearson = pearsonr(trues[male_indices], results[male_indices])
+            spearman = spearmanr(trues[male_indices], results[male_indices])
             male_performance = pearson[0]
-            #print(module_name)
+            # print(module_name)
             print("R_square: ", r_square)
             print("Pearson R", pearson[0])
             print("Spearman Rho: ", spearman[0])
             print(" ")
-        for t, i in zip(self.bt, self.bt_inds):
-            print(trues[:50, i])
-            print(results[:50, i])
-            auc_performance = metrics.roc_auc_score(trues[:, i], results[:, i])
-            performance = metrics.average_precision_score(trues[:, i], results[:, i])
+        return performance
 
-            print("Performance overall for %s"%t)
-            print("AUC: ", auc_performance)
-            print("AUPR: ", performance)
+    @staticmethod
+
+    def evaluate_binary_phenotype(trues, results, covariates=None, phenotype_name=""):
+        print(trues[:50])
+        print(results[:50])
+        mask = (trues != -9)
+        if mask.sum() == 0:
+            return 0.
+        print("Performance overall for %s" % phenotype_name)
+        auc_performance = metrics.roc_auc_score(trues[mask], results[mask])
+        performance = metrics.average_precision_score(trues[mask], results[mask])
+        print("AUC: ", auc_performance)
+        print("AUPR: ", performance)
+        if covariates is not None:
+
             print("Performance female")
-            female_indices = covariates[:, 0] == 1
-            female_auc_performance = metrics.roc_auc_score(trues[female_indices, i], results[female_indices, i])
-            female_performance = metrics.average_precision_score(trues[female_indices, i], results[female_indices, i])
+            female_indices = (covariates[:, 0] == 1) & mask
+            female_auc_performance = metrics.roc_auc_score(trues[female_indices], results[female_indices])
+            female_performance = metrics.average_precision_score(trues[female_indices], results[female_indices])
             print("AUC: ", female_auc_performance)
             print("AUPR: ", female_performance)
 
             print("Performance male")
-            male_indices = covariates[:, 1] == 1
-            male_auc_performance = metrics.roc_auc_score(trues[male_indices, i], results[male_indices, i])
-            male_performance = metrics.average_precision_score(trues[male_indices, i], results[male_indices, i])
+            male_indices = (covariates[:, 1] == 1) & mask
+            male_auc_performance = metrics.roc_auc_score(trues[male_indices], results[male_indices])
+            male_performance = metrics.average_precision_score(trues[male_indices], results[male_indices])
             print("AUC: ", male_auc_performance)
             print("AUPR: ", male_performance)
             print(" ")
+        return auc_performance
 
-        return performance
 
     def train_epoch(self, epoch, ccc=False, sex=False):
 
@@ -310,9 +357,9 @@ class SNP2PTrainer(object):
             self.snp2p_model.module.set_temperature(new_temperature)
             #self.snp2p_model.module.block_sampling_prob = new_block_sampling_prob
         '''
-        self.iter_minibatches(self.snp2p_dataloader, epoch, name="Batch", sex=False)
+        self.iter_minibatches(self.snp2p_model, self.snp2p_dataloader, self.optimizer,  epoch, name="Batch", sex=False)
 
-    def iter_minibatches(self, dataloader, epoch, name="", snp_only=False, sex=False):
+    def iter_minibatches(self, model, dataloader, optimizer, epoch, name="", snp_only=False, sex=False):
         mean_response_loss = 0.
         mean_ccc_loss = 0.
         mean_score_loss = 0.
@@ -353,7 +400,7 @@ class SNP2PTrainer(object):
 
 
             #print(f"Rank {self.args.rank}, sent to model")
-            phenotype_predicted = self.snp2p_model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
+            phenotype_predicted = model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
                                                    hierarchical_mask_forward,
                                                    hierarchical_mask_backward,
                                                    #sys_temp= self.system_temp_tensor,
@@ -386,7 +433,7 @@ class SNP2PTrainer(object):
 
             else:
                 loss = self.loss
-
+            #print(predictions.size(), batch['phenotype'].size())
             #phenotype_loss = 0
             #print((batch['phenotype']==-9).sum(), batch['phenotype'].size())
             phenotype_loss = loss(predictions, batch['phenotype'])
@@ -413,9 +460,9 @@ class SNP2PTrainer(object):
             #    phenotype_loss = move_to(torch.tensor(phenotype_loss), device=self.device)
             #if phenotype_loss!=0:
             loss =  phenotype_loss #+ 0.01 * snp_loss
-            self.optimizer.zero_grad()
+            optimizer.zero_grad()
             loss.backward()
-            self.optimizer.step()
+            optimizer.step()
 
             #print(f"Rank {self.args.rank} loss back-propagated")
             dataloader_with_tqdm.set_description(

@@ -106,6 +106,8 @@ class GenotypeDataset(Dataset):
         if ('PHENOTYPE' in self.cov_df.columns) or (pheno is not None):
             self.has_phenotype = True
         print("Phenotypes: ", self.pheno_ids)
+        print("Phenotype index: ", self.pheno2ind)
+        print("Phenotype data type: ", self.pheno2type)
 
     def is_binary(self, array):
         return np.isin(array, [0, 1]).all()
@@ -137,11 +139,10 @@ class GenotypeDataset(Dataset):
             i_cov += 1
         covariates_tensor = torch.tensor(covariates_tensor, dtype=torch.float32)
         covariates_tensor = covariates_tensor  # torch.cat([sex_age_tensor, torch.tensor(covariates, dtype=torch.float32)])
-
+        phenotype_ind_tensor = torch.tensor([i for i in range(self.n_pheno)], dtype=torch.int)
+        result_dict['phenotype_indices'] = phenotype_ind_tensor[self.pheno_range]
         if self.has_phenotype:
-            phenotype_ind_tensor = torch.tensor([i for i in range(self.n_pheno)], dtype=torch.int)
             phenotype_tensor = torch.tensor([phenotypes[pheno_id] for pheno_id in self.pheno_ids], dtype=torch.float32)
-            result_dict['phenotype_indices'] = phenotype_ind_tensor[self.pheno_range]
             result_dict['phenotype'] = phenotype_tensor[self.pheno_range]
 
         end = time.time()
@@ -181,9 +182,9 @@ class PLINKDataset(GenotypeDataset):
 
         genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
         genotype_df = genotype_df[snp_sorted]
-        print("genotype df shape: ", genotype_df.shape)
+        print("genotype data shape: ", genotype_df.shape)
         genotype = genotype_df.values
-        print(genotype)
+        #print(genotype)
         if not flip:
             genotype = 2 - genotype
         else:
@@ -268,14 +269,22 @@ class PLINKDataset(GenotypeDataset):
         sampled_phenotypes = rand.sample(self.pheno_ids, n)
         sampled_pheno_inds = sorted([self.pheno2ind[pheno] for pheno in sampled_phenotypes])
         sampled_phenotypes = [self.ind2pheno[ind] for ind in sampled_pheno_inds]
+        self.select_phenotypes(phenotypes=sampled_phenotypes)
+
+    def select_phenotypes(self, phenotypes):
+        print('Select Phenotypes: ', ', '.join(phenotypes))
+        pheno_indices = [self.pheno2ind[pheno] for pheno in phenotypes]
+        snp_indices, gene_indices, sys_indices = self.collect_indices_from_phenotypes(phenotypes)
+        self.set_range_from_indices(snp_indices, gene_indices, sys_indices, pheno_indices)
+
+    def collect_indices_from_phenotypes(self, phenotypes):
         #print("Sample phenotypes: ", sampled_phenotypes)
+        sampled_pheno_inds = sorted([self.pheno2ind[pheno] for pheno in phenotypes])
         self.pheno_range = sampled_pheno_inds
         snp_set = set()
-        for pheno in sampled_phenotypes:
-            #print(self.tree_parser.pheno2snp[pheno])
+        for pheno in phenotypes:
             snp_set = snp_set.union(self.tree_parser.pheno2snp[pheno])
         snp_set = sorted(list(snp_set))
-        #print(snp_set)
         gene_set = set()
         for snp in snp_set:
             gene_set = gene_set.union(self.tree_parser.snp2gene[snp])
@@ -286,10 +295,14 @@ class PLINKDataset(GenotypeDataset):
         snp_indices = sorted([self.tree_parser.snp2ind[snp] for snp in snp_set])
         gene_indices = sorted([self.tree_parser.gene2ind[gene] for gene in gene_set])
         sys_indices = sorted([self.tree_parser.sys2ind[sys] for sys in sys_set])
+        return snp_indices, gene_indices, sys_indices
+
+    def set_range_from_indices(self, snp_indices, gene_indices, sys_indices, pheno_indices):
         self.snp_range = pad_indices(snp_indices, self.snp_offset)
         self.block_range = pad_indices(snp_indices, self.snp_offset)
         self.gene_range = pad_indices(gene_indices, self.gene_pad)
         self.sys_range = pad_indices(sys_indices, self.sys_pad)
+        self.pheno_range = pheno_indices
 
 
     def __getitem__(self, index):
