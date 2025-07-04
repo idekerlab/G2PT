@@ -134,41 +134,55 @@ class SNP2PTrainer(object):
             print("Pearson R", pearson)
             print("Spearman Rho: ", spearman)
 
-            print("Performance female")
-            female_indices = covariates[:, 0]==1
-            r_square = metrics.r2_score(trues[female_indices], results[female_indices])
-            pearson = pearsonr(trues[female_indices], results[female_indices])
-            spearman = spearmanr(trues[female_indices], results[female_indices])
-            female_performance = pearson[0]
-            #print(module_name)
-            print("R_square: ", r_square)
-            print("Pearson R", pearson)
-            print("Spearman Rho: ", spearman)
-
-            print("Performance male")
-            male_indices = covariates[:, 1]==1
-            r_square = metrics.r2_score(trues[male_indices], results[male_indices])
-            pearson = pearsonr(trues[male_indices], results[male_indices])
-            spearman = spearmanr(trues[male_indices], results[male_indices])
-            male_performance = pearson[0]
-            #print(module_name)
-            print("R_square: ", r_square)
-            print("Pearson R", pearson)
-            print("Spearman Rho: ", spearman)
-        else:
-            performance = metrics.average_precision_score(trues, results)
-            print("Performance overall")
-            print("AUPR: ", performance)
-
-            print("Performance female")
             female_indices = covariates[:, 0] == 1
-            female_performance = metrics.average_precision_score(trues[female_indices], results[female_indices])
-            print("AUPR: ", female_performance)
+            if female_indices.any():
+                print("Performance female")
+                r2_f = metrics.r2_score(trues[female_indices], results[female_indices])
+                p_f, _ = pearsonr(trues[female_indices], results[female_indices])
+                s_f, _ = spearmanr(trues[female_indices], results[female_indices])
+                print("R_square: ", r2_f)
+                print("Pearson R", p_f)
+                print("Spearman Rho: ", s_f)
+            else:
+                print("No female samples — skipping female performance")
 
-            print("Performance male")
             male_indices = covariates[:, 1] == 1
-            male_performance = metrics.average_precision_score(trues[male_indices], results[male_indices])
-            print("AUPR: ", male_performance)
+            if male_indices.any():
+                print("Performance male")
+                r2_m = metrics.r2_score(trues[male_indices], results[male_indices])
+                p_m, _ = pearsonr(trues[male_indices], results[male_indices])
+                s_m, _ = spearmanr(trues[male_indices], results[male_indices])
+                print("R_square: ", r2_m)
+                print("Pearson R", p_m)
+                print("Spearman Rho: ", s_m)
+            else:
+                print("No male samples — skipping male performance")
+            
+        else:
+            female_indices = covariates[:, 0] == 1
+            if female_indices.any():
+                print("Performance female")
+                r2_f = metrics.r2_score(trues[female_indices], results[female_indices])
+                p_f, _ = pearsonr(trues[female_indices], results[female_indices])
+                s_f, _ = spearmanr(trues[female_indices], results[female_indices])
+                print("R_square: ", r2_f)
+                print("Pearson R", p_f)
+                print("Spearman Rho: ", s_f)
+            else:
+                print("No female samples — skipping female performance")
+
+            male_indices = covariates[:, 1] == 1
+            if male_indices.any():
+                print("Performance male")
+                r2_m = metrics.r2_score(trues[male_indices], results[male_indices])
+                p_m, _ = pearsonr(trues[male_indices], results[male_indices])
+                s_m, _ = spearmanr(trues[male_indices], results[male_indices])
+                print("R_square: ", r2_m)
+                print("Pearson R", p_m)
+                print("Spearman Rho: ", s_m)
+            else:
+                print("No male samples — skipping male performance")
+                
         if print_importance:
             for i, sys in self.snp2p_dataloader.dataset.tree_parser.ind2sys.items():
                 female_pearson, _ = pearsonr(results[female_indices], sys_scores[female_indices, i])
