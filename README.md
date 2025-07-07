@@ -122,9 +122,23 @@ There are several optional parameters that you can provide in addition to the in
 
 ## 1. Collapse Gene Ontology with your GWAS results
 
-You can collapse Gene Ontology (Biological Process) based on your GWAS summary statistics
+### Download Gene Ontology Data
 
-[Collapse Gene Ontology based on Your GWAS results](Collapse_Gene_Ontology_Based_on_GWAS_results.ipynb)
+To obtain the Gene Ontology (Biological Process) data required for G2PT input, use the provided notebook:
+
+**[Prepare GO File](go_file.ipynb)**
+
+*Special thanks to @RiccardoIannaco for this resource.*
+
+### Collapse Gene Ontology
+
+The complete Gene Ontology dataset is extensive, which can impact both interpretability and computational efficiency. To address this, we recommend collapsing the downloaded Gene Ontology based on your specific GWAS summary statistics.
+
+Use the following notebook to streamline your Gene Ontology data:
+
+**[Collapse Gene Ontology Based on Your GWAS Results](Collapse_Gene_Ontology_Based_on_GWAS_results.ipynb)**
+
+This process will create a more focused and computationally manageable Gene Ontology subset tailored to your research needs.
 
 ## 2. Train model
 

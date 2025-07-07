@@ -1,10 +1,11 @@
-name: G2PT_github
+name: G2PT_github_unit_test
 channels:
   - pytorch-nightly
+  - biobuilds
   - plotly
-  - anaconda
   - nvidia
   - conda-forge
+  - anaconda
   - defaults
 dependencies:
   - _libgcc_mutex=0.1=main
@@ -37,10 +38,10 @@ dependencies:
   - brotli-python=1.0.9=py38h6a678d5_8
   - bzip2=1.0.8=h5eee18b_6
   - c-ares=1.19.1=h5eee18b_0
-  - ca-certificates=2024.12.31=h06a4308_0
+  - ca-certificates=2025.2.25=h06a4308_0
   - cairo=1.16.0=hb05425b_5
   - cbgen=1.0.1=py38h497a2fe_1
-  - certifi=2024.8.30=py38h06a4308_0
+  - certifi=2020.6.20=pyhd3eb1b0_3
   - cffi=1.17.1=py38h1fdaa30_0
   - charset-normalizer=3.3.2=pyhd3eb1b0_0
   - click=8.1.7=py38h06a4308_0
@@ -58,6 +59,7 @@ dependencies:
   - cuda-version=12.4=hbda6634_3
   - cycler=0.11.0=pyhd3eb1b0_0
   - cytoolz=0.12.2=py38h5eee18b_0
+  - dash-renderer=0.20.0=py_0
   - dask=2023.4.1=py38h06a4308_1
   - dask-core=2023.4.1=py38h06a4308_0
   - dask-glm=0.2.0=py38_0
@@ -206,11 +208,12 @@ dependencies:
   - numexpr=2.8.4=py38hc78ab66_1
   - numpy=1.24.3=py38hf6e8229_1
   - numpy-base=1.24.3=py38h060ed82_1
+  - obonet=0.2.3=py_0
   - ocl-icd=2.3.2=h5eee18b_1
   - openai=0.27.10=pyhd8ed1ab_0
   - openjpeg=2.5.2=he7f1fd0_0
   - openpyxl=3.1.5=py38h5eee18b_0
-  - openssl=3.0.15=h5eee18b_0
+  - openssl=3.0.16=h5eee18b_0
   - overrides=7.4.0=py38h06a4308_0
   - packaging=24.1=py38h06a4308_0
   - pandas=2.0.3=py38h1128e8f_0
@@ -249,7 +252,6 @@ dependencies:
   - pytest=7.4.4=py38h06a4308_0
   - python=3.8.19=h955ad1f_0
   - python-dateutil=2.9.0post0=py38h06a4308_2
-  - python-fastjsonschema=2.16.2=py38h06a4308_0
   - python-json-logger=2.0.7=py38h06a4308_0
   - python-lmdb=1.4.1=py38h6a678d5_0
   - python-tzdata=2023.3=pyhd3eb1b0_0
@@ -333,4 +335,4 @@ dependencies:
       - retrying==1.3.4
       - rpds-py==0.20.1
       - werkzeug==3.0.6
-prefix: /cellar/users/i5lee/miniconda3/envs/G2PT_github
+prefix: /cellar/users/i5lee/miniconda3/envs/G2PT_github_unit_test
