@@ -344,7 +344,7 @@ class TreeParser(object):
             list of genes to retain
         """
         gene2sys_to_keep = self.gene2sys_df.loc[self.gene2sys_df.child.isin(gene_list)]
-        ontology_df_new = pd.concat([self.system_df, gene2sys_to_keep])
+        ontology_df_new = pd.concat([self.sys_df, gene2sys_to_keep])
         self._init_ontology(ontology_df_new)
 
     def compute_node_heights(self):
