@@ -1,0 +1,29 @@
+# Genome file
+*.vcf.gz
+*.bam
+*.fastq
+*.fasta
+*.fa
+
+
+# Sessione RStudio file
+.Rhistory
+.RData
+.Rproj.user/
+.Ruserdata
+
+# Python caches
+__pycache__/
+**/__pycache__/**
+*.py[cod]
+*.pyc
+
+# Virtual environments
+.env/
+venv/
+ENV/
+env/
+
+# Checkpoint Jupyter Notebooks
+.ipynb_checkpoints
+.ipynb_checkpoints/
