@@ -5,6 +5,7 @@ import socket
 import warnings
 
 import pandas as pd
+import mlflow
 
 import torch
 import torch.nn.parallel
@@ -27,6 +28,8 @@ from src.utils.trainer import GreedyMultiplePhenotypeTrainer
 from datetime import timedelta
 
 from torch.utils.data.dataloader import DataLoader
+
+_DATASET = None
 
 def count_parameters(model):
     table = PrettyTable(["Modules", "Parameters", "Trainable"])
@@ -163,7 +166,9 @@ def main():
     #args.jobs = args.jobs // world_size
 
     torch.cuda.set_device(args.local_rank)
-    main_worker(args)  # no mp.spawn!
+    with mlflow.start_run():
+        mlflow.log_params(vars(args))
+        main_worker(args)  # no mp.spawn!
     '''
     if args.multiprocessing_distributed:
         #if 'SLURM_PROCID' in os.environ:
@@ -191,6 +196,9 @@ def main_worker(args):
     #node_name = socket.gethostname()
     #print(f"Initialize main worker {rank} at node {node_name}")
     gpu = args.local_rank
+
+    global _DATASET
+
     node_name = socket.gethostname()
 
     print(f"[{args.rank}/{args.world_size}] running on {node_name} GPU {gpu}, rank: {args.rank}, local_rank: {args.local_rank}", flush=True)
@@ -229,10 +237,27 @@ def main_worker(args):
     '''
     print("Loading PLINK bfile... at %s" % args.train_bfile)
 
+    if args.distributed:
+        print("Set Sync before loading data")
+        dist.barrier()
+    if args.local_rank == 0:
+        _DATASET = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip,
+                                     input_format=args.input_format,
+                                     cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
+        print(f"[{args.rank}] Loading done...")
+    if args.distributed:
+        print("Set Sync after loading data")
+        dist.barrier()
 
-    snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip,
-                                 input_format=args.input_format,
-                                 cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
+    if args.local_rank != 0:
+        # This assumes that all processes on a node can access the same memory space.
+        # This works with torch.multiprocessing.spawn or torchrun.
+        print(f"[{args.rank}] align dataset loaded")
+        snp2p_dataset = _DATASET
+    else:
+        print(f"[{args.rank}] align dataset loaded")
+        snp2p_dataset = _DATASET
+
     args.bt_inds = snp2p_dataset.bt_inds
     args.qt_inds = snp2p_dataset.qt_inds
     args.bt = snp2p_dataset.bt
@@ -263,7 +288,8 @@ def main_worker(args):
                                          sys2pheno=args.sys2pheno, gene2pheno=args.gene2pheno, snp2pheno=args.snp2pheno,
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
-                                         n_phenotypes=snp2p_dataset.n_pheno, activation='softmax', input_format=args.input_format)
+                                         n_phenotypes=snp2p_dataset.n_pheno, activation='softmax', input_format=args.input_format,
+                                         cov_effect=args.cov_effect)
         print(args.model, 'initialized')
         snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
         if args.model.split('.')[-1].isdigit():
@@ -277,7 +303,7 @@ def main_worker(args):
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          activation='softmax', input_format=args.input_format,
-                                         n_phenotypes=snp2p_dataset.n_pheno)
+                                         n_phenotypes=snp2p_dataset.n_pheno, cov_effect=args.cov_effect)
         #snp2p_model = snp2p_model.half()
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)

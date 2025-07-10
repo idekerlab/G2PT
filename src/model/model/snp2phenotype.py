@@ -94,8 +94,9 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.cov_update_norm_outer = nn.LayerNorm(hidden_dims, eps=0.1)
 
         self.cov2gene = FiLM(n_covariates, hidden_dims)
-        #self.cov2sys = FiLM(n_covariates, hidden_dims)
-        #self.cov2snp = FiLM(n_covariates, hidden_dims)
+        self.cov2sys = FiLM(n_covariates, hidden_dims)
+        self.cov2snp = FiLM(n_covariates, hidden_dims)
+        self.cov2pheno = FiLM(n_covariates, hidden_dims)
         '''
         self.cov2gene = HierarchicalTransformer(hidden_dims, 4, hidden_dims,
                                                 self.cov_update_norm_inner,
@@ -152,7 +153,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
 
         phenotype_embedding = self.phenotype_embeddings(phenotype_ids)
-        prediction = self.prediction(phenotype_embedding, system_embedding, gene_embedding, sys_temp=sys_temp)#genotype_dict['embedding'])
+        prediction = self.prediction(phenotype_embedding, system_embedding, gene_embedding, sys_temp=sys_temp, covariates=covariates    )#genotype_dict['embedding'])
 
 
         #if predict_snp:
@@ -191,7 +192,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
         if (self.cov_effect == 'pre') or (self.cov_effect == 'both'):
             cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariates)
-            gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
+            gene_embedding = cov_effect_on_gene
 
         snp_embedding, snp_prediction = self.get_snp_embedding(genotype_dict)
         snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, snp2gene_mask)
@@ -237,8 +238,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
             gene_emb = self.gene_embedding(chunk['gene'])  # (B,N,H)
             if self.cov_effect in ('pre', 'both'):
-                gene_emb = gene_emb + self.effect_norm(
-                    self.get_cov2gene(gene_emb, covariates))
+                gene_emb = self.get_cov2gene(gene_emb, covariates)
 
             gene_emb = gene_emb + self.effect_norm(
                 self.get_snp2gene(gene_emb, snp_emb, chunk['snp2gene_mask']))
@@ -283,9 +283,9 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
         if (self.cov_effect=='post') or (self.cov_effect=='both'):
             cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariates)
-            gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
+            gene_embedding = cov_effect_on_gene
             cov_effect_on_sys = self.get_cov2gene(system_embedding, covariates)
-            system_embedding = system_embedding + self.effect_norm(cov_effect_on_sys)
+            system_embedding = cov_effect_on_sys
 
         return gene_embedding, system_embedding
 
@@ -302,7 +302,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             gene_embedding = self.gene_embedding(chunk_dict['gene'])
             if (self.cov_effect == 'pre') or (self.cov_effect == 'both'):
                 cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariates)
-                gene_embedding = gene_embedding + self.effect_norm(cov_effect_on_gene)
+                gene_embedding = cov_effect_on_gene
             snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, chunk_dict['snp2gene_mask'])
             gene_embedding = gene_embedding + self.effect_norm(snp_effect_on_gene)
             B, N, H = gene_embedding.size()
@@ -411,9 +411,14 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         covariates_vector = self.dropout(covariates_vector.unsqueeze(1))
         return covariates_vector
 
-    def prediction(self, phenotype_vector, system_embedding, gene_embedding, sys_temp=None):
+    def prediction(self, phenotype_vector, system_embedding, gene_embedding, sys_temp=None, covariates=None):
         phenotype_weighted_by_systems = self.get_geno2pheno(phenotype_vector, system_embedding, mask=sys_temp)
         phenotype_weighted_by_genes = self.get_geno2pheno(phenotype_vector, gene_embedding, mask=None)
+
+        if self.cov_effect == 'direct':
+            phenotype_weighted_by_systems = self.cov2pheno(phenotype_weighted_by_systems, covariates)
+            phenotype_weighted_by_genes = self.cov2pheno(phenotype_weighted_by_genes, covariates)
+
         phenotype_feature = torch.cat([phenotype_weighted_by_systems, phenotype_weighted_by_genes], dim=-1)
 
         phenotype_prediction = self.predictor(phenotype_feature)

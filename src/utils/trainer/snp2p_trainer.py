@@ -152,11 +152,11 @@ class SNP2PTrainer(object):
         self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=self.args.lr,
                                      weight_decay=self.args.wd)
 
-        if not self.args.distributed or (self.args.distributed
-                                                         and self.args.rank % torch.cuda.device_count() == 0):
-            performance = self.evaluate(self.snp2p_model, self.validation_dataloader, 0, phenotypes=self.phenotypes, name='Validation', print_importance=False)
-            gc.collect()
-            torch.cuda.empty_cache()
+        #if not self.args.distributed or (self.args.distributed
+        #                                                 and self.args.rank % torch.cuda.device_count() == 0):
+        #    performance = self.evaluate(self.snp2p_model, self.validation_dataloader, 0, phenotypes=self.phenotypes, name='Validation', print_importance=False)
+        #    gc.collect()
+        #    torch.cuda.empty_cache()
 
         for epoch in range(self.args.start_epoch, epochs):
             self.train_epoch(epoch + 1, ccc=ccc)
@@ -183,6 +183,7 @@ class SNP2PTrainer(object):
                         torch.save(
                             {"arguments": self.args, "state_dict": self.snp2p_model.state_dict()},
                             output_path_epoch)
+                        mlflow.log_artifact(output_path_epoch)
             self.scheduler.step()
 
     def evaluate(self, model, dataloader, epoch, phenotypes, name="Validation", print_importance=False, snp_only=False):
@@ -279,6 +280,10 @@ class SNP2PTrainer(object):
         spearman = spearmanr(trues[mask], results[mask])
         performance = pearson[0]
 
+        mlflow.log_metric(f"{phenotype_name}_r2", r_square)
+        mlflow.log_metric(f"{phenotype_name}_pearson", pearson[0])
+        mlflow.log_metric(f"{phenotype_name}_spearman", spearman[0])
+
         print("R_square: ", r_square)
         print("Pearson R", pearson[0])
         print("Spearman Rho: ", spearman[0])
@@ -318,6 +323,8 @@ class SNP2PTrainer(object):
         print("Performance overall for %s" % phenotype_name)
         auc_performance = metrics.roc_auc_score(trues[mask], results[mask])
         performance = metrics.average_precision_score(trues[mask], results[mask])
+        mlflow.log_metric(f"{phenotype_name}_auc", auc_performance)
+        mlflow.log_metric(f"{phenotype_name}_aupr", performance)
         print("AUC: ", auc_performance)
         print("AUPR: ", performance)
         if covariates is not None:
@@ -437,6 +444,7 @@ class SNP2PTrainer(object):
             #phenotype_loss = 0
             #print((batch['phenotype']==-9).sum(), batch['phenotype'].size())
             phenotype_loss = loss(predictions, batch['phenotype'])
+            mlflow.log_metric("train_loss", phenotype_loss.item())
             #print(f"Rank {self.args.rank}: loss calculated", phenotype_loss)
 
             '''
