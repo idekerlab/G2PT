@@ -1,6 +1,7 @@
 import gc
 import torch
 import torch.nn as nn
+import mlflow
 from torch.nn.functional import cosine_similarity
 import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR
@@ -178,6 +179,7 @@ class SNP2PTrainer(object):
                             torch.save({"arguments": self.args,
                                     "state_dict": self.snp2p_model.module.state_dict()},
                                    output_path_epoch)
+                            mlflow.log_artifact(output_path_epoch)
                     else:
                         print("Save to...", output_path_epoch)
                         torch.save(
@@ -188,7 +190,8 @@ class SNP2PTrainer(object):
 
     def evaluate(self, model, dataloader, epoch, phenotypes, name="Validation", print_importance=False, snp_only=False):
 
-        print("Evaluating ", ",".join(phenotypes))
+        if self.args.rank == 0:
+            print("Evaluating ", ",".join(phenotypes))
         trues = []
         dataloader_with_tqdm = tqdm(dataloader)
         results = []
@@ -259,30 +262,32 @@ class SNP2PTrainer(object):
         target_performance = 0.
         for i, pheno in enumerate(phenotypes):
             if self.pheno2type[pheno] == 'bt':
-                performance = self.evaluate_binary_phenotype(trues[:, i], results[:, i], covariates, phenotype_name=pheno)
+                performance = self.evaluate_binary_phenotype(trues[:, i], results[:, i], covariates, phenotype_name=pheno, epoch=epoch, rank=self.args.rank)
             else:
-                performance = self.evaluate_continuous_phenotype(trues[:, i], results[:, i], covariates, phenotype_name=pheno)
-            if pheno == target_performance:
+                performance = self.evaluate_continuous_phenotype(trues[:, i], results[:, i], covariates, phenotype_name=pheno, epoch=epoch, rank=self.args.rank)
+            if pheno == self.target_phenotype:
                 target_performance = performance
 
         return target_performance
 
 
     @staticmethod
-    def evaluate_continuous_phenotype(trues, results, covariates=None, phenotype_name=""):
+    def evaluate_continuous_phenotype(trues, results, covariates=None, phenotype_name="", epoch=0, rank=0):
 
         mask = (trues != -9)
         if mask.sum() == 0:
             return 0.
-        print("Performance overall for %s" % phenotype_name)
+        if rank == 0:
+            print("Performance overall for %s" % phenotype_name)
         r_square = metrics.r2_score(trues[mask], results[mask])
         pearson = pearsonr(trues[mask], results[mask])
         spearman = spearmanr(trues[mask], results[mask])
         performance = pearson[0]
 
-        mlflow.log_metric(f"{phenotype_name}_r2", r_square)
-        mlflow.log_metric(f"{phenotype_name}_pearson", pearson[0])
-        mlflow.log_metric(f"{phenotype_name}_spearman", spearman[0])
+        if rank == 0:
+            mlflow.log_metric(f"{phenotype_name}_r2", r_square, step=epoch)
+            mlflow.log_metric(f"{phenotype_name}_pearson", pearson[0], step=epoch)
+            mlflow.log_metric(f"{phenotype_name}_spearman", spearman[0], step=epoch)
 
         print("R_square: ", r_square)
         print("Pearson R", pearson[0])
@@ -294,6 +299,12 @@ class SNP2PTrainer(object):
             pearson = pearsonr(trues[female_indices], results[female_indices])
             spearman = spearmanr(trues[female_indices], results[female_indices])
             female_performance = pearson[0]
+
+            if rank == 0:
+                mlflow.log_metric(f"female_{phenotype_name}_r2", r_square, step=epoch)
+                mlflow.log_metric(f"female_{phenotype_name}_pearson", pearson[0], step=epoch)
+                mlflow.log_metric(f"female_{phenotype_name}_spearman", spearman[0], step=epoch)
+
             # print(module_name)
             print("R_square: ", r_square)
             print("Pearson R", pearson[0])
@@ -304,27 +315,33 @@ class SNP2PTrainer(object):
             r_square = metrics.r2_score(trues[male_indices], results[male_indices])
             pearson = pearsonr(trues[male_indices], results[male_indices])
             spearman = spearmanr(trues[male_indices], results[male_indices])
+            if rank == 0:
+                mlflow.log_metric(f"male_{phenotype_name}_r2", r_square, step=epoch)
+                mlflow.log_metric(f"male_{phenotype_name}_pearson", pearson[0], step=epoch)
+                mlflow.log_metric(f"male_{phenotype_name}_spearman", spearman[0], step=epoch)
             male_performance = pearson[0]
             # print(module_name)
             print("R_square: ", r_square)
             print("Pearson R", pearson[0])
             print("Spearman Rho: ", spearman[0])
             print(" ")
-        return performance
+        return (female_performance + male_performance)/2
 
     @staticmethod
-
-    def evaluate_binary_phenotype(trues, results, covariates=None, phenotype_name=""):
-        print(trues[:50])
-        print(results[:50])
+    def evaluate_binary_phenotype(trues, results, covariates=None, phenotype_name="", epoch=0, rank=0):
+        if rank == 0:
+            print(trues[:50])
+            print(results[:50])
         mask = (trues != -9)
         if mask.sum() == 0:
             return 0.
-        print("Performance overall for %s" % phenotype_name)
+        if rank == 0:
+            print("Performance overall for %s" % phenotype_name)
         auc_performance = metrics.roc_auc_score(trues[mask], results[mask])
         performance = metrics.average_precision_score(trues[mask], results[mask])
-        mlflow.log_metric(f"{phenotype_name}_auc", auc_performance)
-        mlflow.log_metric(f"{phenotype_name}_aupr", performance)
+        if rank == 0:
+            mlflow.log_metric(f"{phenotype_name}_auc", auc_performance, step=epoch)
+            mlflow.log_metric(f"{phenotype_name}_aupr", performance, step=epoch)
         print("AUC: ", auc_performance)
         print("AUPR: ", performance)
         if covariates is not None:
@@ -335,15 +352,21 @@ class SNP2PTrainer(object):
             female_performance = metrics.average_precision_score(trues[female_indices], results[female_indices])
             print("AUC: ", female_auc_performance)
             print("AUPR: ", female_performance)
+            if rank == 0:
+                mlflow.log_metric(f"female_{phenotype_name}_auc", female_auc_performance, step=epoch)
+                mlflow.log_metric(f"female_{phenotype_name}_aupr", female_performance, step=epoch)
 
             print("Performance male")
             male_indices = (covariates[:, 1] == 1) & mask
             male_auc_performance = metrics.roc_auc_score(trues[male_indices], results[male_indices])
             male_performance = metrics.average_precision_score(trues[male_indices], results[male_indices])
+            if rank == 0:
+                mlflow.log_metric(f"male_{phenotype_name}_auc", male_auc_performance, step=epoch)
+                mlflow.log_metric(f"male_{phenotype_name}_aupr", male_performance, step=epoch)
             print("AUC: ", male_auc_performance)
             print("AUPR: ", male_performance)
             print(" ")
-        return auc_performance
+        return (male_auc_performance + female_auc_performance)/2
 
 
     def train_epoch(self, epoch, ccc=False, sex=False):
@@ -364,7 +387,10 @@ class SNP2PTrainer(object):
             self.snp2p_model.module.set_temperature(new_temperature)
             #self.snp2p_model.module.block_sampling_prob = new_block_sampling_prob
         '''
-        self.iter_minibatches(self.snp2p_model, self.snp2p_dataloader, self.optimizer,  epoch, name="Batch", sex=False)
+        avg_loss = self.iter_minibatches(self.snp2p_model, self.snp2p_dataloader, self.optimizer,  epoch, name="Batch", sex=False)
+        if self.args.rank == 0:
+            print(f"Epoch {epoch}: train_loss_epoch={avg_loss:.4f}")
+            mlflow.log_metric("train_loss_epoch", avg_loss, step=epoch)
 
     def iter_minibatches(self, model, dataloader, optimizer, epoch, name="", snp_only=False, sex=False):
         mean_response_loss = 0.
@@ -444,7 +470,6 @@ class SNP2PTrainer(object):
             #phenotype_loss = 0
             #print((batch['phenotype']==-9).sum(), batch['phenotype'].size())
             phenotype_loss = loss(predictions, batch['phenotype'])
-            mlflow.log_metric("train_loss", phenotype_loss.item())
             #print(f"Rank {self.args.rank}: loss calculated", phenotype_loss)
 
             '''
@@ -481,4 +506,5 @@ class SNP2PTrainer(object):
             del phenotype_predicted
             del batch
 
-        del mean_response_loss, mean_ccc_loss
+        del mean_ccc_loss
+        return mean_response_loss / (i + 1)

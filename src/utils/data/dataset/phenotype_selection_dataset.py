@@ -507,7 +507,19 @@ class PhenotypeSelectionDatasetDDP(IterableDataset):
         self._prepare_iterator_indices()
 
     def _index_slice_for_worker_and_rank(self):
-        return self.full_indices[self.rank::self.world_size]
+        total_samples = len(self.full_indices)
+        samples_per_rank = total_samples // self.world_size
+        remainder = total_samples % self.world_size
+
+        # Calculate start and end for this rank
+        if self.rank < remainder:
+            start = self.rank * (samples_per_rank + 1)
+            end = start + samples_per_rank + 1
+        else:
+            start = self.rank * samples_per_rank + remainder
+            end = start + samples_per_rank
+
+        return self.full_indices[start:end]
 
     def __iter__(self):
         if self.full_indices is None:

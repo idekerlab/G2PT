@@ -6,6 +6,7 @@ import warnings
 
 import pandas as pd
 import mlflow
+import re
 
 import torch
 import torch.nn.parallel
@@ -14,6 +15,21 @@ import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
+
+def extract_info_from_bfile_path(bfile_path):
+    p_value = "N/A"
+    fold = "N/A"
+
+    # Regex to find pval_X and fold_Y
+    p_value_match = re.search(r'pval_([0-9eE.-]+)', bfile_path)
+    if p_value_match:
+        p_value = p_value_match.group(1)
+
+    fold_match = re.search(r'fold_([0-9]+|total)', bfile_path)
+    if fold_match:
+        fold = fold_match.group(1)
+
+    return p_value, fold
 
 
 from prettytable import PrettyTable
@@ -166,9 +182,8 @@ def main():
     #args.jobs = args.jobs // world_size
 
     torch.cuda.set_device(args.local_rank)
-    with mlflow.start_run():
-        mlflow.log_params(vars(args))
-        main_worker(args)  # no mp.spawn!
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI"))
+    main_worker(args)  # no mp.spawn!
     '''
     if args.multiprocessing_distributed:
         #if 'SLURM_PROCID' in os.environ:
@@ -192,9 +207,6 @@ def main():
     '''
 
 def main_worker(args):
-    #global best_acc1
-    #node_name = socket.gethostname()
-    #print(f"Initialize main worker {rank} at node {node_name}")
     gpu = args.local_rank
 
     global _DATASET
@@ -211,6 +223,12 @@ def main_worker(args):
             timeout=timedelta(hours=3),
         )
     print("Finish setup main worker", args.rank)
+
+    if args.rank == 0:
+        p_value, fold = extract_info_from_bfile_path(args.train_bfile)
+        run_name = f"GreedySelection_{args.target_phenotype}_Pval_{p_value}_Fold_{fold}"
+        mlflow.start_run(run_name=run_name)
+        mlflow.log_params(vars(args))
 
     if args.distributed:
         device = torch.device("cuda:%d" % gpu)
@@ -234,16 +252,14 @@ def main_worker(args):
         train_dataset = pd.read_csv(args.train_cov, header=None, sep='\t')
         snp2p_dataset = SNP2PDataset(train_dataset, genotype, tree_parser, n_cov=args.n_cov)
     else:
-    '''
+    
     print("Loading PLINK bfile... at %s" % args.train_bfile)
 
     if args.distributed:
         print("Set Sync before loading data")
         dist.barrier()
     if args.local_rank == 0:
-        _DATASET = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip,
-                                     input_format=args.input_format,
-                                     cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
+        _DATASET = 
         print(f"[{args.rank}] Loading done...")
     if args.distributed:
         print("Set Sync after loading data")
@@ -257,7 +273,10 @@ def main_worker(args):
     else:
         print(f"[{args.rank}] align dataset loaded")
         snp2p_dataset = _DATASET
-
+    '''
+    snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip,
+                 input_format=args.input_format,
+                 cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
     args.bt_inds = snp2p_dataset.bt_inds
     args.qt_inds = snp2p_dataset.qt_inds
     args.bt = snp2p_dataset.bt
@@ -396,6 +415,9 @@ def main_worker(args):
     snp2p_trainer = GreedyMultiplePhenotypeTrainer(snp2p_model, tree_parser, snp2p_dataloader, device, args, args.target_phenotype,
                                  validation_dataloader=val_snp2p_dataloader, fix_system=fix_system)
     snp2p_trainer.greedy_phenotype_selection()
+
+    if args.rank == 0:
+        mlflow.end_run()
 
 if __name__ == '__main__':
     #try:

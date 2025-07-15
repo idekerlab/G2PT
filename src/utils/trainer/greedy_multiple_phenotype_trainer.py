@@ -19,7 +19,8 @@ import copy
 from .snp2p_trainer import SNP2PTrainer
 from typing import List, Tuple, Dict, Optional
 import logging
-
+import mlflow
+import torch.distributed as dist
 
 
 
@@ -56,37 +57,43 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
         # Train initial model with target phenotype only
         self.logger.info(f"Training baseline model with {self.target_phenotype} only...")
 
-
-
-        model2train = copy.deepcopy(self.snp2p_model)
+        if self.args.rank == 0:
+            mlflow.start_run(nested=True, run_name=f"Baseline_Training_{self.target_phenotype}")
+        if self.args.distributed:
+            dist.barrier()
+        model2train = self.snp2p_model
         optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model2train.parameters()), lr=self.args.lr,
                                 weight_decay=self.args.wd)
-        train_dataset = self.snp2p_dataloader.dataset  # .select_phenotypes(phenotypes)
+        train_dataset = self.snp2p_dataloader.dataset
         train_dataset.select_phenotypes(phenotype_set)
         snp2p_dataloader = DataLoader(train_dataset, batch_size=None, num_workers=self.args.jobs, prefetch_factor=2)
         if self.validation_dataloader is not None:
-            val_dataset = self.validation_dataloader.dataset  # .dataset#.select_phenotypes(phenotypes)
+            val_dataset = self.validation_dataloader.dataset
             val_dataset.select_phenotypes(phenotype_set)
             val_snp2p_dataloader = DataLoader(val_dataset, batch_size=None, num_workers=self.args.jobs, prefetch_factor=2)
         else:
             val_snp2p_dataloader = None
 
         early_stopping = EarlyStopping(
-            patience=5,  # Stop after 10 evaluations without improvement
+            patience=10,  # Stop after 10 evaluations without improvement
             min_delta=0.001,  # Minimum improvement threshold
             mode='max',  # Maximizing performance metric
             restore_best_weights=True,
             verbose=True
         )
 
-        best_performance = float('-inf')
+        best_performance_tracked = float('-inf')
+        best_epoch_tracked = 0
 
         for epoch in range(30):
+            should_stop = False
             # Your training step
             train_loss = self.iter_minibatches(
                 model2train, snp2p_dataloader, optimizer, epoch=epoch,
                 name=f"Warmup with target phenotypes, {','.join(phenotype_set)}"
             )
+            if self.args.rank == 0:
+                print(f"Epoch {epoch}: train_loss={train_loss:.4f}")
 
             # Evaluate every 5 epochs
             if (epoch % self.args.val_step) == 0:
@@ -99,24 +106,52 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                         phenotypes=phenotype_set,
                         epoch=epoch
                     )
-
-                    # Update best and save if improved
-                    if val_performance > best_performance:
-                        best_performance = val_performance
-
-
-
+                    if self.args.rank == 0:
+                        print(val_performance)
                     # Check early stopping
                     should_stop = early_stopping(val_performance, model2train)
 
-                    if should_stop:
+                    if val_performance == early_stopping.best_score:
+                        best_performance_tracked = val_performance
+                        best_epoch_tracked = epoch
+                if self.args.distributed:
+                    # All-reduce val_performance and should_stop across all ranks
+                    val_performance_tensor = torch.tensor(val_performance, device=self.device)
+                    dist.all_reduce(val_performance_tensor, op=dist.ReduceOp.MAX)
+                    val_performance = val_performance_tensor.item()
+
+                    should_stop_tensor = torch.tensor(int(should_stop), device=self.device)
+                    dist.all_reduce(should_stop_tensor, op=dist.ReduceOp.MAX)
+                    should_stop = bool(should_stop_tensor.item())
+
+                    # All-reduce early_stopping.best_score
+                    best_score_tensor = torch.tensor(early_stopping.best_score, device=self.device)
+                    dist.all_reduce(best_score_tensor, op=dist.ReduceOp.MAX)
+                    early_stopping.best_score = best_score_tensor.item()
+
+                if should_stop:
+                    if self.args.rank == 0:
                         print(f"Early stopping triggered at epoch {epoch}")
-                        break
+                    break
 
-        initial_performance = self.evaluate(model2train, val_snp2p_dataloader, 0, phenotypes=phenotype_set, name=f"Warmup validation with phenotypes, {','.join(phenotype_set) }")
 
-        initial_model = model2train
-        self.save_model(initial_model, phenotype_set, epoch='best')
+        initial_performance = early_stopping.best_score
+        early_stopping.restore_best_model(model2train)
+
+        if self.args.distributed:
+            # All-reduce initial_performance and best_epoch_tracked across all ranks
+            initial_performance_tensor = torch.tensor(initial_performance, device=self.device)
+            dist.all_reduce(initial_performance_tensor, op=dist.ReduceOp.MAX)
+            initial_performance = initial_performance_tensor.item()
+
+            best_epoch_tracked_tensor = torch.tensor(best_epoch_tracked, device=self.device)
+            dist.all_reduce(best_epoch_tracked_tensor, op=dist.ReduceOp.MAX)
+            best_epoch_tracked = best_epoch_tracked_tensor.item()
+
+        if self.args.rank == 0:
+            print(f"Initial training finished. Best performance: {initial_performance:.4f} at epoch {best_epoch_tracked}")
+
+        self.save_model(model2train, phenotype_set, epoch='best')
         # Track history
         self.selection_history.append({
             'step': 0,
@@ -124,20 +159,28 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
             'performance': initial_performance,
             'added_phenotype': None
         })
+        if self.args.rank == 0:
+            mlflow.end_run()
+
+        #mlflow.log_metric("baseline_performance", initial_performance, step=0)
 
         prev_performance = initial_performance
-        best_model = initial_model
         best_phenotype_set = phenotype_set.copy()
 
         step = 1
         while True:
-            self.logger.info(f"\nStep {step}: Evaluating phenotype additions...")
+            self.logger.info(f"Step {step}: Evaluating phenotype additions...")
 
             # Find best phenotype to add
-            candidate_performance, candidate_model, candidate_phenotype_set, added_phenotype = \
-                self.compare_phenotype_combination(best_model, best_phenotype_set, prev_performance, balanced=False)
+            candidate_performance, candidate_phenotype_set, added_phenotype = \
+                self.compare_phenotype_combination(model2train, best_phenotype_set, prev_performance, balanced=False)
 
             improvement = candidate_performance - prev_performance
+
+            if self.args.distributed:
+                improvement_tensor = torch.tensor(improvement, device=self.device)
+                dist.all_reduce(improvement_tensor, op=dist.ReduceOp.MAX)
+                improvement = improvement_tensor.item()
 
             if improvement < self.improvement_threshold:
                 self.logger.info(
@@ -146,9 +189,8 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
             else:
                 self.logger.info(f"Added {added_phenotype} with improvement {improvement:.4f}")
                 prev_performance = candidate_performance
-                best_model = candidate_model
                 best_phenotype_set = candidate_phenotype_set
-                self.save_model(best_model, best_phenotype_set)
+                self.save_model(model2train, best_phenotype_set)
                 # Track history
                 self.selection_history.append({
                     'step': step,
@@ -160,7 +202,7 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
 
                 step += 1
 
-        return prev_performance, best_model, best_phenotype_set
+        return prev_performance, model2train, best_phenotype_set
 
     '''
     def greedy_phenotype_selection(self):
@@ -189,45 +231,58 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
         """
         Compare different phenotype combinations by adding one phenotype at a time.
         """
-        best_performance = best_performance
-        best_phenotype_set = phenotype_set
-        best_model = model
-        #orig_model = model.copy()
-        #temporal_model = model
-        added_phenotype = None
+        current_best_performance = best_performance
+        current_best_phenotype_set = phenotype_set.copy()
+        current_added_phenotype = None
+
         for phenotype in self.phenotypes:
             if phenotype not in phenotype_set:
                 temporal_phenotype_set = phenotype_set + [phenotype]
-                temporal_model = copy.deepcopy(model)
                 self.logger.info(f"  Testing addition of {phenotype}...")
+                if self.args.rank == 0:
+                    mlflow.start_run(nested=True, run_name=f"Candidate_Training_{phenotype}")
+
                 for i in range(self.args.epochs):
                 # Train with new phenotype set
-                    temporal_performance, temporal_model = self.train_with_phenotypes(
-                        temporal_model, temporal_phenotype_set, epoch=i, balanced=balanced, train='embedding')
+                    temporal_performance = self.train_with_phenotypes(
+                        model, temporal_phenotype_set, epoch=i, balanced=balanced, train='embedding')
 
                     self.logger.info(f"    Performance: {temporal_performance:.4f}")
 
-                    if temporal_performance > best_performance:
-                        best_performance = temporal_performance
-                        best_phenotype_set = temporal_phenotype_set
-                        best_model = copy.deepcopy(temporal_model)
-                        added_phenotype = phenotype
+                    # All-reduce temporal_performance to get the global best
+                    if self.args.distributed:
+                        temporal_performance_tensor = torch.tensor(temporal_performance, device=self.device)
+                        dist.all_reduce(temporal_performance_tensor, op=dist.ReduceOp.MAX)
+                        temporal_performance = temporal_performance_tensor.item()
 
-                temporal_model = best_model
-                for i in range(self.args.epochs):
+                    if temporal_performance > current_best_performance:
+                        current_best_performance = temporal_performance
+                        current_best_phenotype_set = temporal_phenotype_set
+                        current_added_phenotype = phenotype
+
+                for i in range(self.args.epochs, self.args.epochs*2):
                 # Train with new phenotype set
-                    temporal_performance, temporal_model = self.train_with_phenotypes(
-                        temporal_model, temporal_phenotype_set, epoch=i, balanced=balanced, train='transformer')
+                    temporal_performance = self.train_with_phenotypes(
+                        model, temporal_phenotype_set, epoch=i, balanced=balanced, train='transformer')
 
                     self.logger.info(f"    Performance: {temporal_performance:.4f}")
 
-                    if temporal_performance > best_performance:
-                        best_performance = temporal_performance
-                        best_phenotype_set = temporal_phenotype_set
-                        best_model = copy.deepcopy(temporal_model)
-                        added_phenotype = phenotype
+                    # All-reduce temporal_performance to get the global best
+                    if self.args.distributed:
+                        temporal_performance_tensor = torch.tensor(temporal_performance, device=self.device)
+                        dist.all_reduce(temporal_performance_tensor, op=dist.ReduceOp.MAX)
+                        temporal_performance = temporal_performance_tensor.item()
 
-        return best_performance, best_model, best_phenotype_set, added_phenotype
+                    if temporal_performance > current_best_performance:
+                        current_best_performance = temporal_performance
+                        current_best_phenotype_set = temporal_phenotype_set
+                        current_added_phenotype = phenotype
+
+                if self.args.rank == 0:
+                    mlflow.end_run()
+
+
+        return current_best_performance, current_best_phenotype_set, current_added_phenotype
 
     '''
     def compare_phenotype_combination(self, model, phenotype_set, best_performance):
@@ -298,7 +353,7 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                                       prefetch_factor=2)
         val_snp2p_dataloader = DataLoader(val_dataset, batch_size=None, num_workers=self.args.jobs,
                                       prefetch_factor=2)
-        model2train = copy.deepcopy(model)
+        model2train = model
         if train == 'embedding':
             for name, parameter in model2train.named_parameters():
                 if 'embedding' in name:
@@ -313,9 +368,20 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                     parameter.requires_grad = False
         optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model2train.parameters()), lr=self.args.lr/10,
                                      weight_decay=self.args.wd)
-        self.iter_minibatches(model2train, snp2p_dataloader, optimizer, epoch=epoch, name=f"Training with phenotypes, {','.join(phenotypes) }, {str(train)}")
-        performance = self.evaluate(model2train, val_snp2p_dataloader, 0, phenotypes=phenotypes, name=f"Validation with phenotypes, {','.join(phenotypes) }, {str(train)}")
-        return performance, model2train
+        avg_loss = self.iter_minibatches(model2train, snp2p_dataloader, optimizer, epoch=epoch, name=f"Training with phenotypes, {','.join(phenotypes) }, {str(train)}")
+
+        # All ranks should participate in evaluation
+        performance = self.evaluate(model2train, val_snp2p_dataloader, epoch, phenotypes=phenotypes, name=f"Validation with phenotypes, {','.join(phenotypes) }, {str(train)}")
+
+        if self.args.rank == 0:
+            mlflow.log_metric("train_loss_epoch", avg_loss, step=epoch)
+
+        # All-reduce performance across all ranks
+        if self.args.distributed:
+            performance_tensor = torch.tensor(performance, device=self.device)
+            dist.all_reduce(performance_tensor, op=dist.ReduceOp.MAX)
+            performance = performance_tensor.item()
+        return performance
 
 
 
@@ -348,10 +414,10 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                     torch.save({"arguments": self.args,
                                 "state_dict": model.module.state_dict()},
                                output_path)
+                    mlflow.log_artifact(output_path)
             else:
                 print("Save to...", output_path)
                 torch.save(
                     {"arguments": self.args, "state_dict": model.state_dict()},
                     output_path)
-
-
+                mlflow.log_artifact(output_path)
