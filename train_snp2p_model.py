@@ -107,7 +107,7 @@ def main():
     parser.add_argument('--pheno-ids', nargs='*', default=[])
     parser.add_argument('--bt', nargs='*', default=[])
     parser.add_argument('--qt', nargs='*', default=[])
-    parser.add_argument('--target-phenotype', type=str)
+    parser.add_argument('--target-phenotype', type=str, )
     # Propagation option
     parser.add_argument('--cov-effect', default='pre')
     parser.add_argument('--sys2env', action='store_true', default=False)
@@ -161,7 +161,7 @@ def main():
     args.rank = rank
     args.world_size = world_size
     args.local_rank = local_rank
-    #args.batch_size = args.batch_size // world_size
+    args.batch_size = args.batch_size // world_size
     #args.jobs = args.jobs // world_size
 
     torch.cuda.set_device(args.local_rank)
@@ -210,6 +210,8 @@ def main_worker(args):
         device = torch.device("cuda:%d" % gpu)
     elif args.cuda is not None:
         device = torch.device("cuda:%d" % args.cuda)
+    elif args.world_size == 1 and torch.cuda.is_available():
+        device = torch.device("cuda:0")
     else:
         device = torch.device("cpu")
     if (len(args.qt) + len(args.bt) > 1) :
@@ -265,8 +267,7 @@ def main_worker(args):
                                          sys2pheno=args.sys2pheno, gene2pheno=args.gene2pheno, snp2pheno=args.snp2pheno,
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
-                                         n_phenotypes=snp2p_dataset.n_pheno, activation='softmax', input_format=args.input_format,
-                                         cov_effect=args.cov_effect)
+                                         n_phenotypes=snp2p_dataset.n_pheno, activation='softmax', input_format=args.input_format)
         print(args.model, 'initialized')
         snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
         if args.model.split('.')[-1].isdigit():
@@ -280,7 +281,7 @@ def main_worker(args):
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          activation='softmax', input_format=args.input_format,
-                                         n_phenotypes=snp2p_dataset.n_pheno, cov_effect=args.cov_effect)
+                                         n_phenotypes=snp2p_dataset.n_pheno)
         #snp2p_model = snp2p_model.half()
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
@@ -384,13 +385,13 @@ def main_worker(args):
         val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, args.val_pheno, cov_mean_dict=args.cov_mean_dict,
                                          cov_std_dict=args.cov_std_dict, flip=args.flip, input_format=args.input_format,
                                          cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
-        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
+        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=int(args.batch_size/(args.ngpus_per_node*2)),
                                           num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True)
     else:
         val_snp2p_dataloader = None
 
 
-    snp2p_trainer = SNP2PTrainer(snp2p_model, tree_parser, snp2p_dataloader, device, args, target_phenotype=args.target_phenotype,
+    snp2p_trainer = SNP2PTrainer(snp2p_model, tree_parser, snp2p_dataloader, device, args, args.target_phenotype,
                                  validation_dataloader=val_snp2p_dataloader, fix_system=fix_system)
     snp2p_trainer.train(args.epochs, args.out)
 

@@ -53,6 +53,8 @@ class HierarchicalTransformerUpdate(nn.Module):
         self.drop = nn.Dropout(dropout)
         self.drop_opposite = nn.Dropout(1-dropout)
         self.softmax = softmax
+        self.gate_attn = nn.Parameter(torch.zeros(1))
+        self.gate_ffn = nn.Parameter(torch.zeros(1))
 
     def _xops_softmax_attn(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -163,10 +165,14 @@ class HierarchicalTransformerUpdate(nn.Module):
     # ---------------------------------------------------------------------
     def forward(self, q, k, v, mask):
         q_norm = self.norm_attn(q)
-        x = q + self.drop(self._xattn(q_norm, k, v, mask))
+        attn_out = self.drop(self._xattn(q_norm, k, v, mask))
+        gate_a = torch.sigmoid(self.gate_attn)
+        x = q * (1 - gate_a) + attn_out * gate_a
 
         y = self.norm_ffn(x)
-        x = q + self.drop(self.ffn(y))
+        ffn_out = self.drop(self.ffn(y))
+        gate_f = torch.sigmoid(self.gate_ffn)
+        x = x * (1 - gate_f) + ffn_out * gate_f
 
         if self.norm_channel_first:
             x = x.transpose(-1, -2)

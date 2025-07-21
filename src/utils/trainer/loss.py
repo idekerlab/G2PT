@@ -32,25 +32,23 @@ class CCCLoss(torch.nn.Module):
 
 
 class FocalLoss(nn.Module):
-    def __init__(self, weight=None, size_average=True, gamma=1, alpha=1):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
         super(FocalLoss, self).__init__()
-        self.gamma = gamma
         self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
 
-    def forward(self, inputs, targets, smooth=1):
-        
-        #comment out if your model contains a sigmoid or equivalent activation layer
-        
-        #flatten label and prediction tensors
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
-        
-        #first compute binary cross-entropy 
-        BCE = F.binary_cross_entropy(inputs, targets, reduction='mean')
-        BCE_EXP = torch.exp(-BCE)
-        focal_loss = self.alpha * (1-BCE_EXP)**self.gamma * BCE
-                       
-        return focal_loss
+    def forward(self, inputs, targets):
+        BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        pt = torch.exp(-BCE_loss)
+        F_loss = self.alpha * (1 - pt)**self.gamma * BCE_loss
+
+        if self.reduction == 'mean':
+            return torch.mean(F_loss)
+        elif self.reduction == 'sum':
+            return torch.sum(F_loss)
+        else:
+            return F_loss
 
 class VarianceLoss(nn.Module):
     """

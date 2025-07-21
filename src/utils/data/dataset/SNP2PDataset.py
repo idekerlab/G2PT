@@ -438,7 +438,7 @@ class BlockDataset(Dataset):
         self.tokenizer = tokenizer
         # ---------- SNP indices for all individuals ----------
 
-        self.n_snp2pad = int(np.ceil(self.n_snps/8)*8) - self.n_snps
+        self.n_snp2pad = int(np.ceil((self.n_snps+1)/8)*8) - self.n_snps
         alleles = torch.as_tensor(genotype, dtype=torch.long)  # (N × 1 200)
         base = torch.arange(self.n_snps, dtype=torch.long)  # [0 … 1 199]
         snp_idx = alleles * self.snp_offset + base  # vectorised

@@ -242,6 +242,8 @@ def main_worker(args):
         device = torch.device("cuda:%d" % gpu)
     elif args.cuda is not None:
         device = torch.device("cuda:%d" % args.cuda)
+    elif args.world_size == 1 and torch.cuda.is_available():
+        device = torch.device("cuda:0")
     else:
         device = torch.device("cpu")
     if (len(args.qt) + len(args.bt)) > 1:

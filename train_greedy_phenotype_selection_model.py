@@ -153,6 +153,12 @@ def main():
     parser.add_argument('--val-step', help='Validation step', type=int, default=20)
     parser.add_argument('--jobs', help="The number of threads", type=int, default=0)
 
+    parser.add_argument('--loss', help='loss function', type=str, default='default')
+    parser.add_argument('--focal-loss-alpha', help='alpha for focal loss', type=float, default=0.25)
+    parser.add_argument('--focal-loss-gamma', help='gamma for focal loss', type=float, default=2.0)
+
+    parser.add_argument('--pretrained', type=str, default=None)
+
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
 
@@ -234,6 +240,8 @@ def main_worker(args):
         device = torch.device("cuda:%d" % gpu)
     elif args.cuda is not None:
         device = torch.device("cuda:%d" % args.cuda)
+    elif args.world_size == 1 and torch.cuda.is_available():
+        device = torch.device("cuda:0")
     else:
         device = torch.device("cpu")
     if (len(args.qt) + len(args.bt) > 1) :
@@ -413,8 +421,9 @@ def main_worker(args):
 
 
     snp2p_trainer = GreedyMultiplePhenotypeTrainer(snp2p_model, tree_parser, snp2p_dataloader, device, args, args.target_phenotype,
-                                 validation_dataloader=val_snp2p_dataloader, fix_system=fix_system)
-    snp2p_trainer.greedy_phenotype_selection()
+                                 validation_dataloader=val_snp2p_dataloader, fix_system=fix_system, pretrained_checkpoint=args.pretrained)
+    skip_initial_training = args.pretrained is not None
+    snp2p_trainer.greedy_phenotype_selection(skip_initial_training=skip_initial_training)
 
     if args.rank == 0:
         mlflow.end_run()

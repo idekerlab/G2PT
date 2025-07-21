@@ -238,6 +238,8 @@ def main_worker(args):
         device = torch.device("cuda:%d" % gpu)
     elif args.cuda is not None:
         device = torch.device("cuda:%d" % args.cuda)
+    elif args.world_size == 1 and torch.cuda.is_available():
+        device = torch.device("cuda:0")
     else:
         device = torch.device("cpu")
     if (len(args.qt) + len(args.bt) >= 1) :
@@ -260,23 +262,27 @@ def main_worker(args):
                   f'/cellar/users/i5lee/G2PT_T2D/SNP_embedding/LD_model/ukb_snp_chr{chromosome}.block_{block}.newid.imputed.HapMap.renamed_ld_roberta_epoch_30.pth')
             block_model_weight = torch.load(f'/cellar/users/i5lee/G2PT_T2D/SNP_embedding/LD_model/ukb_snp_chr{chromosome}.block_{block}.newid.imputed.HapMap.renamed_ld_roberta_epoch_30.pth', weights_only=True)
         except:
-            print("Failed.. Load model weight",
-                  f'/cellar/users/i5lee/G2PT_T2D/SNP_embedding/LD_model/ukb_snp_chr{chromosome}.block_{block}.newid.imputed.HapMap.renamed_ld_roberta_epoch_20.pth')
-            block_model_weight = torch.load(
-                f'/cellar/users/i5lee/G2PT_T2D/SNP_embedding/LD_model/ukb_snp_chr{chromosome}.block_{block}.newid.imputed.HapMap.renamed_ld_roberta_epoch_20.pth',
-                weights_only=True)
+            continue
+            #print("Failed.. Load model weight",
+            #      f'/cellar/users/i5lee/G2PT_T2D/SNP_embedding/LD_model/ukb_snp_chr{chromosome}.block_{block}.newid.imputed.HapMap.renamed_ld_roberta_epoch_20.pth')
+            #block_model_weight = torch.load(
+            #    f'/cellar/users/i5lee/G2PT_T2D/SNP_embedding/LD_model/ukb_snp_chr{chromosome}.block_{block}.newid.imputed.HapMap.renamed_ld_roberta_epoch_20.pth',
+            #    weights_only=True)
         block_config = RoBERTaConfig(vocab_size=((block_bfile.n_snps * 3) + 2), hidden_size=64, num_hidden_layers=6,
                                         num_attention_heads=4, intermediate_size=128, max_position_embeddings=1024)
         block_model = RoBERTa(config=block_config, num_classes=((block_bfile.n_snps * 3) + 2), temperature=False, lora=False)
         #unmatched = block_model.load_state_dict(block_model_weight, strict=False)
+
         model_dict = block_model.state_dict()
         common_keys = {k: v for k, v in block_model_weight.items() if k in model_dict}
 
         for param in block_model.parameters():
             if param.requires_grad:
                 torch.nn.init.normal_(param, mean=0.0, std=0.01)
-
-        block_model.load_state_dict(common_keys, strict=False)
+        try:
+            block_model.load_state_dict(common_keys, strict=False)
+        except:
+            print("Something wrong", chromosome, block)
         # Optionally freeze all loaded parameters
         if args.freeze_pretrained:
             for name, param in block_model.named_parameters():
@@ -287,7 +293,7 @@ def main_worker(args):
         print("Load model weight finished")
         block_model_dict[f'chr{chromosome}_block{block}'] = block_model
         block_bfile_dict[(chromosome, block)] = block_bfile
-
+    #asdf
 
     fix_system = False
     '''
@@ -316,7 +322,7 @@ def main_worker(args):
     args.cov_std_dict = snp2p_dataset.cov_std_dict
     print("Loading done...")
 
-    snp2p_collator = SNP2PCollator(tree_parser, input_format='block', mlm=True)
+    snp2p_collator = SNP2PCollator(tree_parser, input_format='block', mlm=False)
 
     print("Summary of trainable parameters")
     if args.sys2env:

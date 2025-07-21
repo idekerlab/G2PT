@@ -2,4 +2,4 @@ from .SNP2PDataset import SNP2PCollator, CohortSampler, DistributedCohortSampler
 from .SNP2PDataset import BlockDataset, BlockQueryDataset
 from .SNP2PDataset import ChunkSNP2PCollator
 from .dynamic_phenotype_dataset import DynamicPhenotypeBatchIterableDataset, DynamicPhenotypeBatchIterableDatasetDDP
-from .phenotype_selection_dataset import PhenotypeSelectionDataset, PhenotypeSelectionDatasetDDP
+from .phenotype_selection_dataset import PhenotypeSelectionDataset, PhenotypeSelectionDatasetDDP, PhenotypeSelectionNonIterableDataset

@@ -2,13 +2,112 @@ import torch
 import math
 import random
 
-from torch.utils.data import IterableDataset, get_worker_info
+from torch.utils.data import Dataset, IterableDataset, get_worker_info
 
 from .SNP2PDataset import PLINKDataset
 import torch.distributed as dist
 from .. import pad_indices
 import numpy as np
 
+
+class PhenotypeSelectionNonIterableDataset(Dataset):  # Inherit from Dataset
+    def __init__(self, tree_parser, dataset: PLINKDataset, collator, batch_size, shuffle=True, balanced_sampling=None):
+        # ... (all your existing __init__ code is fine) ...
+        super().__init__()
+        self.tree_parser = tree_parser
+        self.dataset = dataset
+        self.collator = collator
+        self.batch_size = batch_size  # Keep for reference, but not used in __len__
+        self.shuffle = shuffle
+        self.balanced_sampling = balanced_sampling
+        self.n_pheno = self.dataset.n_pheno
+
+        self.indices = None
+        self.phenotypes = None
+
+        self.nested_subtrees_forward = tree_parser.get_hierarchical_interactions(
+            tree_parser.interaction_types, direction='forward', format='indices')
+        self.nested_subtrees_backward = tree_parser.get_hierarchical_interactions(
+            tree_parser.interaction_types, direction='backward', format='indices')
+
+    # _prepare_iterator_indices remains the same
+    def _prepare_iterator_indices(self):
+        # ... (no changes needed here) ...
+        if self.phenotypes is None:
+            raise RuntimeError("Phenotype must be selected before preparing indices.")
+        # ... (rest of the method is the same)
+        # ---
+        if self.balanced_sampling is not None:
+            target_pheno_name = self.balanced_sampling
+            pheno_values = self.dataset.pheno_df[target_pheno_name].values
+            all_sample_indices = np.arange(len(pheno_values))
+            case_indices = all_sample_indices[pheno_values == 1].tolist()
+            control_indices = all_sample_indices[pheno_values == 0].tolist()
+            if not case_indices or not control_indices:
+                raise ValueError("Cannot perform balanced sampling with zero samples in one of the classes.")
+            num_cases = len(case_indices)
+            num_controls = len(control_indices)
+            if self.shuffle:
+                random.shuffle(case_indices)
+                random.shuffle(control_indices)
+            if num_cases < num_controls:
+                final_indices = case_indices + control_indices[:num_cases]
+            else:
+                final_indices = control_indices + case_indices[:num_controls]
+            if self.shuffle:
+                random.shuffle(final_indices)
+            self.indices = final_indices
+        else:
+            self.indices = list(range(len(self.dataset)))
+            if self.shuffle:
+                random.shuffle(self.indices)
+
+    # select_phenotypes remains the same
+    def select_phenotypes(self, phenotypes):
+        # ... (no changes needed here) ...
+        self.phenotypes = phenotypes
+        self.dataset.select_phenotypes(phenotypes)
+        self._prepare_iterator_indices()
+
+    # MODIFIED: __len__ now returns the number of SAMPLES
+    def __len__(self):
+        if self.indices is None:
+            raise RuntimeError("Indices not prepared. Call `select_phenotypes()` first.")
+        return len(self.indices)
+
+    # NEW: __getitem__ fetches a single sample by its index
+    def __getitem__(self, idx):
+        # The DataLoader provides the index `idx`. We map it to our shuffled/sampled list.
+        actual_index = self.indices[idx]
+        return self.dataset[actual_index]
+
+    # NEW: This method will be our collate_fn.
+    # It contains the logic that used to be in the __iter__ loop.
+    def collate_and_add_metadata(self, raw_batch):
+        # The default collator handles basic stacking of tensors
+        collated = self.collator(raw_batch)
+
+        # Now, add the batch-level metadata that was in your old __iter__
+        collated['snp2gene_mask'] = torch.tensor(
+            self.tree_parser.snp2gene_mask[self.dataset.gene_range][:, self.dataset.snp_range],
+            dtype=torch.float32
+        )
+        collated['gene2sys_mask'] = torch.tensor(
+            self.tree_parser.gene2sys_mask[self.dataset.sys_range][:, self.dataset.gene_range],
+            dtype=torch.float32
+        )
+        collated['genotype']['gene_indices'] = torch.tensor(self.dataset.gene_range, dtype=torch.long)
+        subsys_indices_wo_padding = [si for si in self.dataset.sys_range if si != self.tree_parser.n_systems]
+        remap_dict = self.tree_parser.create_subset_index_mapping(subsys_indices_wo_padding)
+        hierarchical_mask_forward_subset = self.tree_parser.remap_hierarchical_indices(
+            self.nested_subtrees_forward, remap_dict)
+        hierarchical_mask_backward_subset = self.tree_parser.remap_hierarchical_indices(
+            self.nested_subtrees_backward, remap_dict)
+        collated['genotype']['hierarchical_mask_forward'] = hierarchical_mask_forward_subset
+        collated['genotype']['hierarchical_mask_backward'] = hierarchical_mask_backward_subset
+        collated['genotype']['sys_indices'] = torch.tensor(self.dataset.sys_range, dtype=torch.long)
+
+        return collated
 
 class PhenotypeSelectionDataset(IterableDataset):
     def __init__(self, tree_parser, dataset: PLINKDataset, collator, batch_size, shuffle=True, balanced_sampling=None):
@@ -18,7 +117,6 @@ class PhenotypeSelectionDataset(IterableDataset):
         self.collator = collator
         self.batch_size = batch_size
         self.shuffle = shuffle
-        # GENERALIZED: balanced_sampling now holds the NAME of the phenotype to balance.
         self.balanced_sampling = balanced_sampling
         self.n_pheno = self.dataset.n_pheno
 
@@ -38,12 +136,10 @@ class PhenotypeSelectionDataset(IterableDataset):
         if self.phenotypes is None:
             raise RuntimeError("Phenotype must be selected before preparing indices.")
 
-        # GENERALIZED: Check if a phenotype name was provided for balanced sampling.
         if self.balanced_sampling is not None:
             target_pheno_name = self.balanced_sampling
             print(f"INFO: Preparing balanced sampling for phenotype '{target_pheno_name}'.")
 
-            # Check if the specified phenotype exists in the dataset.
             if target_pheno_name not in self.dataset.pheno_df.columns:
                 raise ValueError(
                     f"Balanced sampling for '{target_pheno_name}' requested, but it's not in the dataset's phenotypes."
@@ -51,8 +147,6 @@ class PhenotypeSelectionDataset(IterableDataset):
 
             pheno_values = self.dataset.pheno_df[target_pheno_name].values
 
-            # Robustness: Check if the phenotype is binary (contains only 0s and 1s).
-            # We assume other values like -9 are missing data codes.
             unique_values = np.unique(pheno_values)
             is_binary = all(v in {0, 1} for v in unique_values if v != -9)
             if not is_binary:
@@ -60,7 +154,6 @@ class PhenotypeSelectionDataset(IterableDataset):
                     f"Balanced sampling for '{target_pheno_name}' failed. Phenotype is not binary (0/1). Found: {unique_values}"
                 )
 
-            # Get indices for cases (1) and controls (0)
             all_sample_indices = np.arange(len(pheno_values))
             case_indices = all_sample_indices[pheno_values == 1].tolist()
             control_indices = all_sample_indices[pheno_values == 0].tolist()
@@ -71,7 +164,6 @@ class PhenotypeSelectionDataset(IterableDataset):
             if not case_indices or not control_indices:
                 raise ValueError("Cannot perform balanced sampling with zero samples in one of the classes.")
 
-            # Undersample the majority class
             num_cases = len(case_indices)
             num_controls = len(control_indices)
 
@@ -90,12 +182,10 @@ class PhenotypeSelectionDataset(IterableDataset):
             self.indices = final_indices
             print(f"INFO: Balanced sampling enabled. Total samples per epoch: {len(self.indices)}")
 
-        else:  # Default behavior: use all samples
+        else:
             self.indices = list(range(len(self.dataset)))
             if self.shuffle:
                 random.shuffle(self.indices)
-
-    # ... The rest of the class (select_phenotypes, __len__, __iter__) remains the same ...
 
     def __len__(self):
         if self.indices is None:
@@ -107,7 +197,6 @@ class PhenotypeSelectionDataset(IterableDataset):
     def select_phenotypes(self, phenotypes):
         self.phenotypes = phenotypes
         self.dataset.select_phenotypes(phenotypes)
-        # Prepare indices for iteration after phenotype is known
         self._prepare_iterator_indices()
 
     def __iter__(self):
@@ -136,7 +225,30 @@ class PhenotypeSelectionDataset(IterableDataset):
             while not batch_is_valid:
                 phenotype_seed = len(self.indices) + lo + attempt
                 raw_batch = [self.dataset[i] for i in batch_inds]
+
+                # DEBUG: Check shapes before collation
+                #print(f"DEBUG: Batch indices: {batch_inds[:5]}...")  # First 5 indices
+                #print(f"DEBUG: Raw batch length: {len(raw_batch)}")
+                #if raw_batch:
+                #    sample = raw_batch[0]
+                    #for key, value in sample.items():
+                    #    if hasattr(value, 'shape'):
+                    #        print(f"DEBUG: Sample {key} shape: {value.shape}")
+                    #    elif hasattr(value, '__len__'):
+                    #        print(f"DEBUG: Sample {key} length: {len(value)}")
+
                 collated = self.collator(raw_batch)
+
+                # DEBUG: Check shapes after collation
+                #print(f"DEBUG: After collation:")
+                #for key, value in collated.items():
+                #    if hasattr(value, 'shape'):
+                #        print(f"DEBUG: Collated {key} shape: {value.shape}")
+                #    elif isinstance(value, dict):
+                #        print(f"DEBUG: Collated {key} is a dict with keys: {value.keys()}")
+                #        for k, v in value.items():
+                #            if hasattr(v, 'shape'):
+                #                print(f"DEBUG:   {k} shape: {v.shape}")
 
                 if 'phenotype' in collated and torch.all(collated['phenotype'] == -9):
                     attempt += 1
@@ -144,6 +256,7 @@ class PhenotypeSelectionDataset(IterableDataset):
 
                 batch_is_valid = True
 
+                # Add masks and indices
                 collated['snp2gene_mask'] = torch.tensor(
                     self.tree_parser.snp2gene_mask[self.dataset.gene_range][:, self.dataset.snp_range],
                     dtype=torch.float32
@@ -162,244 +275,10 @@ class PhenotypeSelectionDataset(IterableDataset):
                 collated['genotype']['hierarchical_mask_forward'] = hierarchical_mask_forward_subset
                 collated['genotype']['hierarchical_mask_backward'] = hierarchical_mask_backward_subset
                 collated['genotype']['sys_indices'] = torch.tensor(self.dataset.sys_range, dtype=torch.long)
+
+                # Only yield first batch for debugging
                 yield collated
 
-
-"""
-class PhenotypeSelectionDataset(IterableDataset):
-    def __init__(self, tree_parser, dataset: PLINKDataset, collator, batch_size, shuffle=True):
-        super().__init__()
-        self.tree_parser = tree_parser
-        self.dataset    = dataset      # map‑style dataset, len() defined
-        self.collator   = collator
-        self.batch_size = batch_size
-        self.shuffle    = shuffle
-        self.n_pheno = self.dataset.n_pheno
-        self.nested_subtrees_forward = tree_parser.get_hierarchical_interactions(
-            tree_parser.interaction_types, direction='forward', format='indices')#self.args.input_format)
-        self.nested_subtrees_backward = tree_parser.get_hierarchical_interactions(
-            tree_parser.interaction_types, direction='backward', format='indices')#self.args.input_format)
-
-    # OPTIONAL: lets DataLoader len(loader) work
-    def __len__(self):
-        return math.ceil(len(self.dataset) / self.batch_size)
-
-    def select_phenotypes(self, phenotypes):
-        self.phenotypes = phenotypes
-        self.dataset.select_phenotypes(phenotypes)
-
-    def __iter__(self):
-        ############ 0.  worker bookkeeping ############
-        worker = get_worker_info()          # None if num_workers == 0
-        total  = len(self.dataset)          # N samples in underlying ds
-
-        if worker is None:                  # single‑process data‑load
-            w_start, w_end   = 0, total
-        else:                               # multi‑worker sharding
-            per_worker       = math.ceil(total / worker.num_workers)
-            w_start          = worker.id * per_worker
-            w_end            = min(w_start + per_worker, total)
-
-        # ---- build THIS worker’s index list ----
-        indices = list(range(w_start, w_end))
-        if self.shuffle:
-            random.shuffle(indices)
-
-        ############ 1.  walk in batch‑size chunks ############
-        for lo in range(0, len(indices), self.batch_size):
-            batch_inds = indices[lo : lo + self.batch_size]
-
-            # if the tail slice is empty (can only happen if len==0)
-            if not batch_inds:
-                break
-
-            batch_is_valid = False
-            attempt = 0
-            while not batch_is_valid:
-                # The phenotype seed is dependent on the attempt number
-                phenotype_seed = len(indices) + lo + attempt
-
-
-                # Fetch and collate data
-                raw_batch = [self.dataset[i] for i in batch_inds]
-                collated = self.collator(raw_batch)
-
-                # THE CRITICAL CHECK
-                if 'phenotype' in collated and torch.all(collated['phenotype'] == -9):
-                    # Invalid batch, increment attempt and the loop will try again
-                    attempt += 1
-                    continue
-
-                # If we are here, the batch is valid.
-                batch_is_valid = True # This will stop the while loop
-
-                # Add the rest of the metadata
-                collated['snp2gene_mask'] = torch.tensor(
-                    self.tree_parser.snp2gene_mask[self.dataset.gene_range][:, self.dataset.snp_range], dtype=torch.float32
-                )
-                collated['gene2sys_mask'] = torch.tensor(
-                    self.tree_parser.gene2sys_mask[self.dataset.sys_range][:, self.dataset.gene_range], dtype=torch.float32
-                )
-                collated['genotype']['gene_indices'] = torch.tensor(self.dataset.gene_range, dtype=torch.long)
-                subsys_indices_wo_padding = [si for si in self.dataset.sys_range if si != self.tree_parser.n_systems]
-                remap_dict = self.tree_parser.create_subset_index_mapping(subsys_indices_wo_padding)
-                hierarchical_mask_forward_subset = self.tree_parser.remap_hierarchical_indices(self.nested_subtrees_forward, remap_dict)
-                hierarchical_mask_backward_subset = self.tree_parser.remap_hierarchical_indices(self.nested_subtrees_backward, remap_dict)
-                collated['genotype']['hierarchical_mask_forward'] = hierarchical_mask_forward_subset
-                collated['genotype']['hierarchical_mask_backward'] = hierarchical_mask_backward_subset
-                collated['genotype']['sys_indices'] = torch.tensor(self.dataset.sys_range, dtype=torch.long)
-                yield collated
-
-
-class PhenotypeSelectionDatasetDDP(IterableDataset):
-    # Add rank and world_size to the constructor
-    def __init__(self, tree_parser, dataset: PLINKDataset, collator, batch_size, rank, world_size, shuffle=True,
-                 seed=None):
-        super().__init__()
-        self.tree_parser = tree_parser
-        self.dataset = dataset
-        self.collator = collator
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.n_pheno = self.dataset.n_pheno
-
-        # Store the DDP info
-        self.rank = rank
-        self.world_size = world_size
-        if seed is None:
-            seed = int(torch.empty((), dtype=torch.int64).random_().item())
-        self.seed = seed
-        full_indices = list(range(len(self.dataset)))
-        if self.shuffle:
-            rng = random.Random(self.seed)
-            rng.shuffle(full_indices)
-
-        if dist.is_initialized():
-            obj_list = [full_indices if dist.get_rank() == 0 else None]
-            dist.broadcast_object_list(obj_list, src=0)
-            full_indices = obj_list[0]
-
-        self.full_indices = full_indices
-        self.nested_subtrees_forward = tree_parser.get_hierarchical_interactions(
-            tree_parser.interaction_types, direction='forward', format='indices')#self.args.input_format)
-        self.nested_subtrees_backward = tree_parser.get_hierarchical_interactions(
-            tree_parser.interaction_types, direction='backward', format='indices')#self.args.input_format)
-
-    def __len__(self):
-        
-        # This must be the batch size used by the DataLoader
-        batch_size = self.batch_size
-
-        num_total_samples = len(self.full_indices)
-
-        if dist.is_initialized():
-            world_size = dist.get_world_size()
-            rank = dist.get_rank()
-
-            # This logic precisely calculates the number of samples allocated to this rank
-            num_samples_this_rank = num_total_samples // world_size
-            if rank < (num_total_samples % world_size):
-                num_samples_this_rank += 1
-        else:
-            # If not using DDP, this process sees all the samples.
-            num_samples_this_rank = num_total_samples
-
-        # Use math.ceil to include the final, possibly smaller, batch
-        num_batches = math.ceil(num_samples_this_rank / batch_size)
-
-        return int(num_batches)
-
-    def select_phenotypes(self, phenotypes):
-        self.phenotypes = phenotypes
-        self.dataset.select_phenotypes(phenotypes)
-
-    def _index_slice_for_worker_and_rank(self):
-        
-        Return the list of indices this process should iterate.
-
-        This implementation partitions data by splitting by DDP rank first,
-        and then splitting the rank's data among its DataLoader workers.
-        
-        # Stage 1: Split the entire dataset among the DDP ranks (GPUs) first.
-        #if dist.is_initialized():
-        #rank = dist.get_rank()
-        #world_size = dist.get_world_size()
-
-
-            # Each rank takes its strided slice from the *full* list of indices.
-            # e.g., rank 0 gets [0, 4, 8, ...] and rank 1 gets [1, 5, 9, ...]
-            # from the full_indices list if world_size is 4.
-        indices_for_rank = self.full_indices[self.rank::self.world_size]
-        #else:
-        #    # If not in DDP, the single process is responsible for all indices.
-        #    indices_for_rank = self.full_indices
-        '''
-        # Stage 2: Split the rank's slice of data among its DataLoader workers.
-        # This is only relevant if you use num_workers > 0. For simplicity and
-        # to avoid potential issues, we still recommend using num_workers=0.
-        w_info = get_worker_info()
-        if w_info is None:
-            # This is the main process for this rank (or num_workers=0).
-            # It gets all the indices assigned to this rank from Stage 1.
-            final_indices = indices_for_rank
-        else:
-            # This is a worker process. Subdivide the rank's data for this worker.
-            num_samples_for_rank = len(indices_for_rank)
-            per_worker = math.ceil(num_samples_for_rank / w_info.num_workers)
-            w_start = w_info.id * per_worker
-            w_end = min(w_start + per_worker, num_samples_for_rank)
-
-            # The final slice of indices for this specific worker process.
-            final_indices = indices_for_rank[w_start:w_end]
-        '''
-        return indices_for_rank
-
-    def __iter__(self):
-        indices = self._index_slice_for_worker_and_rank()
-        w_info = get_worker_info()
-        print(f'N workers: {w_info.num_workers}')
-        print(f'rank {self.rank}, worker {w_info.id} length: {len(indices)}, batch_size {self.batch_size}, {len(indices)//self.batch_size}')
-
-        for chunk_start in range(0, len(indices), self.batch_size):
-            inds = indices[chunk_start: chunk_start + self.batch_size]
-            if not inds:
-                break
-            batch_is_valid = False
-            while not batch_is_valid:
-                # The phenotype seed is dependent on the attempt number
-                # Fetch and collate data
-                raw_batch = [self.dataset[i] for i in inds]
-                collated = self.collator(raw_batch)
-                '''
-                # THE CRITICAL CHECK
-                if 'phenotype' in collated and torch.all(collated['phenotype'] == -9):
-                    # Invalid batch, increment attempt and the loop will try again
-                    attempt += 1
-                    continue
-                '''
-
-                # If we are here, the batch is valid.
-                batch_is_valid = True # This will stop the while loop
-
-                # Add the rest of the metadata
-                collated['snp2gene_mask'] = torch.tensor(
-                    self.tree_parser.snp2gene_mask[self.dataset.gene_range][:, self.dataset.snp_range], dtype=torch.float32
-                )
-                collated['gene2sys_mask'] = torch.tensor(
-                    self.tree_parser.gene2sys_mask[self.dataset.sys_range][:, self.dataset.gene_range], dtype=torch.float32
-                )
-                collated['genotype']['gene_indices'] = torch.tensor(self.dataset.gene_range, dtype=torch.long)
-                subsys_indices_wo_padding = [si for si in self.dataset.sys_range if si != self.tree_parser.n_systems]
-                remap_dict = self.tree_parser.create_subset_index_mapping(subsys_indices_wo_padding)
-                hierarchical_mask_forward_subset = self.tree_parser.remap_hierarchical_indices(self.nested_subtrees_forward, remap_dict)
-                hierarchical_mask_backward_subset = self.tree_parser.remap_hierarchical_indices(self.nested_subtrees_backward, remap_dict)
-                collated['hierarchical_mask_forward'] = hierarchical_mask_forward_subset
-                collated['hierarchical_mask_backward'] = hierarchical_mask_backward_subset
-
-                collated['genotype']['sys_indices'] = torch.tensor(self.dataset.sys_range, dtype=torch.long)
-
-                yield collated
-"""
 
 class PhenotypeSelectionDatasetDDP(IterableDataset):
     def __init__(self, tree_parser, dataset: PLINKDataset, collator, batch_size, rank, world_size, shuffle=True,

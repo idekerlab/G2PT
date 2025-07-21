@@ -25,7 +25,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.snp_padding_ind = self.n_snps * 3
         self.chromosomes = tree_parser.chromosomes
         snp_embedding_length = int(np.ceil(self.n_snps/8)*8)
-        self.snp_adapters = nn.Parameter(torch.randn(snp_embedding_length, self.hidden_dims, self.hidden_dims))
+        #self.snp_adapters = nn.Parameter(torch.randn(snp_embedding_length, self.hidden_dims, self.hidden_dims))
         self.snp_embedding = nn.Embedding(self.n_snps * 3 + 2, hidden_dims, padding_idx=self.n_snps * 3)
         self.gene_embedding = nn.Embedding(self.n_genes + 1, hidden_dims, padding_idx=self.n_genes)
         self.n_snp2pad = int(np.ceil((self.tree_parser.n_snps+1) / 8) * 8) - self.tree_parser.n_snps

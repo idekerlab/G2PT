@@ -67,7 +67,11 @@ class SNP2PTrainer(object):
         else:
             self.phenotype_loss = nn.BCELoss()
         '''
-        self.loss = MultiplePhenotypeLoss(args.bt_inds, args.qt_inds)
+        self.loss_type = args.loss
+        if self.loss_type == 'focal':
+            self.loss = FocalLoss(alpha=args.focal_loss_alpha, gamma=args.focal_loss_gamma)
+        else:
+            self.loss = MultiplePhenotypeLoss(args.bt_inds, args.qt_inds)
         self.phenotypes = args.pheno_ids
         self.qt = args.qt
         self.qt_inds = args.qt_inds
@@ -83,7 +87,7 @@ class SNP2PTrainer(object):
         self.pretrain_epochs = 1
         self.best_model = self.snp2p_model
         self.loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-
+        self.tree_parser = tree_parser
         #self.total_train_step = len(
         #    self.snp2p_dataloader) * args.epochs  # + len(self.drug_response_dataloader_cellline)*args.epochs
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
