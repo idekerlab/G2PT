@@ -88,6 +88,8 @@ def main():
     parser.add_argument('--sys2cell', action='store_true', default=False)
     parser.add_argument('--cell2sys', action='store_true', default=False)
     parser.add_argument('--sys2gene', action='store_true', default=False)
+    parser.add_argument('--focal_loss', action='store_true', default=False)
+    parser.add_argument('--use_hierarchical_transformer', action='store_true', default=False)
 
     args = parser.parse_args()
     if args.cuda is not None:
@@ -147,7 +149,7 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.model is not None:
         g2p_model = torch.load(args.model, map_location=device)
     else:
-        g2p_model = Genotype2PhenotypeModel(tree_parser, list(args.genotypes.keys()), args.hidden_dims, dropout=args.dropout)
+        g2p_model = Genotype2PhenotypeModel(tree_parser, list(args.genotypes.keys()), args.hidden_dims, dropout=args.dropout, use_hierarchical_transformer=args.use_hierarchical_transformer)
         g2p_model = torch.compile(g2p_model, fullgraph=True)
 
     if not torch.cuda.is_available():

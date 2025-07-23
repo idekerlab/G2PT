@@ -520,8 +520,8 @@ class SNP2PCollator(object):
 
         result_dict['genotype']['gene'] = torch.stack([d['genotype']['gene'] for d in data])#.long()
         result_dict['genotype']['sys'] = torch.stack([d['genotype']['sys'] for d in data])#.long()
-        result_dict['genotype']['gene_indices'] = pad_indices(torch.arange(self.tree_parser.n_genes, dtype=torch.long), padding_value=self.tree_parser.n_genes, multiple=8)
-        result_dict['genotype']['sys_indices'] = pad_indices(torch.arange(self.tree_parser.n_systems, dtype=torch.long), padding_value=self.tree_parser.n_systems, multiple=8)
+        result_dict['genotype']['gene_indices'] = pad_indices(torch.arange(self.tree_parser.n_genes+1, dtype=torch.long), padding_value=self.tree_parser.n_genes, multiple=8)
+        result_dict['genotype']['sys_indices'] = pad_indices(torch.arange(self.tree_parser.n_systems+1, dtype=torch.long), padding_value=self.tree_parser.n_systems, multiple=8)
 
 
         if self.input_format == 'embedding':

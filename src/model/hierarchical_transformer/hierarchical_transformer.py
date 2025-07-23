@@ -58,29 +58,35 @@ class HierarchicalTransformerUpdate(nn.Module):
 
     def _xops_softmax_attn(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-        mask
+        mask,
+        return_attention=False
     ):
         B, Lq, H, dh = q.shape
-        #print(q.size(), k.size(), mask.size())
-        #qh = q.reshape(B * H, Lq, dh)
-        #kh = k.reshape(B * H, k.size(2), dh)
-        #vh = v.reshape(B * H, v.size(2), dh)
 
         bias = None
-        if mask is not None:                            # (B,1|H,Lq,Lk)
+        if mask is not None:
             if type(mask)==torch.Tensor:
-                mask = mask.unsqueeze(1).repeat(1, 4, 1, 1)#mask.expand(B, H, -1, -1).reshape(B * H, Lq, -1)
-            #mask = self.drop_opposite(mask)
-            #bias = xops.fmha.attn_bias.PreconvertedBias(mask, True)
+                mask = mask.unsqueeze(1).repeat(1, 4, 1, 1)
 
         out = xops.memory_efficient_attention(
             q, k, v,
             attn_bias=mask,
             p=self.drop.p if self.training else 0.0,
         )
-        #print(out.shape)# (B, lq, H,dh)
-        return out.reshape(B, Lq, H, dh)\
-                  .reshape(B, Lq, H * dh)
+        if return_attention:
+            # Re-calculate attention scores for retrieval
+            q_reshaped = q.permute(0, 2, 1, 3)  # (B, H, Lq, d)
+            k_reshaped = k.permute(0, 2, 1, 3)  # (B, H, Lk, d)
+            scale_factor = 1.0 / math.sqrt(self.d_h)
+            scores = torch.matmul(q_reshaped, k_reshaped.transpose(-2, -1)) * scale_factor
+            if mask is not None:
+                if mask.dtype == torch.bool:
+                    scores = scores.masked_fill(mask, float('-inf'))
+                else:
+                    scores = scores + mask
+            scores = F.softmax(scores, dim=-1)
+            return out.reshape(B, Lq, H, dh).reshape(B, Lq, H * dh), scores
+        return out.reshape(B, Lq, H, dh).reshape(B, Lq, H * dh)
 
     # ---------------------------------------------------------------------
     # no-softmax path  (keeps behaviour of your original helper)
@@ -88,7 +94,8 @@ class HierarchicalTransformerUpdate(nn.Module):
 
     def _dotprod_no_softmax(self,
         q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-        mask: torch.Tensor, p_drop: float
+        mask: torch.Tensor, p_drop: float,
+        return_attention=False
     ):
         """
         q,k,v : (B, L, H, d)   already split into heads
@@ -124,7 +131,7 @@ class HierarchicalTransformerUpdate(nn.Module):
                 scores = scores + mask  # Broadcasting might apply here
 
         # 3. Apply the (potentially masked) scores directly to Values
-        #    NO SOFTMAX applied here.
+        #    NO SOFTSOFTMAX applied here.
         # (B, H, Lq, Lk) @ (B, H, Lk, d) -> (B, H, Lq, d)
         output = torch.matmul(scores, v)
 
@@ -141,31 +148,66 @@ class HierarchicalTransformerUpdate(nn.Module):
         output = output.contiguous()
         # (B, Lq, H, d) -> (B, Lq, H*d)
         output = output.view(B, Lq, H * d)
-        # Alternatively: output = output.reshape(B, Lq, -1) # -1 infers H*d
 
+        if return_attention:
+            if self.softmax:
+                scores = F.softmax(scores, dim=-1)
+            return output, scores
         return output
     # ---------------------------------------------------------------------
     # unified wrapper  (replaces old _flash_xattn)
     # ---------------------------------------------------------------------
-    def _xattn(self, q, k, v, mask):
+    def _xattn(self, q, k, v, mask, return_attention=False):
         B = q.size(0)
-        q = self.q_proj(q).view(B, -1, self.h, self.d_h)#.transpose(1, 2)
-        k = self.k_proj(k).view(B, -1, self.h, self.d_h)#.transpose(1, 2)
-        v = self.v_proj(v).view(B, -1, self.h, self.d_h)#.transpose(1, 2)
+        q = self.q_proj(q).view(B, -1, self.h, self.d_h)
+        k = self.k_proj(k).view(B, -1, self.h, self.d_h)
+        v = self.v_proj(v).view(B, -1, self.h, self.d_h)
 
         if self.softmax:
-            out = self._xops_softmax_attn(q, k, v, mask)
+            out = self._xops_softmax_attn(q, k, v, mask, return_attention=return_attention)
         else:
-            out = self._dotprod_no_softmax(q, k, v, mask, self.drop.p if self.training else 0.0)
+            out = self._dotprod_no_softmax(q, k, v, mask, self.drop.p if self.training else 0.0, return_attention=return_attention)
 
+        if return_attention:
+            return self.o_proj(out[0]), out[1]
         return self.o_proj(out)
+
+    
 
     # ---------------------------------------------------------------------
     # forward is unchanged except the private call name
     # ---------------------------------------------------------------------
-    def forward(self, q, k, v, mask):
+    def get_attention_scores(self, q, k, mask=None):
+        B = q.size(0)
+        q = self.q_proj(q).view(B, -1, self.h, self.d_h)
+        k = self.k_proj(k).view(B, -1, self.h, self.d_h)
+
+        q = q.permute(0, 2, 1, 3)  # (B, H, Lq, d)
+        k = k.permute(0, 2, 1, 3)  # (B, H, Lk, d)
+
+        scale_factor = 1.0 / math.sqrt(self.d_h)
+        scores = torch.matmul(q, k.transpose(-2, -1)) * scale_factor
+
+        if mask is not None:
+            if mask.dtype == torch.bool:
+                scores = scores.masked_fill(mask, float('-inf'))
+            else:
+                scores = scores + mask
+
+        if self.softmax:
+            scores = F.softmax(scores, dim=-1)
+
+        return scores
+
+    def forward(self, q, k, v, mask, return_attention=False):
         q_norm = self.norm_attn(q)
-        attn_out = self.drop(self._xattn(q_norm, k, v, mask))
+        attn_output = self.drop(self._xattn(q_norm, k, v, mask, return_attention=return_attention))
+
+        if return_attention:
+            attn_out, attn_scores = attn_output
+        else:
+            attn_out = attn_output
+
         gate_a = torch.sigmoid(self.gate_attn)
         x = q * (1 - gate_a) + attn_out * gate_a
 
@@ -178,6 +220,9 @@ class HierarchicalTransformerUpdate(nn.Module):
             x = x.transpose(-1, -2)
             x = self.norm_attn(x)
             x = x.transpose(-1, -2)
+
+        if return_attention:
+            return x, attn_scores
         return x
 
 
@@ -246,112 +291,10 @@ class HierarchicalTransformer(nn.Module):
         batch_size = q.size(0)
         if self.conv_type == 'system':
             mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
-        return self.hierarchical_transformer_update.attention.get_attention(q, k, k, mask=mask)
+        return self.hierarchical_transformer_update.get_attention_scores(q, k, mask=mask)
     def get_score(self, q, k, mask):
         batch_size = q.size(0)
         if self.conv_type == 'system':
             mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
-        return self.hierarchical_transformer_update.attention.get_score(q, k, k, mask=mask)
+        return self.hierarchical_transformer_update.get_attention_scores(q, k, mask=mask)
 
-'''
-class HierarchicalTransformerUpdate(nn.Module):
-    """
-    Bidirectional Encoder = Transformer (self-attention)
-    Transformer = MultiHead_Attention + Feed_Forward with sublayer connection
-    """
-
-    def __init__(self, hidden, attn_heads, feed_forward_hidden, norm, dropout=0.2, norm_channel_first=False,
-                 n_type=1, transform=True, activation='softmax', poincare=False):
-        """
-        :param hidden: hidden size of transformer
-        :param attn_heads: head sizes of multi-head attention
-        :param feed_forward_hidden: feed_forward_hidden, usually 4*hidden_size
-        :param norm: normalization layer
-        :param dropout: dropout rate
-        """
-
-        super(HierarchicalTransformerUpdate, self).__init__()
-        self.attn_heads = attn_heads
-        self.attention = MultiHeadedAttention(h=attn_heads, d_model=hidden, dropout=dropout, transform=transform,
-                                              n_type=n_type, activation=activation, poincare=poincare)
-        #self.layer_norm = nn.LayerNorm(hidden)
-        self.norm = norm
-        self.feed_forward = PositionWiseFeedForward(d_model=hidden, d_ff=feed_forward_hidden, dropout=dropout)
-        self.dropout = nn.Dropout(dropout)
-        self.norm_channel_first = norm_channel_first
-        self.n_type = n_type
-
-    def forward(self, q, k, v, mask=None, dropout=True):
-        result = self.attention.forward(q, k, v, mask=mask, dropout=dropout)
-        #result_layer_norm = self.layer_norm(result)
-        if self.norm_channel_first:
-            result = result.transpose(-1, -2)
-            result = self.norm(result)
-            result = result.transpose(-1, -2)
-            #result = (result + result_layer_norm)/2
-        else:
-            result = self.norm(result)
-            #result = (result + result_layer_norm)/2
-        result = self.feed_forward(result)
-        #result = self.norm(result)
-        return self.dropout(result)
-
-
-class HierarchicalTransformer(nn.Module):
-    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, conv_type='system',
-                 norm_channel_first=False, transform=True, n_type=1, activation='softmax', poincare=False):
-        """
-        :param hidden: hidden size of transformer
-        :param attn_heads: head sizes of multi-head attention
-        :param feed_forward_hidden: feed_forward_hidden, usually 4*hidden_size
-        :param norm: normalization layer
-        :param dropout: dropout rate
-        """
-
-        super(HierarchicalTransformer, self).__init__()
-        self.hierarchical_transformer_update = HierarchicalTransformerUpdate(hidden, attn_heads, feed_forward_hidden, inner_norm,
-                                                                     dropout, norm_channel_first=norm_channel_first, transform=transform,
-                                                                             n_type=n_type, activation=activation, poincare=poincare)
-        self.norm = outer_norm
-        self.conv_type = conv_type
-        self.dropout = nn.Dropout(dropout)
-        self.norm_channel_first = norm_channel_first
-        self.n_type = n_type
-
-
-    def forward(self, q, k, mask, dropout=True):
-        batch_size = q.size(0)
-        if self.conv_type=='system':
-            mask = mask.unsqueeze(0).expand(batch_size, -1, -1,)
-        result = self.hierarchical_transformer_update(q, k, k, mask, dropout=dropout)
-
-        #result_layer_norm = self.layer_norm(result)
-        #if self.norm is not None:
-        if self.norm_channel_first:
-            result = result.transpose(-1, -2)
-            result = self.norm(result)
-            result = result.transpose(-1, -2)
-                #result = (result + result_layer_norm)/2
-        else:
-            result = self.norm(result)
-                #result = (result + result_layer_norm)/2
-        #updated_value = updated_value.permute(0, 2, 1)
-        if mask is not None:
-            if self.n_type > 1:
-                mask = sum([m[1] for m in mask])
-            node_mask = torch.sum(mask, dim=-1) == 0
-            node_mask = node_mask.unsqueeze(-1).expand(-1, -1, q.size(-1))
-            result = result.masked_fill(node_mask, 0)
-        return result
-
-    def get_attention(self, q, k, mask):
-        batch_size = q.size(0)
-        if self.conv_type == 'system':
-            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
-        return self.hierarchical_transformer_update.attention.get_attention(q, k, k, mask=mask)
-    def get_score(self, q, k, mask):
-        batch_size = q.size(0)
-        if self.conv_type == 'system':
-            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
-        return self.hierarchical_transformer_update.attention.get_score(q, k, k, mask=mask)
-'''

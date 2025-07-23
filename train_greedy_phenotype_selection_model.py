@@ -133,6 +133,7 @@ def main():
     parser.add_argument('--sys2pheno', action='store_true', default=True)
     parser.add_argument('--gene2pheno', action='store_true', default=False)
     parser.add_argument('--snp2pheno', action='store_true', default=False)
+    parser.add_argument('--use-ld-block-bias', action='store_true', default=False, help='Use LD block information to create an attention bias.')
 
     parser.add_argument('--dynamic-phenotype-sampling', action='store_true', default=False)
 
@@ -158,6 +159,7 @@ def main():
     parser.add_argument('--focal-loss-gamma', help='gamma for focal loss', type=float, default=2.0)
 
     parser.add_argument('--pretrained', type=str, default=None)
+    parser.add_argument('--use_hierarchical_transformer', action='store_true', default=False)
 
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
@@ -316,7 +318,7 @@ def main_worker(args):
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          n_phenotypes=snp2p_dataset.n_pheno, activation='softmax', input_format=args.input_format,
-                                         cov_effect=args.cov_effect)
+                                         cov_effect=args.cov_effect, use_hierarchical_transformer=args.use_hierarchical_transformer)
         print(args.model, 'initialized')
         snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
         if args.model.split('.')[-1].isdigit():
