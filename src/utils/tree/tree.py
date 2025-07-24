@@ -50,8 +50,15 @@ class TreeParser(object):
         sys2gene_dict = { sys: sys2gene_grouped_by_sys.get_group(sys)['child'].values.tolist()
                           for sys in sys2gene_grouped_by_sys.groups.keys() }
 
+        #while not nx.is_directed_acyclic_graph(obj.sys_graph):
+        #    cycle = next(nx.simple_cycles(obj.sys_graph))
+        #    print('Breaking residual cycle:', cycle)
+        #    # Remove the last edge in the cycle
+        #    obj.sys_graph.remove_edge(cycle[-1], cycle[0])
+
         # Delete genes in child system (assumes delete_parent_genes_from_child is defined)
         for sys in list(sys2gene_dict.keys()):
+            print(sys)
             obj.delete_parent_genes_from_child(obj.sys_graph, sys, sys2gene_dict)
 
         obj.sys2gene = copy.deepcopy(sys2gene_dict)

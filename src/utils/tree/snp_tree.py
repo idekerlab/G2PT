@@ -12,7 +12,8 @@ class SNPTreeParser(TreeParser):
                  dense_attention=False,
                  sys_annot_file=None,
                  by_chr=False,
-                 multiple_phenotypes=False):
+                 multiple_phenotypes=False,
+                 block_bias=False):
         # 1. Initialize all system–level structures
         #super().__init__(ontology,
         #                 dense_attention=dense_attention,
@@ -29,12 +30,15 @@ class SNPTreeParser(TreeParser):
                               inplace=True)
         # 2. Now build both the system AND SNP structures in one shot:
         #    pass `snp2gene` through to init_ontology
+        self.block_bias = block_bias
+        self.by_chr = by_chr
         self.init_ontology_with_snp(self.ontology,
                            snp2gene,
                            inplace=True,
                            multiple_phenotypes=multiple_phenotypes)
 
-        self.by_chr = by_chr
+
+
 
 
     def init_ontology_with_snp(self,
@@ -85,7 +89,9 @@ class SNPTreeParser(TreeParser):
             parser.ind2snp_all = {i: s for s, i in parser.snp2ind_all.items()}
 
             parser.snp2block = {}
+            parser.gene2block = {}
             parser.block2snp = {block:[] for block in parser.blocks}
+            parser.block2gene = {block: [] for block in parser.blocks}
             parser.block2sig_ind = {block: [] for block in parser.blocks}
             for i, row in parser.snp2gene_df.drop_duplicates(subset=['snp']).iterrows():
                 parser.snp2block[row.snp] = (row.chr, row.block)
@@ -96,6 +102,9 @@ class SNPTreeParser(TreeParser):
                     #print((row.chr, row.block))
                     parser.block2sig_ind[(row.chr, row.block)].append(-1)
                     #print(parser.block2sig_ind[(row.chr, row.block)])
+            for i, row in parser.snp2gene_df.drop_duplicates(subset=['gene']).iterrows():
+                parser.gene2block[row.gene] = (row.chr, row.block)
+                parser.block2gene[(row.chr, row.block)].append(row.gene)
             #parser.block2sig_ind = {block: sorted(list(set(sig_inds))) for block, sig_inds in parser.block2sig_ind.items()}
         #else:
         #    parser.snp2gene_df = parser.snp2gene_df.sort_values(by=["chr", "snp"]).reset_index(drop=True)
@@ -228,7 +237,16 @@ class SNPTreeParser(TreeParser):
             #if gene in genes_in_ont:
             gi = parser.gene2ind[gene]
             si = parser.snp2ind[snp]
-            parser.snp2gene_mask[gi, si] = 0
+            if parser.block_bias:
+                snp_block = self.snp2block[snp]
+                parser.snp2gene_mask[gi, si] = 1
+                block2genes = self.block2gene[snp_block]
+                for gene_in_block in block2genes:
+                    if gene_in_block in parser.gene2ind.keys():
+                        gi_block = parser.gene2ind[gene_in_block]
+                        parser.snp2gene_mask[gi_block, si] = 0
+            else:
+                parser.snp2gene_mask[gi, si] = 0
             parser.gene2snp_dict[gi].append(si)
             parser.snp2gene_dict[si].append(gi)
 

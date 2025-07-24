@@ -108,6 +108,7 @@ def main():
     parser.add_argument('--bt', nargs='*', default=[])
     parser.add_argument('--qt', nargs='*', default=[])
     parser.add_argument('--target-phenotype', type=str, )
+    parser.add_argument('--block-bias', action='store_true')
     # Propagation option
     parser.add_argument('--cov-effect', default='pre')
     parser.add_argument('--sys2env', action='store_true', default=False)
@@ -136,6 +137,11 @@ def main():
     parser.add_argument('--val-step', help='Validation step', type=int, default=20)
     parser.add_argument('--jobs', help="The number of threads", type=int, default=0)
 
+    parser.add_argument('--loss', help='loss function', type=str, default='default')
+    parser.add_argument('--focal-loss-alpha', help='alpha for focal loss', type=float, default=0.25)
+    parser.add_argument('--focal-loss-gamma', help='gamma for focal loss', type=float, default=2.0)
+    parser.add_argument('--use_hierarchical_transformer', action='store_true', default=False)
+
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
 
@@ -161,7 +167,7 @@ def main():
     args.rank = rank
     args.world_size = world_size
     args.local_rank = local_rank
-    args.batch_size = args.batch_size // world_size
+    #args.batch_size = args.batch_size // world_size
     #args.jobs = args.jobs // world_size
 
     torch.cuda.set_device(args.local_rank)
@@ -219,7 +225,8 @@ def main_worker(args):
     else:
         multiple_phenotypes = False
 
-    tree_parser = SNPTreeParser(args.onto, args.snp2gene, dense_attention=args.dense_attention, multiple_phenotypes=multiple_phenotypes)
+    tree_parser = SNPTreeParser(args.onto, args.snp2gene, dense_attention=args.dense_attention, multiple_phenotypes=multiple_phenotypes,
+                                block_bias=args.block_bias)
     #chunker = MaskBasedChunker(snp2gene_mask=tree_parser.snp2gene_mask, gene2sys_mask=tree_parser.gene2sys_mask, target_chunk_size=20000)
     fix_system = False
     '''
@@ -267,7 +274,8 @@ def main_worker(args):
                                          sys2pheno=args.sys2pheno, gene2pheno=args.gene2pheno, snp2pheno=args.snp2pheno,
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
-                                         n_phenotypes=snp2p_dataset.n_pheno, activation='softmax', input_format=args.input_format)
+                                         n_phenotypes=snp2p_dataset.n_pheno, activation='softmax', input_format=args.input_format,
+                                         cov_effect=args.cov_effect, use_hierarchical_transformer=args.use_hierarchical_transformer)
         print(args.model, 'initialized')
         snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
         if args.model.split('.')[-1].isdigit():
@@ -350,42 +358,12 @@ def main_worker(args):
                                           persistent_workers=True,  # keep workers alive across epochs
                                           #prefetch_factor=2
                                           )
-    '''
-    if args.distributed:
-        if args.regression:
-            if args.z_weight == 0:
-                snp2p_sampler = None
-            else:
-                snp2p_sampler = DistributedCohortSampler(snp2p_dataset, num_replicas=args.world_size, rank=args.rank,
-                                                     phenotype_col=1, sex_col=2, z_weight=args.z_weight)
-            #snp2p_sampler = torch.utils.data.distributed.DistributedSampler(snp2p_dataset)
-        else:
-            if args.z_weight == 0:
-                snp2p_sampler = None
-            else:
-                snp2p_sampler = DistributedBinaryCohortSampler(snp2p_dataset, num_replicas=args.world_size, rank=args.rank)
-        shuffle = False
-    else:
-        shuffle = False
-        if args.regression:
-            if args.z_weight == 0:
-                snp2p_sampler = None
-            else:
-                snp2p_sampler = CohortSampler(snp2p_dataset, phenotype_col='PHENOTYPE', sex_col='SEX', z_weight=args.z_weight)
-        else:
-            if args.z_weight == 0:
-                snp2p_sampler = None
-            else:
-                snp2p_sampler = BinaryCohortSampler(snp2p_dataset)
-    '''
-
-
 
     if args.val_bfile is not None:
         val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, args.val_pheno, cov_mean_dict=args.cov_mean_dict,
                                          cov_std_dict=args.cov_std_dict, flip=args.flip, input_format=args.input_format,
                                          cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
-        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=int(args.batch_size/(args.ngpus_per_node*2)),
+        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True)
     else:
         val_snp2p_dataloader = None
