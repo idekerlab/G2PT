@@ -124,7 +124,7 @@ There are several optional parameters that you can provide in addition to the in
 
 ### Download Gene Ontology Data
 
-To obtain the Gene Ontology (Biological Process) data required for G2PT input, use the provided notebook:
+Use the provided notebook to obtain Gene Ontology (Biological Process) data:
 
 **[Prepare GO File](go_file.ipynb)**
 
@@ -138,7 +138,7 @@ Use the following notebook to streamline your Gene Ontology data:
 
 **[Collapse Gene Ontology Based on Your GWAS Results](Collapse_Gene_Ontology_Based_on_GWAS_results.ipynb)**
 
-This process will create a more focused and computationally manageable Gene Ontology subset tailored to your research needs.
+This creates a focused and computationally manageable Gene Ontology subset tailored to your research needs.
 
 ## 2. Train model
 
@@ -147,11 +147,9 @@ You can put ontology file made from step 1.
 ### Model Training Example (Single GPU) 
 
 
-**Warning: Sample data is randomly generated data, so it won't give any meaningful result**
+**Warning: Sample data is randomly generated and won't produce meaningful results. Use sample data for tutorial purposes only and apply this pipeline to your actual data.**
 
-**Please just use sample data for tutorial, and apply this pipeline for your data**
-
-You can train model with data [train_model.sh](train_model.sh) 
+Training script: [train_model.sh](train_model.sh) 
 
 ------------------
 
@@ -235,19 +233,27 @@ adding argument `--prediction-only` will make this script to predict only (no at
 
 ## 4. Analyze Attention, Epistasis
 
-## 4.1 Draw Sankey Plot from Trained Model
+## 4.1 Highlight systems in ontology
 
-You can visualize attention flow from trained G2PT model.
+**This notebook is intended for real data analysis. Please follow these steps using your trained model.** 
 
-**This notebook is based on randomly generated data** 
+Visualize ontology with highlighted high-importance systems (in tutorial I selected random systems): 
+
+[Highlight systems in ontology](Draw_ontology_with_highlighted_systems.ipynb)
+
+## 4.2 Draw Sankey Plot from Trained Model
+
+**This notebook is intended for real data analysis. Please follow these steps using your trained model.**
+
+Visualize attention flow from trained G2PT model:
 
 [Draw Sankey from Model Attention](Draw_Sankey.ipynb)
 
-## 4.2 Search Visualize, and Analyze Epistasis in system
-
-You can search epistasis within system and visualize, and analyze. Please pass through example notebook.
+## 4.3 Search Visualize, and Analyze Epistasis in system
 
 **This notebook is intended for real data analysis. Please follow these steps using your trained model.**
+
+Search for epistasis within systems and create visualizations:
 
 [Epistais Search and Visualization Example](Epistasis_pipeline.ipynb)
 
@@ -256,5 +262,5 @@ You can search epistasis within system and visualize, and analyze. Please pass t
 - [x] Applying [Differential Transformer](https://github.com/microsoft/unilm/tree/master/Diff-Transformer) to genetic factor translation
 - [x] Build data loader for `plink` binary file using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/) 
 - [x] Adding `.cov` and `.pheno` for input
-- [ ] Change model for multiple phenotypes
+- [x] Change model for multiple phenotypes
 
