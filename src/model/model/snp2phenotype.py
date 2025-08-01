@@ -16,7 +16,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                  interaction_types=['default'], n_covariates=13, n_phenotypes=1, dropout=0.2,
                  activation='softmax', input_format='indices', poincare=False, cov_effect='pre',
                  pretrained_transformer=None, freeze_pretrained=True,
-                 phenotypes=('PHENOTYPE')):
+                 phenotypes=('PHENOTYPE'), use_hierarchical_transformer=False):
         super(SNP2PhenotypeModel, self).__init__(tree_parser, hidden_dims, interaction_types=interaction_types, dropout=dropout,
                                                  input_format=input_format, poincare=poincare)
         self.n_snps = self.tree_parser.n_snps
@@ -124,10 +124,11 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.geno2pheno_norm = nn.LayerNorm(hidden_dims)
         self.geno2pheno_update_norm_inner = nn.LayerNorm(hidden_dims)
         self.geno2pheno_update_norm_outer = nn.LayerNorm(hidden_dims)
-        self.geno2pheno = Genotype2Phenotype(hidden_dims, 1, hidden_dims,
+        self.geno2pheno = Genotype2Phenotype(hidden_dims, 4, hidden_dims,
                                             inner_norm=self.geno2pheno_update_norm_inner,
                                             outer_norm=self.geno2pheno_update_norm_outer, dropout=0.0,
-                                            transform=True, activation='softmax', poincare=poincare)  # 'softmax')
+                                            transform=True, activation='softmax', poincare=poincare,
+                                             use_hierarchical_transformer=use_hierarchical_transformer)  # 'softmax')
 
         self.last_activation = nn.Tanh()
         self.n_geno2pheno = sum([sys2pheno, gene2pheno])

@@ -4,7 +4,7 @@ import torch.nn as nn
 import mlflow
 from torch.nn.functional import cosine_similarity
 import torch.optim as optim
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn import metrics
 from scipy.stats import spearmanr, pearsonr
 from tqdm import tqdm
@@ -54,7 +54,7 @@ def get_param_groups(model, base_lr):
 
 class SNP2PTrainer(object):
 
-    def __init__(self, snp2p_model, tree_parser, snp2p_dataloader, device, args, target_phenotype, validation_dataloader=None, fix_system=False, pretrain_dataloader=None):
+    def __init__(self, snp2p_model, tree_parser, snp2p_dataloader, device, args, target_phenotype, validation_dataloader=None, fix_system=False, pretrain_dataloader=None, label_smoothing=0.0):
         self.args = args
         self.device = device
         self.snp2p_model = snp2p_model.to(self.device)
@@ -71,7 +71,7 @@ class SNP2PTrainer(object):
         if self.loss_type == 'focal':
             self.loss = FocalLoss(alpha=args.focal_loss_alpha, gamma=args.focal_loss_gamma)
         else:
-            self.loss = MultiplePhenotypeLoss(args.bt_inds, args.qt_inds)
+            self.loss = MultiplePhenotypeLoss(args.bt_inds, args.qt_inds, label_smoothing=label_smoothing)
         self.phenotypes = args.pheno_ids
         self.qt = args.qt
         self.qt_inds = args.qt_inds
@@ -90,7 +90,8 @@ class SNP2PTrainer(object):
         self.tree_parser = tree_parser
         #self.total_train_step = len(
         #    self.snp2p_dataloader) * args.epochs  # + len(self.drug_response_dataloader_cellline)*args.epochs
-        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
+        #self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
+        self.scheduler = ReduceLROnPlateau(self.optimizer, 'max', patience=5, factor=0.5, verbose=True)
         self.snp2gene_mask = move_to(torch.tensor(tree_parser.snp2gene_mask, dtype=torch.float32), device)
         self.nested_subtrees_forward = tree_parser.get_hierarchical_interactions(
             tree_parser.interaction_types, direction='forward', format='indices')#self.args.input_format)
@@ -173,6 +174,7 @@ class SNP2PTrainer(object):
                     if not self.args.distributed or (self.args.distributed and self.args.rank == 0):
                         performance = self.evaluate(self.snp2p_model, self.validation_dataloader, epoch + 1,
                                                     name="Validation", print_importance=False, phenotypes=self.phenotypes)
+                        self.scheduler.step(performance)
                         torch.cuda.empty_cache()
                         gc.collect()
                 if output_path:
@@ -190,7 +192,7 @@ class SNP2PTrainer(object):
                             {"arguments": self.args, "state_dict": self.snp2p_model.state_dict()},
                             output_path_epoch)
                         mlflow.log_artifact(output_path_epoch)
-            self.scheduler.step()
+            
 
     def evaluate(self, model, dataloader, epoch, phenotypes, name="Validation", print_importance=False, snp_only=False):
 

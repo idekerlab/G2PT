@@ -90,6 +90,7 @@ def main():
     parser.add_argument('--sys2gene', action='store_true', default=False)
     parser.add_argument('--focal_loss', action='store_true', default=False)
     parser.add_argument('--use_hierarchical_transformer', action='store_true', default=False)
+    parser.add_argument('--label_smoothing', help='Label smoothing for BCE loss', type=float, default=0.0)
 
     args = parser.parse_args()
     if args.cuda is not None:
@@ -242,7 +243,7 @@ def main_worker(gpu, ngpus_per_node, args):
         val_g2p_dataloader = None
 
     drug_response_trainer = G2PTrainer(g2p_model, g2p_dataloader, device, args,
-                                                validation_dataloader=val_g2p_dataloader, fix_system=fix_system)
+                                                validation_dataloader=val_g2p_dataloader, fix_system=fix_system, label_smoothing=args.label_smoothing)
     drug_response_trainer.train(args.epochs, args.out)
 
 

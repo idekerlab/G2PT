@@ -19,7 +19,7 @@ class Genotype2Phenotype(nn.Module):
                                                      conv_type='system', norm_channel_first=False, transform=transform,
                                                      n_type=1, activation=activation, poincare=poincare)
         elif diff_transform:
-            self.attention = MultiheadDiffAttn(h=attn_heads, d_model=hidden, depth=1)
+            self.attention = MultiheadDiffAttn(h=attn_heads, d_model=hidden, depth=0)
 
         self.feed_forward = SwiGLUFFN(d_model=hidden, d_ff=feed_forward_hidden, p=dropout)
         self.dropout = nn.Dropout(dropout)

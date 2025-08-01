@@ -82,7 +82,7 @@ class EpistasisFinder(object):
         }
 
     def search_epistasis_on_system(self, system, sex=0, quantile=0.9, fisher=True, return_significant_only=True, check_inheritance=True, verbose=0,
-                                   snp_inheritance_dict = {}, target='PHENOTYPE'):
+                                   snp_inheritance_dict = {}, binary=False, target='PHENOTYPE'):
         """
         Search for epistatic interactions in a specified biological system.
 
@@ -157,7 +157,7 @@ class EpistasisFinder(object):
                                                                     snp_inheritance_dict=snp_inheritance_dict,
                                                                     verbose=verbose,
                                                                     return_significant_only=return_significant_only,
-                                                                    target=target)
+                                                                    target=target, binary=binary)
         print(f'\tFrom {len(distant_snp_pairs)} pairs, {len(sig_snp_pairs)} significant interaction are queried')
         '''
         if len(sig_snp_pairs)==0:
@@ -194,8 +194,9 @@ class EpistasisFinder(object):
         without_snp_population = partial_genotype.shape[0] * 2 - with_snp_population
         data = {'Risky Subset': [with_snp_risk, without_snp_risk],
                 'Population': [with_snp_population, without_snp_population]}
-        chr, loc, alt, ref = target_snp.split(':')
-        result_df = pd.DataFrame(data, index=[alt, ref])
+        #chr, loc, alt, ref = target_snp.split(':')
+        #changed code
+        result_df = pd.DataFrame(data, index=['REF', "ALT"])
         # print(df.T)
         chi2, p_value, dof, expected = chi2_contingency(result_df.T)
         return result_df.T, p_value, chi2, dof
@@ -270,7 +271,9 @@ class EpistasisFinder(object):
     def get_statistical_epistatic_significance(self, pairs, cohort,
                                                snps_in_system=(),
                                                return_significant_only=True,
-                                               snp_inheritance_dict={}, target='PHENOTYPE', verbose=0):
+                                               snp_inheritance_dict={}, target='PHENOTYPE',
+                                               binary=False,
+                                               verbose=0):
         """
         Evaluate statistical significance of epistatic interactions using regression models.
 
@@ -311,14 +314,20 @@ class EpistasisFinder(object):
             combination_name = "%s:%s"%(snp_1_renamed, snp_2_renamed)
             formula_epistasis = formula_no_epistasis + " + " + combination_name
             #md_reduced = smf.ols(formula_no_epistasis, data=partial_genotype_cov_merged).fit()
-            md_full = smf.ols(formula_epistasis, data=partial_genotype_cov_merged).fit()
-            #ll_full = md_full.llf
-            #ll_reduced = md_reduced.llf
-            #lr_stat = 2 * (ll_full - ll_reduced)
-            #df_diff = md_full.df_model - md_reduced.df_model
-            #combinatory_pvalue = stats.chi2.sf(lr_stat, df_diff)
-            combinatory_pvalue = md_full.pvalues[combination_name]
-            raw_results.append((snp_1, snp_2, combinatory_pvalue))
+            try:
+                if binary:
+                    md_full = smf.logit(formula_epistasis, data=partial_genotype_cov_merged).fit()
+                else:
+                    md_full = smf.ols(formula_epistasis, data=partial_genotype_cov_merged).fit()
+                #ll_full = md_full.llf
+                #ll_reduced = md_reduced.llf
+                #lr_stat = 2 * (ll_full - ll_reduced)
+                #df_diff = md_full.df_model - md_reduced.df_model
+                #combinatory_pvalue = stats.chi2.sf(lr_stat, df_diff)
+                combinatory_pvalue = md_full.pvalues[combination_name]
+                raw_results.append((snp_1, snp_2, combinatory_pvalue))
+            except:
+                raw_results.append((snp_1, snp_2, 1))
 
         alpha = 0.05
         if len(pairs) == 0:
@@ -359,7 +368,7 @@ class EpistasisFinder(object):
             return all_epistasis
 
     def rename_snp(self, snp):
-        new_name =  "_".join(reversed(snp.split(":")))
+        new_name = "SNP" + "_".join(reversed(snp.split(":")))
         return new_name
 
     def rollback_snp_name(self, new_name):
@@ -471,13 +480,19 @@ class EpistasisFinder(object):
         if errorbar is None:
             errorbar='se'
 
-        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_0, ax=axes[0], estimator=estimator, errorbar=errorbar)
-        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_1, ax=axes[1], estimator=estimator, errorbar=errorbar)
+        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_0, ax=axes[0], estimator=estimator, errorbar=errorbar,
+                      order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'],)
+        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_1, ax=axes[1], estimator=estimator, errorbar=errorbar,
+                      order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'],)
 
         sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_0, hue=target_snp_1,
-                      hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'], ax=axes[2], estimator=estimator, errorbar=errorbar)
+                      hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'],
+                      order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'],
+                      ax=axes[2], estimator=estimator, errorbar=errorbar)
         sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_1, hue=target_snp_0,
-                      hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'], ax=axes[3], estimator=estimator, errorbar=errorbar)
+                      order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'],
+                      hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'],
+                      ax=axes[3], estimator=estimator, errorbar=errorbar)
         if out_dir is not None:
             plt.savefig(out_dir)
         plt.show()

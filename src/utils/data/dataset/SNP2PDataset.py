@@ -81,6 +81,7 @@ class GenotypeDataset(Dataset):
             else:
                 self.pheno_ids = [pheno for pheno in self.pheno_df.columns[2:]]
             self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
+            self.pheno_df['FID'] = self.pheno_df['FID'].map(str)
 
         else:
             self.pheno_df = None # will be initialized in child class = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
@@ -291,7 +292,7 @@ class PLINKDataset(GenotypeDataset):
         gene_set = sorted(list(gene_set))
         sys_set = set()
         for gene in gene_set:
-            sys_set = sys_set.union(self.tree_parser.gene2sys[gene])
+            sys_set = sys_set.union(self.tree_parser.gene2sys_full[gene])
         snp_indices = sorted([self.tree_parser.snp2ind[snp] for snp in snp_set])
         gene_indices = sorted([self.tree_parser.gene2ind[gene] for gene in gene_set])
         sys_indices = sorted([self.tree_parser.sys2ind[sys] for sys in sys_set])

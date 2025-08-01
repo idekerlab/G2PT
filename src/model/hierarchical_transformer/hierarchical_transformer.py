@@ -290,12 +290,12 @@ class HierarchicalTransformer(nn.Module):
 
     def get_attention(self, q, k, mask):
         batch_size = q.size(0)
-        if self.conv_type == 'system':
+        if (self.conv_type == 'system') & (mask is not None):
             mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
         return self.hierarchical_transformer_update.get_attention_scores(q, k, mask=mask)
     def get_score(self, q, k, mask):
         batch_size = q.size(0)
-        if self.conv_type == 'system':
+        if (self.conv_type == 'system') & (mask is not None):
             mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
         return self.hierarchical_transformer_update.get_attention_scores(q, k, mask=mask)
 

@@ -140,8 +140,9 @@ class SNPTreeParser(TreeParser):
         #parser.snp2gene_df = parser.snp2gene_df.loc[
         #    parser.snp2gene_df['gene'].isin(parser.gene2ind)
         #]
+        #]
         #print(parser.snp2gene_df.shape)
-        snps = parser.snp2gene_df.drop_duplicates(subset=['snp'])['snp'].values.tolist()
+        snps = sorted(parser.snp2gene_df.drop_duplicates(subset=['snp'])['snp'].values.tolist())
         if multiple_phenotypes:
             if 'block' in parser.snp2gene_df.columns:
                 if 'sig_in' in parser.snp2gene_df.columns:
@@ -274,7 +275,9 @@ class SNPTreeParser(TreeParser):
                 parser.snp2gene_by_phenotype_dict[pheno] = pheno_dict
 
         # ———— 5) return only if non‑inplace ————
-        if parent_result is not None:
+        #if parent_result is not None:
+        #    return parser
+        if not inplace:
             return parser
 
 

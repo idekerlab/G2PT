@@ -147,6 +147,38 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
         self.logger.info("Pretrained model loaded successfully")
         self.snp2p_model = self.snp2p_model.to(self.device)
 
+    def add_phenotype_as_embedding(self, model, phenotypes):
+        """
+        Pre-trains embedding layers using phenotype labels.
+        """
+        self.logger.info(f"Pre-training embedding layer with phenotype labels for: {', '.join(phenotypes)}")
+
+        model_to_train = model.module if self.args.distributed else model
+
+        # Freeze all parameters except for embedding layers
+        for name, param in model_to_train.named_parameters():
+            if 'embedding' in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+
+        optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model_to_train.parameters()), lr=self.args.lr / 5)
+
+        train_dataset = self.snp2p_dataloader.dataset
+        train_dataset.select_phenotypes(phenotypes)
+        dataloader = DataLoader(train_dataset, batch_size=None, num_workers=self.args.jobs, prefetch_factor=2)
+
+        # Run for a few epochs
+        for epoch in range(3):
+            self.iter_minibatches(
+                model, dataloader, optimizer, epoch=epoch,
+                name=f"Pre-training embeddings with phenotypes: {', '.join(phenotypes)}"
+            )
+
+        # Unfreeze all parameters for the main training
+        for param in model_to_train.parameters():
+            param.requires_grad = True
+
     def greedy_phenotype_selection(self, skip_initial_training=False) -> Tuple[float, nn.Module, List[str]]:
         """
         Perform greedy phenotype selection.
@@ -445,6 +477,8 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
             # Create a copy of the model for this candidate
             candidate_model = copy.deepcopy(model)
 
+            self.add_phenotype_as_embedding(candidate_model, temporal_phenotype_set)
+
             # Early stopping for individual candidates
             candidate_early_stopping = EarlyStopping(
                 patience=5,  # Smaller patience for candidate evaluation
@@ -493,7 +527,7 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                         if current_best_model is not None:
                             del current_best_model
                         current_best_model = copy.deepcopy(candidate_model)
-
+            self.save_model(candidate_model, temporal_phenotype_set)
             # Phase 2: Transformer training (only if embedding phase was promising)
             if candidate_best_performance > best_performance:  # Only continue if showing promise
                 candidate_early_stopping.reset()  # Reset for transformer phase
@@ -534,6 +568,7 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                             if current_best_model is not None:
                                 del current_best_model
                             current_best_model = copy.deepcopy(candidate_model)
+                self.save_model(candidate_model, temporal_phenotype_set)
             else:
                 self.logger.info(f"    Skipping transformer phase for {phenotype} (insufficient improvement)")
 

@@ -141,6 +141,7 @@ def main():
     parser.add_argument('--focal-loss-alpha', help='alpha for focal loss', type=float, default=0.25)
     parser.add_argument('--focal-loss-gamma', help='gamma for focal loss', type=float, default=2.0)
     parser.add_argument('--use_hierarchical_transformer', action='store_true', default=False)
+    parser.add_argument('--label_smoothing', help='Label smoothing for BCE loss', type=float, default=0.0)
 
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
@@ -289,7 +290,7 @@ def main_worker(args):
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          activation='softmax', input_format=args.input_format,
-                                         n_phenotypes=snp2p_dataset.n_pheno)
+                                         n_phenotypes=snp2p_dataset.n_pheno, use_hierarchical_transformer=args.use_hierarchical_transformer)
         #snp2p_model = snp2p_model.half()
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
@@ -370,7 +371,7 @@ def main_worker(args):
 
 
     snp2p_trainer = SNP2PTrainer(snp2p_model, tree_parser, snp2p_dataloader, device, args, args.target_phenotype,
-                                 validation_dataloader=val_snp2p_dataloader, fix_system=fix_system)
+                                 validation_dataloader=val_snp2p_dataloader, fix_system=fix_system, label_smoothing=args.label_smoothing)
     snp2p_trainer.train(args.epochs, args.out)
 
 if __name__ == '__main__':
