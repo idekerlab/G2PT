@@ -42,6 +42,11 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
         self.selection_history = []
         self.logger = logging.getLogger(__name__)
 
+        # Store indices of pretrained embeddings
+        self.pretrained_sys_indices = None
+        self.pretrained_gene_indices = None
+        self.pretrained_snp_indices = None
+
         # Load pretrained model if provided
         if self.pretrained_checkpoint is not None:
             self.load_pretrained_model()
@@ -134,6 +139,14 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                 state_dict[key] = self.map_embeddings(state_dict[key], new_state_dict[key],
                                                                 checkpoint['arguments'].pheno2ind,
                                                                 self.args.pheno2ind)
+            if 'system_value_scale' in key:
+                state_dict[key] = self.map_embeddings(state_dict[key].unsqueeze(1), new_state_dict[key].unsqueeze(1),
+                                                                old_snp_tree_parser.sys2ind,
+                                                                new_snp_tree_parser.sys2ind).squeeze(1)
+            if 'gene_value_scale' in key:
+                state_dict[key] = self.map_embeddings(state_dict[key].unsqueeze(1), new_state_dict[key].unsqueeze(1),
+                                                                old_snp_tree_parser.gene2ind,
+                                                                new_snp_tree_parser.gene2ind).squeeze(1)
             if 'snp_batch_norm.running_mean' in key:
                 state_dict[key] = self.map_embeddings(state_dict[key][0], new_state_dict[key][0],
                                                                 old_snp_tree_parser.snp2ind,
@@ -142,10 +155,52 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                 state_dict[key] = self.map_embeddings(state_dict[key][0], new_state_dict[key][0],
                                                                 old_snp_tree_parser.snp2ind,
                                                                 new_snp_tree_parser.snp2ind).unsqueeze(0)
+        # Store pretrained indices
+        self.pretrained_sys_indices = [new_snp_tree_parser.sys2ind[s] for s in old_snp_tree_parser.sys2ind if s in new_snp_tree_parser.sys2ind]
+        self.pretrained_gene_indices = [new_snp_tree_parser.gene2ind[g] for g in old_snp_tree_parser.gene2ind if g in new_snp_tree_parser.gene2ind]
+        self.pretrained_snp_indices = [new_snp_tree_parser.snp2ind[snp] for snp in old_snp_tree_parser.snp2ind if snp in new_snp_tree_parser.snp2ind]
+
         # Load the state dict
         self.snp2p_model.load_state_dict(state_dict, strict=False)
         self.logger.info("Pretrained model loaded successfully")
         self.snp2p_model = self.snp2p_model.to(self.device)
+
+    def _create_optimizer_with_param_groups(self, model, lr):
+        params = []
+        pretrained_lr = lr / 5.0
+
+        # Handle DDP and non-DDP models
+        prefix = 'module.' if isinstance(model, nn.parallel.DistributedDataParallel) else ''
+
+        embedding_param_names = {
+            f'{prefix}system_embedding.weight': (self.pretrained_sys_indices, self.tree_parser.n_systems + 1),
+            f'{prefix}gene_embedding.weight': (self.pretrained_gene_indices, self.tree_parser.n_genes + 1),
+            f'{prefix}snp_embedding.weight': (self.pretrained_snp_indices, self.tree_parser.n_snps * 3 + 2),
+        }
+
+        other_params = []
+        for name, param in model.named_parameters():
+            if name in embedding_param_names:
+                pretrained_indices, total_size = embedding_param_names[name]
+
+                if pretrained_indices is None:
+                    # No pretrained indices, treat all as new
+                    other_params.append(param)
+                    continue
+
+                # Create masks for pretrained and new embeddings
+                pretrained_mask = torch.zeros(total_size, dtype=torch.bool, device=param.device)
+                pretrained_mask[pretrained_indices] = True
+                
+                # Add pretrained params
+                params.append({'params': param[pretrained_mask], 'lr': pretrained_lr})
+                # Add new params
+                params.append({'params': param[~pretrained_mask], 'lr': lr})
+            else:
+                other_params.append(param)
+
+        params.append({'params': other_params, 'lr': lr})
+        return optim.AdamW(params, weight_decay=self.args.wd)
 
     def add_phenotype_as_embedding(self, model, phenotypes):
         """
@@ -162,7 +217,7 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
             else:
                 param.requires_grad = False
 
-        optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model_to_train.parameters()), lr=self.args.lr / 5)
+        optimizer = self._create_optimizer_with_param_groups(model_to_train, self.args.lr / 5)
 
         train_dataset = self.snp2p_dataloader.dataset
         train_dataset.select_phenotypes(phenotypes)
@@ -240,8 +295,7 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                 dist.barrier()
 
             model2train = self.snp2p_model
-            optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model2train.parameters()),
-                                    lr=self.args.lr, weight_decay=self.args.wd)
+            optimizer = self._create_optimizer_with_param_groups(model2train, self.args.lr)
 
             train_dataset = self.snp2p_dataloader.dataset
             train_dataset.select_phenotypes(phenotype_set)
@@ -344,6 +398,11 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
         # Save initial model
         self.save_model(model2train, phenotype_set, epoch='best')
 
+        # Update pretrained indices to all current indices
+        self.pretrained_sys_indices = list(self.tree_parser.sys2ind.values())
+        self.pretrained_gene_indices = list(self.tree_parser.gene2ind.values())
+        self.pretrained_snp_indices = list(self.tree_parser.snp2ind.values())
+
         # Track history
         self.selection_history.append({
             'step': 0,
@@ -392,6 +451,12 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                 best_phenotype_set = candidate_phenotype_set
                 best_model = candidate_model  # Update to use the best model for next iteration
                 self.save_model(best_model, best_phenotype_set)
+                
+                # Update pretrained indices to all current indices
+                self.pretrained_sys_indices = list(self.tree_parser.sys2ind.values())
+                self.pretrained_gene_indices = list(self.tree_parser.gene2ind.values())
+                self.pretrained_snp_indices = list(self.tree_parser.snp2ind.values())
+
                 # Track history
 
                 self.selection_history.append({
@@ -610,8 +675,7 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                     parameter.requires_grad = True
                 else:
                     parameter.requires_grad = False
-        optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model2train.parameters()), lr=self.args.lr/10,
-                                     weight_decay=self.args.wd)
+        optimizer = self._create_optimizer_with_param_groups(model2train, self.args.lr/10)
         avg_loss = self.iter_minibatches(model2train, snp2p_dataloader, optimizer, epoch=epoch, name=f"Training with phenotypes, {','.join(phenotypes) }, {str(train)}")
 
         # All ranks should participate in evaluation

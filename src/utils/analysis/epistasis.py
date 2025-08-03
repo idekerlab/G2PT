@@ -1,7 +1,7 @@
 from src.utils.tree import SNPTreeParser
 import pandas as pd
 from sgkit.io import plink
-from scipy.stats import chi2_contingency
+from scipy.stats import chi2_contingency, fisher_exact
 import numpy as np
 from scipy import stats
 import statsmodels.formula.api as smf
@@ -17,25 +17,42 @@ plt.rcParams['svg.fonttype'] = 'none'
 
 class EpistasisFinder(object):
     """
-    A class to identify and analyze epistatic interactions in genetic data using attention results, and statistical methods.
+    Finds and analyzes epistatic interactions between SNPs within biological systems.
+
+    This class integrates attention scores from a trained model with genotype data
+    to perform a multi-stage statistical analysis. It first identifies candidate
+    SNPs based on their relevance to a system (using attention scores), then
+    filters SNP pairs by physical distance, tests for pairwise interaction using
+    Fisher's Exact Test, and finally validates significant pairs using a
+    regression model to confirm the statistical interaction effect.
+
+    Attributes:
+        tree_parser (SNPTreeParser): An instance of the parser containing SNP,
+            gene, and system relationships.
+        genotype (pd.DataFrame): A DataFrame of genotype data, with samples as
+            rows and SNPs as columns.
+        cov_df (pd.DataFrame): A DataFrame containing covariate and phenotype data.
+        attention_results (pd.DataFrame): A DataFrame of attention scores for each
+            sample and system.
     """
-    def __init__(self, tree_parser : SNPTreeParser, bfile, attention_results, cov=None, flip=False):
+    def __init__(self, tree_parser : SNPTreeParser, bfile, attention_results, cov=None, pheno=None, flip=False):
         """
-        Initialize the EpistasisFinder class.
+        Initializes the EpistasisFinder and loads all necessary data.
 
         Args:
-            tree_parser (SNPTreeParser): An object for parsing SNP and tree-related data.
-            bfile (str): Path to the PLINK binary file containing genotype data.
-            attention_results (str or pd.DataFrame): Path to a file or DataFrame containing attention-based results.
-            cov (str, optional): Path to a file containing covariate data. If not provided, default covariates are used.
-
-        Attributes:
-            tree_parser (SNPTreeParser): Reference to the provided tree parser.
-            genotype (pd.DataFrame): Genotype data extracted from the PLINK file.
-            cov_df (pd.DataFrame): Covariate data.
-            attention_results (pd.DataFrame): Attention results for SNPs.
-            attention_results_0 (pd.DataFrame): Attention results for sex 0.
-            attention_results_1 (pd.DataFrame): Attention results for sex 1.
+            tree_parser (SNPTreeParser): An initialized SNPTreeParser object.
+            bfile (str): The path to the PLINK binary file (.bed, .bim, .fam).
+            attention_results (str or pd.DataFrame): The path to a CSV file or a
+                DataFrame containing attention scores.
+            cov (str, optional): The path to a tab-separated covariate file. If
+                None, covariates are loaded from the PLINK .fam file.
+                Defaults to None.
+            pheno (str, optional): The path to a tab-separated phenotype file.
+                If provided, this phenotype will be merged with the covariates.
+                It must contain 'FID' and 'IID' columns. Defaults to None.
+            flip (bool, optional): If True, swaps the reference and alternate
+                alleles in the genotype data (e.g., changing 0 to 2 and 2 to 0).
+                Defaults to False.
         """
         self.tree_parser = tree_parser
         self.plink_data = plink.read_plink(path=bfile)
@@ -49,7 +66,7 @@ class EpistasisFinder(object):
         self.snp2chr = {snp:self.plink_data.contig_id.values[chrome] for snp, chrome in zip(self.plink_data.variant_id.values, self.plink_data.variant_contig.values)}
         self.snp2pos = {snp:pos for snp, pos in zip(self.plink_data.variant_id.values, self.plink_data.variant_position.values)}
         print("From PLINK %d variants with %d samples are queried" % (self.genotype.shape[1], self.genotype.shape[0]))
-        snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
+        
         if cov is not None:
             self.cov_df = pd.read_csv(cov, sep='\t')
         else:
@@ -58,13 +75,25 @@ class EpistasisFinder(object):
                                         'SEX': self.plink_data.sample_sex.as_numpy(),
                                         'PHENOTYPE': self.plink_data.sample_phenotype.as_numpy() })
             self.cov_df = self.cov_df[['FID', 'IID', 'SEX', 'PHENOTYPE']]
-            self.cov_df = self.cov_df.loc[self.cov_df.PHENOTYPE!=-1]
-            self.cov_df['PHENOTYPE'] = self.cov_df['PHENOTYPE'] - 1
-            self.genotype = self.genotype.loc[self.cov_df.IID]
+        
         self.cov_df['FID'] = self.cov_df['FID'].astype(str)
         self.cov_df['IID'] = self.cov_df['IID'].astype(str)
-        self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov != 'PHENOTYPE']
 
+        if pheno is not None:
+            pheno_df = pd.read_csv(pheno, sep='\t')
+            pheno_df['IID'] = pheno_df['IID'].astype(str)
+            pheno_df['FID'] = pheno_df['FID'].astype(str)
+            # Drop old phenotype if it exists and merge new one
+            if 'PHENOTYPE' in self.cov_df.columns:
+                self.cov_df = self.cov_df.drop(columns=['PHENOTYPE'])
+            self.cov_df = pd.merge(self.cov_df, pheno_df, on=['FID', 'IID'])
+
+        # Ensure genotype data aligns with the final covariate/phenotype dataframe
+        self.cov_df = self.cov_df.loc[self.cov_df['IID'].isin(self.genotype.index)]
+        self.genotype = self.genotype.loc[self.cov_df.IID]
+
+        self.cov_ids = [c for c in self.cov_df.columns if c not in ['FID', 'IID', 'PHENOTYPE']]
+        
         if type(attention_results) == str:
             self.attention_results = pd.read_csv(attention_results)
         elif type(attention_results) == pd.DataFrame:
@@ -84,16 +113,46 @@ class EpistasisFinder(object):
     def search_epistasis_on_system(self, system, sex=0, quantile=0.9, fisher=True, return_significant_only=True, check_inheritance=True, verbose=0,
                                    snp_inheritance_dict = {}, binary=False, target='PHENOTYPE'):
         """
-        Search for epistatic interactions in a specified biological system.
+        Searches for epistatic interactions for a given biological system.
+
+        This method executes a multi-step pipeline:
+        1.  Determines the optimal inheritance model for each SNP (optional).
+        2.  Filters SNPs using a Chi-Square test based on attention scores to
+            identify those prevalent in a high-risk cohort.
+        3.  Generates all pairs of the filtered SNPs.
+        4.  Filters out SNP pairs that are physically close on the chromosome.
+        5.  Performs Fisher's Exact Test on the distant pairs to find
+            statistically significant co-occurrences (optional).
+        6.  Uses a regression model to test for a statistical interaction
+            effect for the remaining pairs, correcting for multiple testing.
 
         Args:
-            system (str): The biological system under analysis.
-            sex (int, optional): The sex for filtering data (0 or 1). Default is 0.
-            quantile (float, optional): Quantile threshold for attention results. Default is 0.9.
-            verbose (int, optional): Verbosity level. Default is 0.
+            system (str): The name of the system (e.g., GO term) to analyze.
+            sex (int, optional): The sex to include in the analysis (0, 1, or 2
+                for all). Defaults to 0.
+            quantile (float, optional): The attention score quantile to define the
+                high-risk cohort. Defaults to 0.9.
+            fisher (bool, optional): Whether to perform the Fisher's Exact Test
+                step. Defaults to True.
+            return_significant_only (bool, optional): If True, returns only the
+                pairs that are statistically significant after all tests. If
+                False, returns results for all tested pairs. Defaults to True.
+            check_inheritance (bool, optional): If True, determines the best-fit
+                inheritance model for each SNP before testing. Defaults to True.
+            verbose (int, optional): Verbosity level (0 or 1). Defaults to 0.
+            snp_inheritance_dict (dict, optional): A pre-computed dictionary of
+                SNP inheritance models. Defaults to an empty dict.
+            binary (bool, optional): Whether the target phenotype is binary (for
+                logistic regression) or continuous (for linear regression).
+                Defaults to False.
+            target (str, optional): The name of the phenotype column in the
+                covariate data. Defaults to 'PHENOTYPE'.
 
         Returns:
-            list: List of significant SNP pairs with epistatic interactions.
+            tuple: A tuple containing:
+                - list: A list of tuples for significant epistatic pairs. Each
+                  tuple contains (snp1, snp2, raw_p_value, fdr_adjusted_p_value).
+                - dict: An updated dictionary of determined SNP inheritance models.
         """
         target_snps = self.tree_parser.sys2snp[system]
         n_target_snps = len(target_snps)
@@ -138,51 +197,104 @@ class EpistasisFinder(object):
                 if verbose==1:
                     print(f'\t\t{target_snp} -> {self.tree_parser.snp2gene[target_snp]} passes Chi-Square test with p-value {p_val}')
         print(f'\tFrom {n_target_snps} SNPs, {len(result_chi)} SNPs pass Chi-Square test')
-        if fisher:
-            print('Running Fisher')
-            odd_result, p_df = self.calculate_fisher(risky_samples, result_chi, snp_inheritance_dict=snp_inheritance_dict)
-            sig_snp_pairs = self.get_significant_pairs_from_fisher(p_df, verbose=verbose)
-            n = odd_result.shape[1]
-            print(f'\tFrom {(n*(n-1)/2)} significant pairs, {len(sig_snp_pairs)} pairs pass Fisher test')
-        else:
-            sig_snp_pairs = list(itertools.combinations(result_chi, 2))
-            #n = len(result_chi)
-            #print(f'\tFrom {(n * (n - 1) / 2)} significant pairs, {len(sig_snp_pairs)} pairs pass Fisher test')
-        print('Filtering Close SNPs')
-        distant_snp_pairs = [(snp_1, snp_2) for snp_1, snp_2 in sig_snp_pairs if self.check_distance(snp_1, snp_2)]
-        print(f"\tFrom {len(sig_snp_pairs)} pairs, close {len(sig_snp_pairs)-len(distant_snp_pairs)} SNP pairs are removed")
+
+        # Generate all possible pairs from Chi-square results
+        all_snp_pairs = list(itertools.combinations(result_chi, 2))
+
+        # 1. Filter out pairs that are too close physically
+        print('Filtering Close SNPs...')
+        distant_snp_pairs = [pair for pair in all_snp_pairs if self.check_distance(pair[0], pair[1])]
+        print(f"\tFrom {len(all_snp_pairs)} pairs, {len(all_snp_pairs) - len(distant_snp_pairs)} proximal pairs were removed, leaving {len(distant_snp_pairs)} for testing.")
+
+        sig_snp_pairs = distant_snp_pairs
+        if fisher and distant_snp_pairs:
+            # 2. Perform Fisher's Exact Test on the remaining distant pairs
+            print("Running Fisher's Exact Test on distant pairs...")
+            sig_snp_pairs = self._run_fisher_on_pairs(risky_samples, distant_snp_pairs, snp_inheritance_dict, verbose=verbose)
+            print(f'\tFrom {len(distant_snp_pairs)} pairs, {len(sig_snp_pairs)} passed Fisher test with FDR correction.')
+        
+        if not sig_snp_pairs:
+             return [], snp_inheritance_dict
 
         print('Calculating statistical Interaction p-value ')
-        sig_snp_pairs = self.get_statistical_epistatic_significance(distant_snp_pairs, attention_results.IID.map(str),
+        final_significant_pairs = self.get_statistical_epistatic_significance(sig_snp_pairs, attention_results.IID.map(str),
                                                                     snp_inheritance_dict=snp_inheritance_dict,
                                                                     verbose=verbose,
                                                                     return_significant_only=return_significant_only,
                                                                     target=target, binary=binary)
-        print(f'\tFrom {len(distant_snp_pairs)} pairs, {len(sig_snp_pairs)} significant interaction are queried')
-        '''
-        if len(sig_snp_pairs)==0:
-            if quantile >=0.5:
-                non_risky_samples = attention_results.loc[attention_results[system] <= 1-thr].IID.map(str)
-            else:
-                non_risky_samples = attention_results.loc[attention_results[system] >= 1-thr].IID.map(str)
-            samples = risky_samples.tolist() + non_risky_samples.tolist()
-            print("No Epistasis Found, now compare top and bottom")
-            sig_snp_pairs = self.get_statistical_epistatic_significance(distant_snp_pairs, samples, verbose=verbose)
-            print(f'\tFrom {len(distant_snp_pairs)} pairs, {len(sig_snp_pairs)} significant interaction are queried')
-        '''
-        return sig_snp_pairs, snp_inheritance_dict
+        print(f'\tFrom {len(sig_snp_pairs)} pairs, {len(final_significant_pairs)} significant interactions were found after regression analysis.')
+        
+        return final_significant_pairs, snp_inheritance_dict
+
+    def _run_fisher_on_pairs(self, risky_samples, snp_pairs, snp_inheritance_dict, verbose=0):
+        """
+        Performs Fisher's exact test on a pre-filtered list of SNP pairs.
+
+        This private helper function iterates through a list of SNP pairs,
+        calculates the contingency table for each pair within the `risky_samples`
+        cohort, and performs Fisher's exact test. It then applies a Benjamini-Hochberg
+        FDR correction to the resulting p-values.
+
+        Args:
+            risky_samples (list): A list of sample IDs defining the high-risk cohort.
+            snp_pairs (list): A list of tuples, where each tuple is a pair of SNP IDs.
+            snp_inheritance_dict (dict): A dictionary mapping SNPs to their
+                inheritance models ('additive', 'dominant', etc.).
+            verbose (int, optional): Verbosity level. Defaults to 0.
+
+        Returns:
+            list: A list of SNP pair tuples that were statistically significant
+                  after FDR correction.
+        """
+        if not snp_pairs:
+            return []
+
+        target_snps = list(set(itertools.chain.from_iterable(snp_pairs)))
+        partial_genotype = self.genotype.loc[risky_samples, target_snps].copy()
+        for snp in target_snps:
+            if snp in snp_inheritance_dict:
+                partial_genotype = self.model_encoders[snp_inheritance_dict[snp]](partial_genotype, snp)
+
+        raw_pvals = []
+        for snp1, snp2 in snp_pairs:
+            contingency_table = pd.crosstab(partial_genotype[snp1], partial_genotype[snp2])
+            _, p_value = fisher_exact(contingency_table)
+            raw_pvals.append(p_value)
+
+        if not raw_pvals:
+            return []
+
+        reject_flags, fdr_corrected_pvals, _, _ = multipletests(raw_pvals, alpha=0.05, method='fdr_bh')
+
+        significant_pairs = []
+        for i, (snp1, snp2) in enumerate(snp_pairs):
+            if reject_flags[i]:
+                if verbose == 1:
+                    print(f"\t\tInteraction between {snp1} and {snp2} is significant after FDR (p={fdr_corrected_pvals[i]:.4g})")
+                significant_pairs.append((snp1, snp2))
+        
+        return significant_pairs
 
     def get_snp_chi_sqaure(self, population, risky_samples, target_snp, snp_inheritance_dict={}):
         """
-        Perform a chi-square test for a given SNP.
+        Performs a Chi-Square test for a single SNP.
+
+        This test determines if the allele frequency of a given SNP is
+        significantly different between the `risky_samples` cohort and the
+        total `population`.
 
         Args:
-            genotype (pd.DataFrame): DataFrame of SNP genotypes.
-            risky_samples (list): List of samples with high-risk phenotypes.
-            target_snp (str): SNP identifier.
+            population (list): List of all sample IDs.
+            risky_samples (list): List of sample IDs in the high-risk cohort.
+            target_snp (str): The SNP identifier to test.
+            snp_inheritance_dict (dict, optional): Maps SNPs to inheritance models.
 
         Returns:
-            tuple: Chi-square result DataFrame, p-value, chi-square statistic, and degrees of freedom.
+            tuple: A tuple containing:
+                - pd.DataFrame: The contingency table used for the test.
+                - float: The p-value from the test.
+                - float: The Chi-Square statistic.
+                - int: The degrees of freedom.
         """
         partial_genotype = self.genotype.loc[population, [target_snp]].copy()
         if target_snp in snp_inheritance_dict.keys():
@@ -201,73 +313,6 @@ class EpistasisFinder(object):
         chi2, p_value, dof, expected = chi2_contingency(result_df.T)
         return result_df.T, p_value, chi2, dof
 
-    def calculate_fisher(self, risky_samples, target_snps, snp_inheritance_dict={}):
-        partial_genotype = self.genotype.loc[risky_samples, target_snps].copy()
-        for target_snp in target_snps:
-            if target_snp in snp_inheritance_dict.keys():
-                partial_genotype = self.model_encoders[snp_inheritance_dict[target_snp]](partial_genotype, target_snp)
-
-        """
-        Perform Fisher's exact test on pairs of SNPs.
-
-        Args:
-            filtered_snp_df (pd.DataFrame): DataFrame of filtered SNPs.
-
-        Returns:
-            tuple: Odds ratios and p-values DataFrames.
-        """
-        odds_ratios = pd.DataFrame(np.zeros((partial_genotype.shape[1], partial_genotype.shape[1])), index=partial_genotype.columns, columns=partial_genotype.columns)
-        p_values = pd.DataFrame(np.zeros((partial_genotype.shape[1], partial_genotype.shape[1])), index=partial_genotype.columns, columns=partial_genotype.columns)
-
-        for i in range(partial_genotype.shape[1]):
-            for j in range(partial_genotype.shape[1]):
-                if i == j:
-                    odds_ratios.iloc[i, j] = 1  # df.shape[0]
-                    p_values.iloc[i, j] = 1
-                else:
-                    try:
-                        contingency_table = pd.crosstab(partial_genotype.iloc[:, i], partial_genotype.iloc[:, j])
-                        odds_ratio, p_value, dof, expected = chi2_contingency(contingency_table)
-                    except:
-                        odds_ratio, p_value = np.inf, 1
-                    odds_ratios.iloc[
-                        i, j] = odds_ratio  # ((df.iloc[:, i] == df.iloc[:, j]) & (df.iloc[:, i] != 0)).sum()/df.shape[0]
-                    odds_ratios.iloc[j, i] = odds_ratios.iloc[i, j]  # Symmetric matrix
-                    p_values.iloc[
-                        i, j] = p_value  # ((df.iloc[:, i] == df.iloc[:, j]) & (df.iloc[:, i] != 0)).sum()/df.shape[0]
-                    p_values.iloc[j, i] = p_values.iloc[i, j]  # Symmetric matrix
-        return odds_ratios, p_values
-
-    def get_significant_pairs_from_fisher(self, fisher_df_results, verbose=0):
-        """
-        Identify significant SNP pairs from Fisher's exact test results.
-
-        Args:
-            fisher_df_results (pd.DataFrame): DataFrame of Fisher's exact test p-values.
-            verbose (int, optional): Verbosity level. Default is 0.
-
-        Returns:
-            list: List of significant SNP pairs.
-        """
-        queried_epistasis = []
-        n = fisher_df_results.shape[0]
-        if n <= 1:
-            return []
-        mask = fisher_df_results < (0.05 / ((n * (n - 1))/2))
-        row_indices, col_indices = np.where(mask)
-        # Convert indices to row-column tuples
-        tuples = [(fisher_df_results.index[row], fisher_df_results.columns[col]) for row, col in zip(row_indices, col_indices) if
-                  self.tree_parser.snp2gene[fisher_df_results.index[row]] != self.tree_parser.snp2gene[fisher_df_results.columns[col]]]
-        tuples = set(tuple(sorted(t)) for t in tuples)
-        for snp_1, snp_2 in tuples:
-            if self.tree_parser.snp2gene[snp_1] == self.tree_parser.snp2gene[snp_2]:
-                continue
-            # queried_epistasis[key][(row, col)] = df.loc[row, col]#+= tuples
-            if verbose == 1:
-                print(f"\t\tEpistatic interaction between {snp_1} -> {self.tree_parser.snp2gene[snp_1]} and {snp_2} -> {self.tree_parser.snp2gene[snp_2]} is detected, p-value: {fisher_df_results.loc[snp_1, snp_2]} ")
-            queried_epistasis.append((snp_1, snp_2))#[key][(row, col)] = df.loc[row, col]  # += tuples
-        return queried_epistasis
-
     def get_statistical_epistatic_significance(self, pairs, cohort,
                                                snps_in_system=(),
                                                return_significant_only=True,
@@ -275,15 +320,31 @@ class EpistasisFinder(object):
                                                binary=False,
                                                verbose=0):
         """
-        Evaluate statistical significance of epistatic interactions using regression models.
+        Tests for a statistical interaction effect between SNP pairs using regression.
+
+        For each pair, this method fits a regression model with an interaction
+        term (e.g., `phenotype ~ snp1 + snp2 + snp1:snp2 + covariates`). It
+        then uses the p-value of the interaction term to determine if a
+        significant epistatic effect exists. P-values are corrected for multiple
+        testing using the Benjamini-Hochberg FDR method.
 
         Args:
-            pairs (list): List of SNP pairs.
-            cohort (list): List of sample IDs in the cohort.
-            verbose (int, optional): Verbosity level. Default is 0.
+            pairs (list): A list of SNP pair tuples to test.
+            cohort (list): A list of all sample IDs to include in the analysis.
+            snps_in_system (list, optional): A list of all SNPs in the system,
+                used for creating the initial genotype DataFrame. Defaults to ().
+            return_significant_only (bool, optional): If True, returns only
+                significant pairs. Defaults to True.
+            snp_inheritance_dict (dict, optional): Maps SNPs to inheritance models.
+            target (str, optional): The name of the phenotype column.
+            binary (bool, optional): If True, use logistic regression. If False,
+                use ordinary least squares. Defaults to False.
+            verbose (int, optional): Verbosity level. Defaults to 0.
 
         Returns:
-            list: List of statistically significant SNP pairs with epistatic interactions.
+            list: A list of tuples for epistatic pairs. If `return_significant_only`
+                  is True, only significant pairs are returned. Each tuple contains
+                  (snp1, snp2, raw_p_value, fdr_adjusted_p_value).
         """
 
         target_snps = list(set(element for tup in pairs for element in tup))
@@ -368,14 +429,28 @@ class EpistasisFinder(object):
             return all_epistasis
 
     def rename_snp(self, snp):
+        """Formats a SNP ID to be compatible with regression formula syntax."""
         new_name = "SNP" + "_".join(reversed(snp.split(":")))
         return new_name
 
     def rollback_snp_name(self, new_name):
+        """Reverts a formatted SNP ID back to its original format."""
         orig_name = ":".join(reversed(new_name.split("_")))
         return orig_name
 
     def check_distance(self, snp_1, snp_2, distance_threshold=500000):
+        """
+        Checks if two SNPs are on different chromosomes or far apart on the same one.
+
+        Args:
+            snp_1 (str): The ID of the first SNP.
+            snp_2 (str): The ID of the second SNP.
+            distance_threshold (int, optional): The minimum distance (in base
+                pairs) to be considered "distant". Defaults to 500000.
+
+        Returns:
+            bool: True if the SNPs are distant, False otherwise.
+        """
         if self.snp2chr[snp_1] != self.snp2chr[snp_2]:
             return True
         else:
@@ -386,46 +461,53 @@ class EpistasisFinder(object):
 
     @staticmethod
     def code_additivity(genotype, snp_id):
+        """Encodes genotype for an additive inheritance model (no change)."""
         return genotype
 
     @staticmethod
     def code_dominance(genotype, snp_id):
+        """Encodes genotype for a dominant inheritance model (AA=0, Aa=1, aa=1)."""
         genotype.loc[:, snp_id] = genotype[snp_id].replace(2, 1)
         return genotype
 
     @staticmethod
     def code_recessive(genotype, snp_id):
+        """Encodes genotype for a recessive inheritance model (AA=0, Aa=0, aa=1)."""
         genotype.loc[:, snp_id] = genotype[snp_id].replace({1: 0, 2: 1})#.replace(1, 0)
         return genotype
 
     @staticmethod
     def code_overdominance(genotype, snp_id):
+        """Encodes genotype for an overdominant model (AA=0, Aa=1, aa=0)."""
         genotype.loc[:, snp_id] = genotype[snp_id].replace(2, 0)
         return genotype
 
     @staticmethod
     def code_underdominance(genotype, snp_id):
+        """Encodes genotype for an underdominant model (AA=1, Aa=0, aa=1)."""
         genotype.loc[:, snp_id] = genotype[snp_id].replace({1: 0, 0: 1, 2: 1})
         return genotype
 
     def determine_inheritance_model(self, genotypes, phenotype, target_snp, verbose=0, loss='aic'):
         """
-        Determine which inheritance model (among typical/additive, dominant, recessive,
-        overdominant, underdominant) best fits a continuous phenotype using AIC.
+        Determines the best-fit inheritance model for a SNP using AIC or BIC.
 
-        Parameters
-        ----------
-        genotypes : array-like
-            Genotypes coded as 0, 1, or 2 for each individual.
-        phenotype : array-like
-            Continuous phenotype values for each individual, same length as genotypes.
+        This method fits five different regression models (additive, dominant,
+        recessive, overdominant, underdominant) for a single SNP against a
+        phenotype and selects the model with the lowest Akaike Information
+        Criterion (AIC) or Bayesian Information Criterion (BIC).
 
-        Returns
-        -------
-        best_model : str
-            One of {'typical', 'dominant', 'recessive', 'overdominant', 'underdominant'}
-        model_aics : dict
-            A mapping of model name -> AIC value, for inspection.
+        Args:
+            genotypes (pd.DataFrame): A DataFrame containing genotype and
+                covariate data for samples.
+            phenotype (array-like): An array of phenotype values.
+            target_snp (str): The SNP ID to evaluate.
+            verbose (int, optional): Verbosity level. Defaults to 0.
+            loss (str, optional): The criterion to use for model selection,
+                either 'aic' or 'bic'. Defaults to 'aic'.
+
+        Returns:
+            str: The name of the best-fit inheritance model.
         """
         # Define the model coding functions in a dict
 
@@ -445,10 +527,33 @@ class EpistasisFinder(object):
         return best_model
 
     def merge_cov_df(self, new_cov_df, left_on=None, right_on=None):
+        """Merges a new covariate DataFrame with the existing one."""
         self.cov_df = self.cov_df.merge(new_cov_df, left_on=left_on, right_on=right_on)
 
     def draw_epistasis(self, target_snp_0, target_snp_1, phenotype, sex=None, figsize=(22, 5), estimator='mean',
                            errorbar='ci', out_dir=None, regression=False):
+        """
+        Generates and displays interaction plots for a pair of SNPs.
+
+        This function creates a series of point plots to visualize how the
+        genotypes of two SNPs interact to affect a given phenotype.
+
+        Args:
+            target_snp_0 (str): The ID of the first SNP.
+            target_snp_1 (str): The ID of the second SNP.
+            phenotype (str): The name of the phenotype column to plot.
+            sex (int, optional): The sex to include (0, 1, or None for all).
+                Defaults to None.
+            figsize (tuple, optional): The figure size. Defaults to (22, 5).
+            estimator (str, optional): The statistical estimator to use (e.g.,
+                'mean', 'median'). Defaults to 'mean'.
+            errorbar (str, optional): The error bar style (e.g., 'ci', 'sd').
+                Defaults to 'ci'.
+            out_dir (str, optional): If provided, the path to save the figure.
+                Defaults to None.
+            regression (bool, optional): This argument is present but not
+                currently used in the function. Defaults to False.
+        """
         genotype_partial = self.genotype[[target_snp_0, target_snp_1]]
         target_snps_0_a0_index = genotype_partial.loc[(genotype_partial[target_snp_0] == 0)].index
         target_snps_0_hetero_index = genotype_partial[(genotype_partial[target_snp_0] == 1)].index
@@ -485,7 +590,7 @@ class EpistasisFinder(object):
         sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_1, ax=axes[1], estimator=estimator, errorbar=errorbar,
                       order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'],)
 
-        sns.pointplot(data=cov_df_partial, y=phenotype, x=target_snp_0, hue=target_snp_1,
+        sns.pointpoint(data=cov_df_partial, y=phenotype, x=target_snp_0, hue=target_snp_1,
                       hue_order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'],
                       order=['Homozygous ref.', 'Heterozygous', 'Homozygous alt.'],
                       ax=axes[2], estimator=estimator, errorbar=errorbar)

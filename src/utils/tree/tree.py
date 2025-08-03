@@ -4,22 +4,69 @@ import networkx as nx
 import torch
 import copy
 import torch.nn.functional as F
-from itertools import product
+from itertools import product, combinations
+from sklearn.cluster import AgglomerativeClustering
+import obonet
+import re
 
 class TreeParser(object):
 
     def __init__(self, ontology, dense_attention=False, sys_annot_file=None):
-        ontology = pd.read_csv(ontology, sep='	', names=['parent', 'child', 'interaction'])
-        ontology['parent'] = ontology['parent'].astype(str)
-        ontology['child'] = ontology['child'].astype(str)
+        if isinstance(ontology, pd.DataFrame):
+            ontology_df = ontology
+        else:
+            ontology_df = pd.read_csv(ontology, sep='	', names=['parent', 'child', 'interaction'])
+        
+        ontology_df['parent'] = ontology_df['parent'].astype(str)
+        ontology_df['child'] = ontology_df['child'].astype(str)
         self.dense_attention = dense_attention
         if sys_annot_file:
             sys_descriptions = pd.read_csv(sys_annot_file, header=None, names=['Term', 'Term_Description'], index_col=0, sep='	')
-
             self.sys_annot_dict = sys_descriptions.to_dict()["Term_Description"]
         else:
             self.sys_annot_dict = None
-        self.init_ontology(ontology)
+        self.sys_rename_info = {}
+        self.init_ontology(ontology_df)
+
+    @classmethod
+    def from_obo(cls, obo_path, dense_attention=False):
+        """
+        Create a TreeParser instance from an OBO file.
+        """
+        try:
+            graph = obonet.read_obo(obo_path)
+        except ImportError:
+            raise ImportError("The 'obonet' library is required. Please install it with 'pip install obonet'.")
+
+        interactions = []
+        sys_annot_dict = {}
+
+        for node, data in graph.nodes(data=True):
+            sys_annot_dict[node] = data.get('name', node)
+            if 'is_a' in data:
+                for parent in data['is_a']:
+                    interactions.append((parent, node, 'is_a'))
+        
+        ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
+        
+        # Create a temporary annotation file to pass to the constructor
+        annot_df = pd.DataFrame.from_dict(sys_annot_dict, orient='index', columns=['Term_Description'])
+        annot_df.index.name = 'Term'
+        temp_annot_path = 'temp_obo_annotations.tsv'
+        annot_df.to_csv(temp_annot_path, sep='	')
+
+        instance = cls(ontology_df, dense_attention=dense_attention, sys_annot_file=temp_annot_path)
+        
+        import os
+        os.remove(temp_annot_path)
+        
+        return instance
+
+
+    def _get_annotated_name(self, term):
+        if self.sys_annot_dict and term in self.sys_annot_dict:
+            return f"'{term}' ({self.sys_annot_dict[term]})"
+        return f"'{term}'"
 
     def init_ontology(self, ontology_df, inplace=True, verbose=True):
         # If inplace is False, work on a deep copy of self.
@@ -289,18 +336,34 @@ class TreeParser(object):
             hash_to_terms[h].append(term)
 
         to_collapse_redundant = []
+        if verbose:
+            print("\n--- Checking for redundant systems (identical gene sets) ---")
         for h, terms in hash_to_terms.items():
             if len(terms) > 1:
                 # Keep one term, collapse the others.
                 # Sorting by name provides deterministic behavior.
                 terms.sort()
-                to_collapse_redundant.extend(terms[1:])
+                representative = terms[0]
+                redundant_terms = terms[1:]
+                to_collapse_redundant.extend(redundant_terms)
+                if verbose:
+                    rep_name = self._get_annotated_name(representative)
+                    for term in redundant_terms:
+                        term_name = self._get_annotated_name(term)
+                        print(f"  - Collapsing {term_name} because it is redundant with {rep_name}.")
 
         # 2. Find small systems (few genes in sys2gene_full)
-        to_collapse_small = [
-            term for term, genes in obj.sys2gene_full.items()
-            if len(genes) < min_term_size
-        ]
+        to_collapse_small = []
+        if verbose:
+            print(f"\n--- Checking for small systems (fewer than {min_term_size} genes) ---")
+        for term, genes in obj.sys2gene_full.items():
+            if len(genes) < min_term_size:
+                to_collapse_small.append(term)
+                if verbose:
+                    term_name = self._get_annotated_name(term)
+                    print(f"  - Collapsing {term_name} because it has only {len(genes)} genes.")
+        
+        to_collapse_small = list(set(to_collapse_small)) # Remove duplicates
 
         to_collapse = list(set(to_collapse_redundant + to_collapse_small))
 
@@ -322,6 +385,16 @@ class TreeParser(object):
                     for c in children:
                         if not collapsed_sys_graph.has_edge(p, c):
                             collapsed_sys_graph.add_edge(p, c)
+
+                # Re-assign genes of collapsed node to its parents
+                if node in obj.sys2gene:
+                    node_genes = obj.sys2gene[node]
+                    for p in parents:
+                        if p in obj.sys2gene:
+                            obj.sys2gene[p].extend(node_genes)
+                        else:
+                            obj.sys2gene[p] = node_genes
+
                 collapsed_sys_graph.remove_node(node)
 
         # Rebuild the ontology DataFrame from the collapsed graph
@@ -332,8 +405,9 @@ class TreeParser(object):
         # Add gene interactions, ensuring collapsed systems are excluded
         for sys, genes in obj.sys2gene.items():
             if sys in collapsed_sys_graph:
-                for gene in genes:
-                    interactions.append((sys, gene, 'gene'))
+                for gene in set(genes): # Use set to handle duplicates
+                    if gene in obj.gene2ind:
+                        interactions.append((sys, gene, 'gene'))
 
         collapsed_ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
 
@@ -440,7 +514,54 @@ class TreeParser(object):
         output_path : str
             Path to the output GMT file.
         """
-        self.ontology.to_csv(out_dir, sep='\t', index=False, header=None)
+        self.ontology.to_csv(out_dir, sep='	', index=False, header=None)
+
+    def save_annotations(self, out_path):
+        """
+        Save the current system annotations and renaming reasons to a file.
+        """
+        if not self.sys_annot_dict:
+            print("No annotations to save.")
+            return
+
+        annot_df = pd.DataFrame.from_dict(self.sys_annot_dict, orient='index', columns=['Term_Description'])
+        annot_df.index.name = 'Term'
+        
+        if self.sys_rename_info:
+            reason_df = pd.DataFrame.from_dict(self.sys_rename_info, orient='index', columns=['Rename_Reason'])
+            reason_df.index.name = 'Term'
+            annot_df = annot_df.join(reason_df)
+
+        annot_df.to_csv(out_path, sep='	')
+
+    def write_obo(self, out_path):
+        """
+        Write the current ontology to an OBO file.
+        """
+        with open(out_path, 'w') as f:
+            f.write("format-version: 1.2\n")
+            f.write("data-version: g2pt-generated\n")
+            f.write("\n")
+
+            for term in sorted(self.sys_graph.nodes()):
+                f.write("[Term]\n")
+                f.write(f"id: {term}\n")
+                
+                name = self.sys_annot_dict.get(term, term)
+                f.write(f"name: {name}\n")
+                
+                # Add comment with renaming reason if available
+                if term in self.sys_rename_info:
+                    reason = self.sys_rename_info[term].replace('\n', ' ').replace('"', "'")
+                    f.write(f'comment: "Renaming reason: {reason}"\n')
+
+                parents = sorted(self.sys_graph.predecessors(term))
+                for parent in parents:
+                    interaction = self.interaction_dict.get((parent, term), 'is_a')
+                    parent_name = self.sys_annot_dict.get(parent, parent)
+                    f.write(f"{interaction}: {parent} ! {parent_name}\n")
+                
+                f.write("\n")
 
     def write_gmt(self, out_dir):
         """
@@ -838,6 +959,378 @@ class TreeParser(object):
 
         return remapped_masks
 
+    def rename_systems_with_llm(self, target_phenotype, api_key, llm_provider='openai', model=None, inplace=False, verbose=True):
+        """
+        Rename systems using an LLM based on their gene sets and a target phenotype.
+        This method now asks the LLM for a functional interpretation and justification.
+        """
+        if llm_provider == 'openai':
+            try:
+                import openai
+                import json
+            except ImportError:
+                raise ImportError("The 'openai' library is required. Please install it with 'pip install openai'.")
+            openai.api_key = api_key
+            if model is None:
+                model = "gpt-3.5-turbo"
+        elif llm_provider == 'gemini':
+            try:
+                import google_genai as genai
+                import json
+            except ImportError:
+                raise ImportError("The 'google-genai' library is required. Please install it with 'pip install google-genai'.")
+            genai.configure(api_key=api_key)
+            if model is None:
+                model = "gemini-pro"
+        else:
+            raise ValueError("Invalid llm_provider. Choose 'openai' or 'gemini'.")
+
+        if not inplace:
+            obj = copy.deepcopy(self)
+        else:
+            obj = self
+        
+        if verbose:
+            print(f"Renaming {len(obj.sys2ind)} systems using the '{model}' model from {llm_provider}...")
+
+        for system in obj.sys2ind.keys():
+            genes = obj.sys2gene_full.get(system, [])
+            if not genes:
+                continue
+
+            gene_list_str = ", ".join(genes)
+            original_name = obj.sys_annot_dict.get(system, "unnamed system")
+
+            prompt = (
+                f"You are an expert biologist. Your task is to interpret a gene set from a system originally named '{original_name}' "
+                f"and provide a concise, functionally descriptive name, considering its relevance to the phenotype '{target_phenotype}'.\n\n"
+                f"Gene Set: {gene_list_str}\n\n"
+                f"Based on the functions of these genes, provide a new name for the system and a brief justification. "
+                f"The name should summarize the primary biological role. The reason should explain why the name is appropriate, linking gene function to the phenotype.\n\n"
+                f"Return your response as a single, valid JSON object with two keys: 'name' and 'reason'.\n"
+                f"Example format: {{\"name\": \"Example Name\", \"reason\": \"This is the reason.\"}}"
+            )
+
+            try:
+                response_text = ""
+                if llm_provider == 'openai':
+                    response = openai.ChatCompletion.create(
+                        model=model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.7,
+                        max_tokens=150,
+                    )
+                    response_text = response.choices[0].message['content'].strip()
+                elif llm_provider == 'gemini':
+                    gemini_model = genai.GenerativeModel(model)
+                    response = gemini_model.generate_content(prompt)
+                    response_text = response.text.strip()
+
+                # Use regex to find the JSON object within the response text
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if not json_match:
+                    if verbose:
+                        print(f"Could not find a JSON object in the response for system {system}.")
+                    continue
+
+                json_str = json_match.group(0)
+                response_data = json.loads(json_str)
+                new_name = response_data.get("name")
+                reason = response_data.get("reason")
+
+                if new_name and reason:
+                    obj.sys_annot_dict[system] = new_name
+                    obj.sys_rename_info[system] = reason
+                    if verbose:
+                        print(f"Renamed '{system}' to '{new_name}'")
+                else:
+                    if verbose:
+                        print(f"Could not parse name and reason for system {system} from LLM response.")
+
+            except (json.JSONDecodeError, KeyError) as e:
+                if verbose:
+                    print(f"Could not parse LLM response for system {system}: {e}")
+            except Exception as e:
+                print(f"Could not rename system {system} due to an API error: {e}")
+
+        if not inplace:
+            return obj
+
     @staticmethod
     def alias_indices(indices, source_ind2id_dict:dict, target_id2ind_dict: dict):
         return [target_id2ind_dict[source_ind2id_dict[ind]] for ind in indices]
+
+    def collapse_by_gene_similarity(self, similarity_threshold=0.7, to_keep=None, verbose=True, inplace=False):
+        """
+        Collapse terms based on gene set similarity (Jaccard index).
+
+        Parameters
+        ----------
+        similarity_threshold : float, optional
+            Similarity threshold to consider terms as redundant. Default is 0.7.
+        to_keep : list, optional
+            Systems to retain. Default is None.
+        verbose : bool, optional
+            Whether to print progress messages. Default is True.
+        inplace : bool, optional
+            Whether to modify the object in place. Default is False.
+        """
+        if not inplace:
+            obj = copy.deepcopy(self)
+        else:
+            obj = self
+
+        systems = list(obj.sys2ind.keys())
+        
+        if verbose:
+            print("Calculating pairwise gene similarity (Jaccard)...")
+
+        sim_df = pd.DataFrame(index=systems, columns=systems, dtype=float)
+        for term1, term2 in combinations(systems, 2):
+            genes1 = set(obj.sys2gene_full.get(term1, []))
+            genes2 = set(obj.sys2gene_full.get(term2, []))
+            
+            intersection_len = len(genes1.intersection(genes2))
+            union_len = len(genes1.union(genes2))
+            
+            if union_len == 0:
+                jaccard_sim = 0.0
+            else:
+                jaccard_sim = intersection_len / union_len
+            
+            sim_df.loc[term1, term2] = jaccard_sim
+            sim_df.loc[term2, term1] = jaccard_sim
+            
+        np.fill_diagonal(sim_df.values, 1.0)
+
+        if verbose:
+            print("Clustering terms based on gene similarity...")
+
+        # Convert similarity matrix to distance matrix
+        distance_matrix = 1 - sim_df.values
+        
+        # Use Agglomerative Clustering
+        clustering = AgglomerativeClustering(
+            n_clusters=None,
+            affinity='precomputed',
+            linkage='average',
+            distance_threshold=1 - similarity_threshold
+        )
+        
+        labels = clustering.fit_predict(distance_matrix)
+        
+        clusters = {}
+        for i, label in enumerate(labels):
+            if label not in clusters:
+                clusters[label] = []
+            clusters[label].append(systems[i])
+        
+        to_collapse = []
+        if verbose:
+            print(f"\n--- Clustering systems by gene similarity (Threshold: {similarity_threshold}) ---")
+        
+        for label, cluster_systems in clusters.items():
+            if len(cluster_systems) > 1:
+                # Sort by number of genes (desc) and then by name (asc) to pick representative
+                sorted_cluster = sorted(
+                    cluster_systems, 
+                    key=lambda t: (len(obj.sys2gene_full.get(t, [])), t),
+                    reverse=True
+                )
+                representative = sorted_cluster[0]
+                
+                if verbose:
+                    rep_name = self._get_annotated_name(representative)
+                    print(f"\nCluster {label} (Representative: {rep_name})")
+
+                for term in sorted_cluster:
+                    if term != representative:
+                        to_collapse.append(term)
+                        if verbose:
+                            similarity = sim_df.loc[representative, term]
+                            term_name = self._get_annotated_name(term)
+                            print(f"  - Collapsing {term_name} into {rep_name} (Jaccard Similarity: {similarity:.4f})")
+
+        if to_keep is not None:
+            to_collapse = [term for term in to_collapse if term not in to_keep]
+
+        if verbose:
+            print(f"Systems to collapse: {len(to_collapse)}")
+
+        collapsed_sys_graph = obj.sys_graph.copy()
+        for node in to_collapse:
+            if node in collapsed_sys_graph:
+                parents = list(collapsed_sys_graph.predecessors(node))
+                children = list(collapsed_sys_graph.successors(node))
+                for p in parents:
+                    for c in children:
+                        if not collapsed_sys_graph.has_edge(p, c):
+                            edge_data = obj.sys_graph.get_edge_data(p, node) or {}
+                            collapsed_sys_graph.add_edge(p, c, **edge_data)
+
+                if node in obj.sys2gene:
+                    node_genes = obj.sys2gene[node]
+                    for p in parents:
+                        if p in obj.sys2gene:
+                            obj.sys2gene[p].extend(node_genes)
+                        else:
+                            obj.sys2gene[p] = node_genes
+                
+                collapsed_sys_graph.remove_node(node)
+
+        interactions = []
+        for u, v, data in collapsed_sys_graph.edges(data=True):
+            interactions.append((u, v, data.get('interaction', 'default')))
+
+        for sys, genes in obj.sys2gene.items():
+            if sys in collapsed_sys_graph:
+                for gene in set(genes):
+                    if gene in obj.gene2ind:
+                        interactions.append((sys, gene, 'gene'))
+
+        collapsed_ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
+        obj.init_ontology(collapsed_ontology_df, inplace=True, verbose=verbose)
+
+        if not inplace:
+            return obj
+
+    def collapse_by_structural_similarity(self, similarity_threshold=0.7, to_keep=None, verbose=True, inplace=False):
+        """
+        Collapse terms based on structural similarity in the ontology graph.
+
+        Parameters
+        ----------
+        similarity_threshold : float, optional
+            Similarity threshold to consider terms as redundant. Default is 0.7.
+        to_keep : list, optional
+            Systems to retain. Default is None.
+        verbose : bool, optional
+            Whether to print progress messages. Default is True.
+        inplace : bool, optional
+            Whether to modify the object in place. Default is False.
+        """
+        if not inplace:
+            obj = copy.deepcopy(self)
+        else:
+            obj = self
+
+        systems = list(obj.sys2ind.keys())
+        
+        if verbose:
+            print("Calculating pairwise structural similarity...")
+
+        # Pre-compute ancestors for all nodes
+        ancestors = {node: nx.ancestors(obj.sys_graph, node) for node in systems}
+        
+        sim_df = pd.DataFrame(index=systems, columns=systems, dtype=float)
+        for term1, term2 in combinations(systems, 2):
+            common_ancestors = ancestors[term1].intersection(ancestors[term2])
+            if not common_ancestors:
+                sim_df.loc[term1, term2] = 0.0
+                sim_df.loc[term2, term1] = 0.0
+                continue
+
+            mica_height = max(obj.node_height_dict.get(ca, 0) for ca in common_ancestors)
+            
+            h1 = obj.node_height_dict.get(term1, 0)
+            h2 = obj.node_height_dict.get(term2, 0)
+
+            # Lin's similarity adapted for height
+            if h1 + h2 == 0:
+                sim = 0.0
+            else:
+                sim = (2 * mica_height) / (h1 + h2)
+
+            sim_df.loc[term1, term2] = sim
+            sim_df.loc[term2, term1] = sim
+        
+        np.fill_diagonal(sim_df.values, 1.0)
+
+        if verbose:
+            print("Clustering terms based on similarity...")
+
+        clusters = []
+        visited = set()
+        for term1 in systems:
+            if term1 in visited:
+                continue
+            
+            similar_terms = set(sim_df.index[sim_df[term1] > similarity_threshold])
+            new_cluster = similar_terms
+            
+            merged_into_existing = False
+            for i, existing_cluster in enumerate(clusters):
+                if not existing_cluster.isdisjoint(new_cluster):
+                    clusters[i] = existing_cluster.union(new_cluster)
+                    merged_into_existing = True
+                    break
+            
+            if not merged_into_existing:
+                clusters.append(new_cluster)
+            
+            visited.update(new_cluster)
+
+        to_collapse = []
+        if verbose:
+            print(f"\n--- Clustering systems by structural similarity (Threshold: {similarity_threshold}) ---")
+
+        for i, cluster in enumerate(clusters):
+            if len(cluster) > 1:
+                # Sort by height (desc) and then by name (asc) to pick representative
+                sorted_cluster = sorted(list(cluster), key=lambda t: (obj.node_height_dict.get(t, 0), t), reverse=True)
+                representative = sorted_cluster[0]
+                
+                if verbose:
+                    rep_name = self._get_annotated_name(representative)
+                    print(f"\nCluster {i} (Representative: {rep_name})")
+
+                for term in sorted_cluster:
+                    if term != representative:
+                        to_collapse.append(term)
+                        if verbose:
+                            similarity = sim_df.loc[representative, term]
+                            term_name = self._get_annotated_name(term)
+                            print(f"  - Collapsing {term_name} into {rep_name} (Structural Similarity: {similarity:.4f})")
+
+        if to_keep is not None:
+            to_collapse = [term for term in to_collapse if term not in to_keep]
+
+        if verbose:
+            print(f"Systems to collapse: {len(to_collapse)}")
+
+        collapsed_sys_graph = obj.sys_graph.copy()
+        for node in to_collapse:
+            if node in collapsed_sys_graph:
+                parents = list(collapsed_sys_graph.predecessors(node))
+                children = list(collapsed_sys_graph.successors(node))
+                for p in parents:
+                    for c in children:
+                        if not collapsed_sys_graph.has_edge(p, c):
+                            edge_data = obj.sys_graph.get_edge_data(p, node) or {}
+                            collapsed_sys_graph.add_edge(p, c, **edge_data)
+
+                if node in obj.sys2gene:
+                    node_genes = obj.sys2gene[node]
+                    for p in parents:
+                        if p in obj.sys2gene:
+                            obj.sys2gene[p].extend(node_genes)
+                        else:
+                            obj.sys2gene[p] = node_genes
+                
+                collapsed_sys_graph.remove_node(node)
+
+        interactions = []
+        for u, v, data in collapsed_sys_graph.edges(data=True):
+            interactions.append((u, v, data.get('interaction', 'default')))
+
+        for sys, genes in obj.sys2gene.items():
+            if sys in collapsed_sys_graph:
+                for gene in set(genes):
+                    if gene in obj.gene2ind:
+                        interactions.append((sys, gene, 'gene'))
+
+        collapsed_ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
+        obj.init_ontology(collapsed_ontology_df, inplace=True, verbose=verbose)
+
+        if not inplace:
+            return obj
