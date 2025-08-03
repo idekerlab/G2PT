@@ -12,11 +12,39 @@
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
-# import os
-# import sys
-# sys.path.insert(0, os.path.abspath('.'))
 import os
 import sys
+import shutil
+
+# -- Copy Markdown files to source directory -------------------------------------
+
+def copy_markdown_files(app):
+    """
+    Copies README.md files from the src directory to the docs/source directory,
+    renaming them for clarity in the toctree.
+    """
+    source_files = {
+        "../src/utils/tree/README.md": "tree_parser.md",
+        "../src/utils/analysis/README.md": "epistasis_analysis.md",
+        "../src/utils/visualization/README.md": "sankey_visualization.md",
+    }
+    docs_source_dir = os.path.join(app.srcdir, "source")
+    os.makedirs(docs_source_dir, exist_ok=True)
+
+    for src, dst_name in source_files.items():
+        src_path = os.path.join(app.srcdir, src)
+        dst_path = os.path.join(docs_source_dir, dst_name)
+        try:
+            shutil.copy(src_path, dst_path)
+        except FileNotFoundError:
+            print(f"Warning: Could not find {src_path} to copy.")
+
+def setup(app):
+    """Register the 'builder-inited' event to copy files."""
+    app.connect("builder-inited", copy_markdown_files)
+
+# -- Path setup --------------------------------------------------------------
+
 sys.path.insert(0, os.path.abspath('../src'))
 
 # -- Project information -----------------------------------------------------
