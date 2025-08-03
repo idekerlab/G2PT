@@ -54,6 +54,10 @@ templates_path = ['_templates']
 # This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
+# The root toctree document.
+root_doc = 'index'
+
+
 
 # -- Options for HTML output -------------------------------------------------
 
@@ -108,7 +112,7 @@ latex_elements = {
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
-    (master_doc, 'G2PT.tex', 'G2PT Documentation',
+    (root_doc, 'G2PT.tex', 'G2PT Documentation',
      'i5lee', 'manual'),
 ]
 
@@ -118,7 +122,7 @@ latex_documents = [
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
 man_pages = [
-    (master_doc, 'g2pt', 'G2PT Documentation',
+    (root_doc, 'g2pt', 'G2PT Documentation',
      [author], 1)
 ]
 
@@ -129,7 +133,7 @@ man_pages = [
 # (source start file, target name, title, author,
 #  dir menu entry, description, category)
 texinfo_documents = [
-    (master_doc, 'G2PT', 'G2PT Documentation',
+    (root_doc, 'G2PT', 'G2PT Documentation',
      author, 'G2PT', 'One line description of project.',
      'Miscellaneous'),
 ]
