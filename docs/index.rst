@@ -10,9 +10,9 @@ Welcome to G2PT's documentation!
    :maxdepth: 2
    :caption: Contents:
 
-   ../src/utils/tree/README.md
-   ../src/utils/analysis/README.md
-   ../src/utils/visualization/README.md
+   Tree Parser <../src/utils/tree/README.md>
+   Epistasis Analysis <../src/utils/analysis/README.md>
+   Sankey Visualization <../src/utils/visualization/README.md>
 
 
 Indices and tables
