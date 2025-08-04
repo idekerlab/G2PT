@@ -27,11 +27,12 @@ from src.utils.tree import SNPTreeParser
 class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
 
     def __init__(self, snp2p_model, tree_parser, snp2p_dataloader, device, args, target_phenotype,
-                 validation_dataloader=None, fix_system=False, pretrained_checkpoint=None):
+                 validation_dataloader=None, fix_system=False, pretrained_checkpoint=None, use_mlflow=False):
         super(GreedyMultiplePhenotypeTrainer, self).__init__(snp2p_model, tree_parser, snp2p_dataloader,
                                                              device, args, target_phenotype=target_phenotype,
                                                              fix_system=fix_system,
-                                                             validation_dataloader=validation_dataloader)
+                                                             validation_dataloader=validation_dataloader,
+                                                             use_mlflow=use_mlflow)
 
         self.target_phenotype = target_phenotype
         self.improvement_threshold = 0.0001
@@ -255,7 +256,8 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
 
             # Just evaluate the pretrained model
             if self.args.rank == 0:
-                mlflow.start_run(nested=True, run_name=f"Pretrained_Evaluation_{self.target_phenotype}")
+                if self.use_mlflow:
+                    mlflow.start_run(nested=True, run_name=f"Pretrained_Evaluation_{self.target_phenotype}")
 
             model2train = self.snp2p_model
 
@@ -277,20 +279,23 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
 
                 if self.args.rank == 0:
                     print(f"Pretrained model performance: {initial_performance:.4f}")
-                    mlflow.log_metric("pretrained_performance", initial_performance)
+                    if self.use_mlflow:
+                        mlflow.log_metric("pretrained_performance", initial_performance)
             else:
                 initial_performance = 0.0
                 self.logger.warning("No validation dataloader provided - cannot evaluate pretrained model")
 
             if self.args.rank == 0:
-                mlflow.end_run()
+                if self.use_mlflow:
+                    mlflow.end_run()
 
         else:
             # Train initial model with target phenotype only (original behavior)
             self.logger.info(f"Training baseline model with {self.target_phenotype} only...")
 
             if self.args.rank == 0:
-                mlflow.start_run(nested=True, run_name=f"Baseline_Training_{self.target_phenotype}")
+                if self.use_mlflow:
+                    mlflow.start_run(nested=True, run_name=f"Baseline_Training_{self.target_phenotype}")
             if self.args.distributed:
                 dist.barrier()
 
@@ -393,7 +398,8 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                     f"Initial training finished. Best performance: {initial_performance:.4f} at epoch {best_epoch_tracked}")
 
             if self.args.rank == 0:
-                mlflow.end_run()
+                if self.use_mlflow:
+                    mlflow.end_run()
 
         # Save initial model
         self.save_model(model2train, phenotype_set, epoch='best')
@@ -537,7 +543,8 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
             self.logger.info(f"  Full training for {phenotype}...")
 
             if self.args.rank == 0:
-                mlflow.start_run(nested=True, run_name=f"Candidate_Training_{'/'.join(temporal_phenotype_set)}")
+                if self.use_mlflow:
+                    mlflow.start_run(nested=True, run_name=f"Candidate_Training_{'/'.join(temporal_phenotype_set)}")
 
             # Create a copy of the model for this candidate
             candidate_model = copy.deepcopy(model)
@@ -638,7 +645,8 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                 self.logger.info(f"    Skipping transformer phase for {phenotype} (insufficient improvement)")
 
             if self.args.rank == 0:
-                mlflow.end_run()
+                if self.use_mlflow:
+                    mlflow.end_run()
 
             # Clean up candidate model if it's not the best
             if candidate_model is not current_best_model:
@@ -682,7 +690,8 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
         performance = self.evaluate(model2train, val_snp2p_dataloader, epoch, phenotypes=phenotypes, name=f"Validation with phenotypes, {','.join(phenotypes) }, {str(train)}")
 
         if self.args.rank == 0:
-            mlflow.log_metric("train_loss_epoch", avg_loss, step=epoch)
+            if self.use_mlflow:
+                mlflow.log_metric("train_loss_epoch", avg_loss, step=epoch)
 
         # All-reduce performance across all ranks
         if self.args.distributed:
@@ -722,10 +731,12 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                     torch.save({"arguments": self.args,
                                 "state_dict": model.module.state_dict()},
                                output_path)
-                    mlflow.log_artifact(output_path)
+                    if self.use_mlflow:
+                        mlflow.log_artifact(output_path)
             else:
                 print("Save to...", output_path)
                 torch.save(
                     {"arguments": self.args, "state_dict": model.state_dict()},
                     output_path)
-                mlflow.log_artifact(output_path)
+                if self.use_mlflow:
+                    mlflow.log_artifact(output_path)

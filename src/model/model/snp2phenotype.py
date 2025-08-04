@@ -11,7 +11,53 @@ from src.model.LD_infuser.LDRoBERTa import RoBERTa, TransformerLayer, RoBERTaCon
 import torch.utils.checkpoint as cp
 
 class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
+    """
+    A hierarchical transformer model to predict phenotypes from genotypes, guided by a biological ontology.
 
+    This model translates SNP-level genetic information up through a biological hierarchy
+    (SNPs -> Genes -> Biological Systems) to predict one or more phenotypes. It uses a series
+    of transformer-based modules to propagate information and learn context-aware embeddings
+    at each level of the hierarchy.
+
+    The core workflow is as follows:
+    1.  **Embedding:** SNPs, genes, systems, and phenotypes are embedded into a high-dimensional space.
+    2.  **Propagation:** Information flows up the hierarchy. SNP effects are propagated to genes,
+        gene effects are propagated to systems, and system-system interactions are resolved.
+    3.  **Prediction:** The final embeddings for genes and/or systems are used to predict the
+        phenotype, modulated by covariate information.
+
+    Args:
+        tree_parser (SNPTreeParser): An object that provides the hierarchical structure
+            (SNP-gene-system mappings) and corresponding masks for the model.
+        hidden_dims (int): The dimensionality of the embeddings and hidden layers.
+        snp2pheno (bool, optional): Unused parameter for future extension. Defaults to False.
+        gene2pheno (bool, optional): If True, use the final gene embeddings for phenotype prediction.
+            Defaults to True.
+        sys2pheno (bool, optional): If True, use the final system embeddings for phenotype prediction.
+            Defaults to True.
+        interaction_types (list, optional): The types of interactions to use for system-to-system
+            propagation. Defaults to ['default'].
+        n_covariates (int, optional): The number of covariate features to include in the model.
+            Defaults to 13.
+        n_phenotypes (int, optional): The number of distinct phenotypes the model can predict.
+            Defaults to 1.
+        dropout (float, optional): The dropout rate for regularization. Defaults to 0.2.
+        activation (str, optional): The activation function for attention mechanisms.
+            Defaults to 'softmax'.
+        input_format (str, optional): The format of the genotype input ('indices' or 'block').
+            Defaults to 'indices'.
+        poincare (bool, optional): Unused parameter for future extension. Defaults to False.
+        cov_effect (str, optional): Specifies how covariates affect the model ('pre', 'post',
+            'direct', or 'both'). Defaults to 'pre'.
+        pretrained_transformer (dict, optional): A dictionary of pretrained transformer models
+            for block-based input. Defaults to None.
+        freeze_pretrained (bool, optional): Unused parameter. Defaults to True.
+        phenotypes (tuple, optional): Unused parameter. Defaults to ('PHENOTYPE',).
+        use_hierarchical_transformer (bool, optional): If True, uses a hierarchical transformer
+            for the final prediction heads. Defaults to False.
+    """
+
+    # --- Initialization ---
     def __init__(self, tree_parser, hidden_dims, snp2pheno=False, gene2pheno=True, sys2pheno=True,
                  interaction_types=['default'], n_covariates=13, n_phenotypes=1, dropout=0.2,
                  activation='softmax', input_format='indices', poincare=False, cov_effect='pre',
@@ -19,6 +65,8 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                  phenotypes=('PHENOTYPE'), use_hierarchical_transformer=False):
         super(SNP2PhenotypeModel, self).__init__(tree_parser, hidden_dims, interaction_types=interaction_types, dropout=dropout,
                                                  input_format=input_format, poincare=poincare)
+        self.use_gene2pheno = gene2pheno
+        self.use_sys2pheno = sys2pheno
         self.n_snps = self.tree_parser.n_snps
         self.by_chr = self.tree_parser.by_chr
         self.gene_padding_ind = self.n_genes
@@ -121,20 +169,30 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.n_phenotypes = n_phenotypes
         self.phenotype_embeddings = nn.Embedding(self.n_phenotypes, hidden_dims)
 
-        self.geno2pheno_norm = nn.LayerNorm(hidden_dims)
-        self.geno2pheno_update_norm_inner = nn.LayerNorm(hidden_dims)
-        self.geno2pheno_update_norm_outer = nn.LayerNorm(hidden_dims)
-        self.geno2pheno = Genotype2Phenotype(hidden_dims, 4, hidden_dims,
-                                            inner_norm=self.geno2pheno_update_norm_inner,
-                                            outer_norm=self.geno2pheno_update_norm_outer, dropout=0.0,
+        self.gene2pheno_norm = nn.LayerNorm(hidden_dims)
+        self.gene2pheno_update_norm_inner = nn.LayerNorm(hidden_dims)
+        self.gene2pheno_update_norm_outer = nn.LayerNorm(hidden_dims)
+        self.gene2pheno = Genotype2Phenotype(hidden_dims, 4, hidden_dims,
+                                             inner_norm=self.gene2pheno_update_norm_inner,
+                                             outer_norm=self.gene2pheno_update_norm_outer, dropout=0.0,
+                                             transform=True, activation='softmax', poincare=poincare,
+                                             use_hierarchical_transformer=use_hierarchical_transformer)
+
+        self.sys2pheno_norm = nn.LayerNorm(hidden_dims)
+        self.sys2pheno_update_norm_inner = nn.LayerNorm(hidden_dims)
+        self.sys2pheno_update_norm_outer = nn.LayerNorm(hidden_dims)
+        self.sys2pheno = Genotype2Phenotype(hidden_dims, 4, hidden_dims,
+                                            inner_norm=self.sys2pheno_update_norm_inner,
+                                            outer_norm=self.sys2pheno_update_norm_outer, dropout=0.0,
                                             transform=True, activation='softmax', poincare=poincare,
-                                             use_hierarchical_transformer=use_hierarchical_transformer)  # 'softmax')
+                                            use_hierarchical_transformer=use_hierarchical_transformer)
 
         self.last_activation = nn.Tanh()
         self.n_geno2pheno = sum([sys2pheno, gene2pheno])
         self.cov_effect = cov_effect
         print("Cov effect: ", self.cov_effect)
         print("Input format: ", self.input_format)
+        print("The number of geno2pheno: ", self.n_geno2pheno)
         self.predictor = MoEHeadPrediction(hidden_dims * self.n_geno2pheno, k_experts=8, top_k=2)
         self.system_value_scale = nn.Parameter(torch.ones(self.n_systems + 1))
         self.gene_value_scale = nn.Parameter(torch.ones(self.n_genes + 1))
@@ -142,61 +200,58 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.block_sampling_prob = 0.1
 
 
-
+    # --- Core Forward Pass ---
     def forward(self, genotype_dict, covariates, phenotype_ids, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward,
                 snp2gene_mask, gene2sys_mask, sys2gene_mask, sys_temp=None, sys2env=True, env2sys=True, sys2gene=True, score=False, attention=False, snp_only=False,
                 predict_snp=False, chunk=False):
 
-        #for i in range(2):
+        # 1. Propagate effects up the hierarchy from SNPs to Systems
         if not chunk:
             gene_embedding, system_embedding = self.propagate(genotype_dict, covariates, snp2gene_mask, gene2sys_mask, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, sys2gene_mask)
         else:
-            ## chunk-wise propagation
-            gene_embedding, system_embedding = self.chunk_wise_propagate_v2(genotype_dict, covariates, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward)
+            gene_embedding, system_embedding = self.chunk_wise_propagate(genotype_dict, covariates, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward)
 
-
+        # 2. Get phenotype-specific embeddings
         phenotype_embedding = self.phenotype_embeddings(phenotype_ids)
+
+        # 3. Predict phenotype from final embeddings
         prediction = self.prediction(phenotype_embedding, system_embedding, gene_embedding,
                                      genotype_dict, chunk,
-                                     sys_temp=sys_temp, covariates=covariates    )#genotype_dict['embedding'])
+                                     sys_temp=sys_temp, covariates=covariates)
 
-
-        #if predict_snp:
-        #    return prediction, snp_prediction
-        if attention:
-            if score:
-                system_embedding_value = system_embedding * self.system_value_scale[genotype_dict['sys']].unsqueeze(-1) if not chunk else system_embedding * self.system_value_scale.view(1, -1, 1)
-                gene_embedding_value = gene_embedding * self.gene_value_scale[genotype_dict['gene']].unsqueeze(-1) if not chunk else gene_embedding * self.gene_value_scale.view(1, -1, 1)
-
-                system_embedding, system_attention, system_score = self.get_geno2pheno(phenotype_embedding,
-                                                                                      system_embedding, system_embedding_value, mask=sys_temp, attention=True,
-                                                                                      score=True)
-                gene_embedding, gene_attention, gene_score = self.get_geno2pheno(phenotype_embedding,
-                                                                                      gene_embedding, gene_embedding_value, attention=True,
-                                                                                      score=True)
-                return prediction, system_attention, gene_attention, system_score, gene_score
-            else:
-                system_embedding_value = system_embedding * self.system_value_scale[genotype_dict['sys']].unsqueeze(-1) if not chunk else system_embedding * self.system_value_scale.view(1, -1, 1)
-                gene_embedding_value = gene_embedding * self.gene_value_scale[genotype_dict['gene']].unsqueeze(-1) if not chunk else gene_embedding * self.gene_value_scale.view(1, -1, 1)
-                system_embedding, system_attention = self.get_geno2pheno(phenotype_embedding, system_embedding, system_embedding_value, mask=sys_temp,
-                                                                        attention=True, score=False)
-                gene_embedding, gene_attention = self.get_geno2pheno(phenotype_embedding, gene_embedding, gene_embedding_value, attention=True,
-                                                                     score=False)
-                return prediction, system_attention, gene_attention
+        # 4. Optionally, return attention scores for interpretability
+        if attention or score:
+            return self._get_attention_and_scores(
+                prediction, phenotype_embedding, system_embedding, gene_embedding,
+                genotype_dict, chunk, sys_temp, attention, score
+            )
         else:
-            if score:
-                system_embedding_value = system_embedding * self.system_value_scale[genotype_dict['sys']].unsqueeze(-1) if not chunk else system_embedding * self.system_value_scale.view(1, -1, 1)
-                gene_embedding_value = gene_embedding * self.gene_value_scale[genotype_dict['gene']].unsqueeze(-1) if not chunk else gene_embedding * self.gene_value_scale.view(1, -1, 1)
-                system_embedding, system_score = self.get_geno2pheno(phenotype_embedding, system_embedding, system_embedding_value, mask=sys_temp,
-                                                                        attention=False, score=True)
-                gene_embedding, gene_score = self.get_geno2pheno(phenotype_embedding, gene_embedding, gene_embedding_value, attention=False,
-                                                                     score=True)
-                return prediction, system_score, gene_score
-            else:
-                return prediction
+            return prediction
 
+    def _get_attention_and_scores(self, prediction, phenotype_embedding, system_embedding, gene_embedding,
+                                  genotype_dict, chunk, sys_temp, attention, score):
+        """Helper to compute and return attention and/or scores."""
+        system_embedding_value = system_embedding * self.system_value_scale[genotype_dict['sys']].unsqueeze(-1) if not chunk else system_embedding * self.system_value_scale.view(1, -1, 1)
+        gene_embedding_value = gene_embedding * self.gene_value_scale[genotype_dict['gene']].unsqueeze(-1) if not chunk else gene_embedding * self.gene_value_scale.view(1, -1, 1)
 
+        system_outputs = self.get_sys2pheno(phenotype_embedding, system_embedding, system_embedding_value, mask=sys_temp, attention=attention, score=score)
+        gene_outputs = self.get_gene2pheno(phenotype_embedding, gene_embedding, gene_embedding_value, attention=attention, score=score)
 
+        if attention and score:
+            _, system_attention, system_score = system_outputs
+            _, gene_attention, gene_score = gene_outputs
+            return prediction, system_attention, gene_attention, system_score, gene_score
+        elif attention:
+            _, system_attention = system_outputs
+            _, gene_attention = gene_outputs
+            return prediction, system_attention, gene_attention
+        elif score:
+            _, system_score = system_outputs
+            _, gene_score = gene_outputs
+            return prediction, system_score, gene_score
+        return prediction # Should not be reached
+
+    # --- Propagation Mechanisms ---
     def propagate(self, genotype_dict, covariates, snp2gene_mask, gene2sys_mask, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, sys2gene_mask):
         #print("progation start")
         gene_embedding = self.gene_embedding(genotype_dict['gene'])
@@ -235,7 +290,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         #print('propagation ended')
         return gene_embedding, system_embedding
 
-    def chunk_wise_propagate_v2(self, genotype_dict, covariates,
+    def chunk_wise_propagate(self, genotype_dict, covariates,
                                 masks_fwd, masks_bwd):
 
         B, H = covariates.size(0), self.hidden_dims
@@ -302,51 +357,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
         return gene_embedding, system_embedding
 
-    def chunk_wise_propagate(self, genotype_dict, covariates, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward):
-        batch_size = covariates.size(0)
-        gene_embedding_results = torch.zeros_like(self.gene_embedding.weight)
-        gene_embedding_results = gene_embedding_results.unsqueeze(0).expand(batch_size, -1, -1)
-
-        sys_embedding_results = torch.zeros_like(self.system_embedding.weight)#.unsqueeze(0).expand(batch_size, -1, -1)
-        sys_embedding_results = sys_embedding_results.unsqueeze(0).expand(batch_size, -1, -1)
-
-        for chunk_dict in genotype_dict:
-            snp_embedding, snp_prediction = self.get_snp_embedding(chunk_dict)
-            gene_embedding = self.gene_embedding(chunk_dict['gene'])
-            if (self.cov_effect == 'pre') or (self.cov_effect == 'both'):
-                cov_effect_on_gene = self.get_cov2gene(gene_embedding, covariates)
-                gene_embedding = cov_effect_on_gene
-            snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, chunk_dict['snp2gene_mask'])
-            gene_embedding = gene_embedding + self.effect_norm(snp_effect_on_gene)
-            B, N, H = gene_embedding.size()
-            idx_exp = chunk_dict['gene'].view(B, N, 1).expand(B, N, H)
-            gene_embedding_results = gene_embedding_results.scatter_add(dim=1, index=idx_exp, src=gene_embedding)
-
-            system_embedding = self.system_embedding(chunk_dict['sys'])
-            gene_effect_on_system = self.get_gene2sys(system_embedding, gene_embedding, chunk_dict['gene2sys_mask'])
-            system_embedding = system_embedding + self.effect_norm(gene_effect_on_system)
-            B, N, H = system_embedding.size()
-            idx_exp = chunk_dict['sys'].view(B, N, 1).expand(B, N, H)
-            sys_embedding_results = sys_embedding_results.scatter_add(dim=1, index=idx_exp, src=system_embedding)
-
-        sys_embedding_results = self.get_sys2sys(sys_embedding_results, nested_hierarchical_masks_forward, direction='forward')
-        sys_embedding_results = self.get_sys2sys(sys_embedding_results, nested_hierarchical_masks_backward, direction='backward')
-
-        H = self.hidden_dims
-        for chunk_dict in genotype_dict:
-            gene_idx = chunk_dict['gene']
-            B, N = gene_idx.size()
-            gene_idx_exp = gene_idx.unsqueeze(-1).expand(B, N, H)
-            sys_idx = chunk_dict['sys']
-            B, N = sys_idx.size()
-            sys_idx_exp = sys_idx.unsqueeze(-1).expand(B, N, H)
-            gene_embedding = gene_embedding_results.gather(dim=1, index=gene_idx_exp)
-            system_embedding = sys_embedding_results.gather(dim=1, index=sys_idx_exp)
-            system_effect_on_gene = self.get_sys2gene(gene_embedding, system_embedding, chunk_dict['gene2sys_mask'].T)
-            gene_embedding_results = gene_embedding_results.scatter_add(dim=1, index=gene_idx_exp, src=system_effect_on_gene)
-
-        return gene_embedding_results, sys_embedding_results
-
+    # --- Embedding Layers ---
     def get_snp_embedding(self, genotype_dict):
 
         snp_embedding = self.snp_embedding(genotype_dict['snp'])
@@ -424,28 +435,34 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         covariates_vector = self.dropout(covariates_vector.unsqueeze(1))
         return covariates_vector
 
+    # --- Attention & Prediction Heads ---
     def prediction(self, phenotype_vector, system_embedding, gene_embedding, genotype_dict, chunk, sys_temp=None, covariates=None):
         if chunk:
             # Embeddings are for all systems/genes
-            system_embedding_value = system_embedding * self.system_value_scale.view(1, -1, 1)
-            gene_embedding_value = gene_embedding * self.gene_value_scale.view(1, -1, 1)
+            system_embedding_value = system_embedding #* self.system_value_scale.view(1, -1, 1)
+            gene_embedding_value = gene_embedding #* self.gene_value_scale.view(1, -1, 1)
         else:
             # Embeddings are for batch-specific systems/genes, need to gather scales
             system_scales = self.system_value_scale[genotype_dict['sys']]
-            system_embedding_value = system_embedding * system_scales.unsqueeze(-1)
+            system_embedding_value = system_embedding #* system_scales.unsqueeze(-1)
 
             gene_scales = self.gene_value_scale[genotype_dict['gene']]
-            gene_embedding_value = gene_embedding * gene_scales.unsqueeze(-1)
+            gene_embedding_value = gene_embedding #* gene_scales.unsqueeze(-1)
 
+        phenotype_features = []
+        if self.use_sys2pheno:
+            phenotype_weighted_by_systems = self.get_sys2pheno(phenotype_vector, system_embedding, system_embedding_value, mask=sys_temp)
+            if self.cov_effect == 'direct':
+                phenotype_weighted_by_systems = self.cov2pheno(phenotype_weighted_by_systems, covariates)
+            phenotype_features.append(phenotype_weighted_by_systems)
 
-        phenotype_weighted_by_systems = self.get_geno2pheno(phenotype_vector, system_embedding, system_embedding_value, mask=sys_temp)
-        phenotype_weighted_by_genes = self.get_geno2pheno(phenotype_vector, gene_embedding, gene_embedding_value, mask=None)
+        if self.use_gene2pheno:
+            phenotype_weighted_by_genes = self.get_gene2pheno(phenotype_vector, gene_embedding, gene_embedding_value, mask=None)
+            if self.cov_effect == 'direct':
+                phenotype_weighted_by_genes = self.cov2pheno(phenotype_weighted_by_genes, covariates)
+            phenotype_features.append(phenotype_weighted_by_genes)
 
-        if self.cov_effect == 'direct':
-            phenotype_weighted_by_systems = self.cov2pheno(phenotype_weighted_by_systems, covariates)
-            phenotype_weighted_by_genes = self.cov2pheno(phenotype_weighted_by_genes, covariates)
-
-        phenotype_feature = torch.cat([phenotype_weighted_by_systems, phenotype_weighted_by_genes], dim=-1)
+        phenotype_feature = torch.cat(phenotype_features, dim=-1)
 
         phenotype_prediction = self.predictor(phenotype_feature)
         #print(phenotype_feature.size())
@@ -457,32 +474,53 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         phenotype_prediction = self.predictor(phenotype_feature)
         return phenotype_prediction
 
-    def get_geno2pheno(self, phenotype_embedding, genotype_embedding_key, genotype_embedding_value, mask=None, attention=False, score=False):
-        genotype_embedding_key_input = self.dropout(self.geno2pheno_norm(genotype_embedding_key))
-        genotype_embedding_value_input = self.dropout(self.geno2pheno_norm(genotype_embedding_value))
+    def get_gene2pheno(self, phenotype_embedding, genotype_embedding_key, genotype_embedding_value, mask=None, attention=False, score=False):
+        genotype_embedding_key_input = self.dropout(self.gene2pheno_norm(genotype_embedding_key))
+        genotype_embedding_value_input = self.dropout(self.gene2pheno_norm(genotype_embedding_value))
         if mask is not None and self.training:
             mask = (1-self.dropout.p) * mask
-        sys2phenotype_result = self.geno2pheno.forward(self.dropout(phenotype_embedding), genotype_embedding_key_input, genotype_embedding_value_input,
+        sys2phenotype_result = self.gene2pheno.forward(self.dropout(phenotype_embedding), genotype_embedding_key_input, genotype_embedding_value_input,
                                                       mask=mask)
         if attention:
-            sys2phenotype_attention = self.geno2pheno.get_attention(phenotype_embedding, genotype_embedding_key_input,
+            sys2phenotype_attention = self.gene2pheno.get_attention(phenotype_embedding, genotype_embedding_key_input,
                                                                    genotype_embedding_value_input)
             sys2phenotype_result = [sys2phenotype_result, sys2phenotype_attention]
             if score:
-                sys2phenotype_score = self.geno2pheno.get_score(phenotype_embedding, genotype_embedding_key_input,
+                sys2phenotype_score = self.gene2pheno.get_score(phenotype_embedding, genotype_embedding_key_input,
                                                                genotype_embedding_value_input)
                 sys2phenotype_result += [sys2phenotype_score]
             return sys2phenotype_result
         else:
             if score:
-                sys2phenotype_score = self.geno2pheno.get_score(phenotype_embedding, genotype_embedding_key_input,
+                sys2phenotype_score = self.gene2pheno.get_score(phenotype_embedding, genotype_embedding_key_input,
                                                                genotype_embedding_value_input)
                 sys2phenotype_result = [sys2phenotype_result, sys2phenotype_score]
             return sys2phenotype_result
 
+    def get_sys2pheno(self, phenotype_embedding, genotype_embedding_key, genotype_embedding_value, mask=None, attention=False, score=False):
+        genotype_embedding_key_input = self.dropout(self.sys2pheno_norm(genotype_embedding_key))
+        genotype_embedding_value_input = self.dropout(self.sys2pheno_norm(genotype_embedding_value))
+        if mask is not None and self.training:
+            mask = (1-self.dropout.p) * mask
+        sys2phenotype_result = self.sys2pheno.forward(self.dropout(phenotype_embedding), genotype_embedding_key_input, genotype_embedding_value_input,
+                                                      mask=mask)
+        if attention:
+            sys2phenotype_attention = self.sys2pheno.get_attention(phenotype_embedding, genotype_embedding_key_input,
+                                                                   genotype_embedding_value_input)
+            sys2phenotype_result = [sys2phenotype_result, sys2phenotype_attention]
+            if score:
+                sys2phenotype_score = self.sys2pheno.get_score(phenotype_embedding, genotype_embedding_key_input,
+                                                               genotype_embedding_value_input)
+                sys2phenotype_result += [sys2phenotype_score]
+            return sys2phenotype_result
+        else:
+            if score:
+                sys2phenotype_score = self.sys2pheno.get_score(phenotype_embedding, genotype_embedding_key_input,
+                                                               genotype_embedding_value_input)
+                sys2phenotype_result = [sys2phenotype_result, sys2phenotype_score]
+            return sys2phenotype_result
 
-
-
+    # --- Covariate Effects ---
     def get_cov2snp(self, snp_embedding, cov_embedding):
         snp_embedding = self.dropout(self.snp_norm(snp_embedding))
         cov_effect_on_snp = self.cov2snp(snp_embedding, cov_embedding)#, None)
@@ -498,6 +536,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         cov_effect_on_sys = self.cov2gene(sys_embedding, cov_embedding)
         return cov_effect_on_sys
 
+    # --- Utility Methods ---
     def set_temperature(self, temperature):
         #self.gene2pheno.set_temperature(temperature)
         #self.sys2pheno.set_temperature(temperature)
