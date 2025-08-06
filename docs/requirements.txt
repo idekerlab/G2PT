@@ -2,3 +2,7 @@
 sphinx
 sphinx-rtd-theme
 myst-parser
+obonet
+
+# Project dependencies
+-e ..
