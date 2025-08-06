@@ -16,9 +16,6 @@ import os
 import sys
 import shutil
 
-# -- Mock imports ------------------------------------------------------------
-autodoc_mock_imports = ["torch", "pandas", "numpy", "scipy", "sklearn", "statsmodels", "networkx", "matplotlib", "seaborn", "tqdm", "mlflow", "dvc", "obonet"]
-
 # -- Copy Markdown files to source directory -------------------------------------
 
 def copy_markdown_files(app):
@@ -46,10 +43,6 @@ def copy_markdown_files(app):
 def setup(app):
     """Register the 'builder-inited' event to copy files."""
     app.connect("builder-inited", copy_markdown_files)
-
-# -- Path setup --------------------------------------------------------------
-
-sys.path.insert(0, os.path.abspath('../src'))
 
 # -- Project information -----------------------------------------------------
 
