@@ -5,4 +5,15 @@ myst-parser
 obonet
 
 # Project dependencies
--e ..
+numpy
+pandas
+torch
+scikit-learn
+scipy
+statsmodels
+networkx
+matplotlib
+seaborn
+tqdm
+mlflow
+dvc
