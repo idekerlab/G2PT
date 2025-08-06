@@ -63,8 +63,18 @@ class SNPTreeParser(TreeParser):
         else:
             parser.snp2gene_df = snp2gene.copy()
         print(parser.snp2gene_df.head())
+        
+        # Conditionally sort by position if available
+        sort_columns = ["chr"]
+        if 'pos' in parser.snp2gene_df.columns:
+            sort_columns.append('pos')
         if 'block' in parser.snp2gene_df.columns:
-            parser.snp2gene_df =  parser.snp2gene_df.sort_values(by=["chr", "block"]).reset_index(drop=True)
+            sort_columns.append('block')
+        
+        if len(sort_columns) > 1:
+            parser.snp2gene_df = parser.snp2gene_df.sort_values(by=sort_columns).reset_index(drop=True)
+
+        if 'block' in parser.snp2gene_df.columns:
             parser.blocks = sorted(list(
                 parser.snp2gene_df[["chr", "block"]].drop_duplicates().sort_values(["chr", "block"]).itertuples(
                     index=False, name=None)))

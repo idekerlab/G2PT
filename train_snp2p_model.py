@@ -22,7 +22,7 @@ from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
 from torch.utils.data.distributed import DistributedSampler
 from src.utils.data.dataset import SNP2PCollator, PLINKDataset
-from src.utils.data.dataset import DynamicPhenotypeBatchIterableDataset, DynamicPhenotypeBatchIterableDatasetDDP
+from src.utils.data.dataset import DynamicPhenotypeBatchIterableDataset, DynamicPhenotypeBatchIterableDatasetDDP, TSVDataset
 from src.utils.data.dataset import ChunkSNP2PCollator
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
@@ -94,6 +94,7 @@ def main():
 
     # Train bfile format
     parser.add_argument('--train-bfile', help='Training genotype dataset', type=str, default=None)
+    parser.add_argument('--train-tsv-path', help='Path to directory with training genotype, covariate, and phenotype TSV files', type=str, default=None)
     parser.add_argument('--train-cov', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--train-pheno', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--val-bfile', help='Validation dataset', type=str, default=None)
@@ -135,6 +136,7 @@ def main():
     parser.add_argument('--dropout', help='dropout ratio', type=float, default=0.2)
     parser.add_argument('--batch-size', help='Batch size', type=int, default=128)
     parser.add_argument('--val-step', help='Validation step', type=int, default=20)
+    parser.add_argument('--patience', help='Patience for early stopping', type=int, default=5)
     parser.add_argument('--jobs', help="The number of threads", type=int, default=0)
 
     parser.add_argument('--loss', help='loss function', type=str, default='default')
@@ -239,12 +241,19 @@ def main_worker(args):
         snp2p_dataset = SNP2PDataset(train_dataset, genotype, tree_parser, n_cov=args.n_cov)
     else:
     '''
-    print("Loading PLINK bfile... at %s" % args.train_bfile)
-
-
-    snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip,
-                                 input_format=args.input_format,
-                                 cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
+    if args.train_tsv_path:
+        print("Loading TSV data from %s" % args.train_tsv_path)
+        genotype_path = os.path.join(args.train_tsv_path, "genotypes.tsv")
+        cov_path = os.path.join(args.train_tsv_path, "simulation.cov")
+        pheno_path = os.path.join(args.train_tsv_path, "simulation.pheno")
+        snp2p_dataset = TSVDataset(tree_parser, genotype_path, cov_path, pheno_path, flip=args.flip,
+                                     input_format=args.input_format,
+                                     cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
+    else:
+        print("Loading PLINK bfile... at %s" % args.train_bfile)
+        snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip,
+                                     input_format=args.input_format,
+                                     cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
     args.bt_inds = snp2p_dataset.bt_inds
     args.qt_inds = snp2p_dataset.qt_inds
     args.bt = snp2p_dataset.bt

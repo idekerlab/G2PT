@@ -35,47 +35,38 @@ class EpistasisFinder(object):
         attention_results (pd.DataFrame): A DataFrame of attention scores for each
             sample and system.
     """
-    def __init__(self, tree_parser : SNPTreeParser, bfile, attention_results, cov=None, pheno=None, flip=False):
+    def __init__(self, tree_parser : SNPTreeParser, attention_results, tsv_path, cov, pheno=None, flip=False):
         """
-        Initializes the EpistasisFinder and loads all necessary data.
+        Initializes the EpistasisFinder and loads all necessary data from TSV files.
 
         Args:
             tree_parser (SNPTreeParser): An initialized SNPTreeParser object.
-            bfile (str): The path to the PLINK binary file (.bed, .bim, .fam).
-            attention_results (str or pd.DataFrame): The path to a CSV file or a
-                DataFrame containing attention scores.
-            cov (str, optional): The path to a tab-separated covariate file. If
-                None, covariates are loaded from the PLINK .fam file.
-                Defaults to None.
-            pheno (str, optional): The path to a tab-separated phenotype file.
-                If provided, this phenotype will be merged with the covariates.
-                It must contain 'FID' and 'IID' columns. Defaults to None.
-            flip (bool, optional): If True, swaps the reference and alternate
-                alleles in the genotype data (e.g., changing 0 to 2 and 2 to 0).
-                Defaults to False.
+            attention_results (str or pd.DataFrame): Path to a CSV file or a DataFrame of attention scores.
+            tsv_path (str): Path to the directory containing genotypes.tsv and snp2gene.tsv.
+            cov (str): Path to a tab-separated covariate file.
+            pheno (str, optional): Path to a tab-separated phenotype file. Defaults to None.
+            flip (bool, optional): If True, swaps reference and alternate alleles. Defaults to False.
         """
         self.tree_parser = tree_parser
-        self.plink_data = plink.read_plink(path=bfile)
-        self.genotype = pd.DataFrame(self.plink_data.call_genotype.as_numpy().sum(axis=-1).T)
         self.flip = flip
+
+        # Load genotype data from TSV
+        genotype_file = f"{tsv_path}/genotypes.tsv"
+        self.genotype = pd.read_csv(genotype_file, sep='	', index_col=0)
+        self.genotype.index = self.genotype.index.astype(str)
+        self.genotype.columns = self.genotype.columns.astype(str)
         if flip:
             self.genotype = 2 - self.genotype
             print("Swapping Ref and Alt!")
-        self.genotype.index = self.plink_data.sample_id.values
-        self.genotype.columns = self.plink_data.variant_id.values
-        self.snp2chr = {snp:self.plink_data.contig_id.values[chrome] for snp, chrome in zip(self.plink_data.variant_id.values, self.plink_data.variant_contig.values)}
-        self.snp2pos = {snp:pos for snp, pos in zip(self.plink_data.variant_id.values, self.plink_data.variant_position.values)}
-        print("From PLINK %d variants with %d samples are queried" % (self.genotype.shape[1], self.genotype.shape[0]))
         
-        if cov is not None:
-            self.cov_df = pd.read_csv(cov, sep='\t')
-        else:
-            self.cov_df = pd.DataFrame({'FID': self.plink_data.sample_family_id.as_numpy(),
-                                        'IID': self.plink_data.sample_id.as_numpy(),
-                                        'SEX': self.plink_data.sample_sex.as_numpy(),
-                                        'PHENOTYPE': self.plink_data.sample_phenotype.as_numpy() })
-            self.cov_df = self.cov_df[['FID', 'IID', 'SEX', 'PHENOTYPE']]
-        
+        # Load SNP metadata from snp2gene file
+        snp2gene_file = f"{tsv_path}/snp2gene.tsv"
+        snp2gene_df = pd.read_csv(snp2gene_file, sep='\t')
+        self.snp2chr = dict(zip(snp2gene_df['snp'], snp2gene_df['chr']))
+        self.snp2pos = dict(zip(snp2gene_df['snp'], snp2gene_df['pos']))
+        print(f"From TSV {self.genotype.shape[1]} variants with {self.genotype.shape[0]} samples are queried")
+
+        self.cov_df = pd.read_csv(cov, sep='\t')
         self.cov_df['FID'] = self.cov_df['FID'].astype(str)
         self.cov_df['IID'] = self.cov_df['IID'].astype(str)
 
@@ -83,20 +74,19 @@ class EpistasisFinder(object):
             pheno_df = pd.read_csv(pheno, sep='\t')
             pheno_df['IID'] = pheno_df['IID'].astype(str)
             pheno_df['FID'] = pheno_df['FID'].astype(str)
-            # Drop old phenotype if it exists and merge new one
             if 'PHENOTYPE' in self.cov_df.columns:
                 self.cov_df = self.cov_df.drop(columns=['PHENOTYPE'])
             self.cov_df = pd.merge(self.cov_df, pheno_df, on=['FID', 'IID'])
 
-        # Ensure genotype data aligns with the final covariate/phenotype dataframe
+        # Align dataframes
         self.cov_df = self.cov_df.loc[self.cov_df['IID'].isin(self.genotype.index)]
         self.genotype = self.genotype.loc[self.cov_df.IID]
 
         self.cov_ids = [c for c in self.cov_df.columns if c not in ['FID', 'IID', 'PHENOTYPE']]
         
-        if type(attention_results) == str:
+        if isinstance(attention_results, str):
             self.attention_results = pd.read_csv(attention_results)
-        elif type(attention_results) == pd.DataFrame:
+        else:
             self.attention_results = attention_results
 
         self.attention_results_0 = self.attention_results.loc[self.attention_results.SEX == 0]
@@ -175,10 +165,10 @@ class EpistasisFinder(object):
             genotype_merged_with_covs = self.genotype.merge(self.cov_df, left_index=True, right_on='IID')
             for target_snp in target_snps:
                 if target_snp not in snp_inheritance_dict.keys():
-                    genotype_for_ineritance_model = genotype_merged_with_covs[[target_snp, 'PHENOTYPE']+self.cov_ids]
+                    genotype_for_ineritance_model = genotype_merged_with_covs[[str(target_snp), target]+self.cov_ids]
                     if sex!=2:
                         genotype_for_ineritance_model = genotype_for_ineritance_model.loc[genotype_for_ineritance_model.SEX==sex]
-                    target_snp_type = self.determine_inheritance_model(genotype_for_ineritance_model[[target_snp]+self.cov_ids], genotype_for_ineritance_model['PHENOTYPE'].values, target_snp, verbose=verbose)
+                    target_snp_type = self.determine_inheritance_model(genotype_for_ineritance_model[[str(target_snp)]+self.cov_ids], genotype_for_ineritance_model['PHENOTYPE'].values, target_snp, verbose=verbose)
                     snp_inheritance_dict[target_snp] = target_snp_type
 
         print("Running Chi-Square Test...")
@@ -249,7 +239,7 @@ class EpistasisFinder(object):
         if not snp_pairs:
             return []
 
-        target_snps = list(set(itertools.chain.from_iterable(snp_pairs)))
+        target_snps = list(map(str, set(itertools.chain.from_iterable(snp_pairs))))
         partial_genotype = self.genotype.loc[risky_samples, target_snps].copy()
         for snp in target_snps:
             if snp in snp_inheritance_dict:
@@ -257,9 +247,12 @@ class EpistasisFinder(object):
 
         raw_pvals = []
         for snp1, snp2 in snp_pairs:
-            contingency_table = pd.crosstab(partial_genotype[snp1], partial_genotype[snp2])
-            _, p_value = fisher_exact(contingency_table)
-            raw_pvals.append(p_value)
+            contingency_table = pd.crosstab(partial_genotype[str(snp1)], partial_genotype[str(snp2)])
+            if contingency_table.shape == (2, 2):
+                _, p_value = fisher_exact(contingency_table)
+                raw_pvals.append(p_value)
+            else:
+                raw_pvals.append(1.0)
 
         if not raw_pvals:
             return []
@@ -296,13 +289,13 @@ class EpistasisFinder(object):
                 - float: The Chi-Square statistic.
                 - int: The degrees of freedom.
         """
-        partial_genotype = self.genotype.loc[population, [target_snp]].copy()
+        partial_genotype = self.genotype.loc[population, [str(target_snp)]].copy()
         if target_snp in snp_inheritance_dict.keys():
             partial_genotype = self.model_encoders[snp_inheritance_dict[target_snp]](partial_genotype, target_snp)
 
-        with_snp_risk = partial_genotype.loc[risky_samples, target_snp].sum()
+        with_snp_risk = partial_genotype.loc[risky_samples, str(target_snp)].sum()
         without_snp_risk = partial_genotype.loc[risky_samples].shape[0] * 2 - with_snp_risk
-        with_snp_population = partial_genotype.loc[:, target_snp].sum()
+        with_snp_population = partial_genotype.loc[:, str(target_snp)].sum()
         without_snp_population = partial_genotype.shape[0] * 2 - with_snp_population
         data = {'Risky Subset': [with_snp_risk, without_snp_risk],
                 'Population': [with_snp_population, without_snp_population]}
@@ -310,7 +303,13 @@ class EpistasisFinder(object):
         #changed code
         result_df = pd.DataFrame(data, index=['REF', "ALT"])
         # print(df.T)
-        chi2, p_value, dof, expected = chi2_contingency(result_df.T)
+        try:
+            chi2, p_value, dof, expected = chi2_contingency(result_df.T)
+        except ValueError:
+            p_value = 1.0
+            chi2 = 0
+            dof = 0
+            expected = None
         return result_df.T, p_value, chi2, dof
 
     def get_statistical_epistatic_significance(self, pairs, cohort,
@@ -430,7 +429,7 @@ class EpistasisFinder(object):
 
     def rename_snp(self, snp):
         """Formats a SNP ID to be compatible with regression formula syntax."""
-        new_name = "SNP" + "_".join(reversed(snp.split(":")))
+        new_name = "SNP" + "_".join(reversed(str(snp).split(":")))
         return new_name
 
     def rollback_snp_name(self, new_name):
@@ -467,25 +466,25 @@ class EpistasisFinder(object):
     @staticmethod
     def code_dominance(genotype, snp_id):
         """Encodes genotype for a dominant inheritance model (AA=0, Aa=1, aa=1)."""
-        genotype.loc[:, snp_id] = genotype[snp_id].replace(2, 1)
+        genotype.loc[:, str(snp_id)] = genotype[str(snp_id)].replace(2, 1)
         return genotype
 
     @staticmethod
     def code_recessive(genotype, snp_id):
         """Encodes genotype for a recessive inheritance model (AA=0, Aa=0, aa=1)."""
-        genotype.loc[:, snp_id] = genotype[snp_id].replace({1: 0, 2: 1})#.replace(1, 0)
+        genotype.loc[:, str(snp_id)] = genotype[str(snp_id)].replace({1: 0, 2: 1})#.replace(1, 0)
         return genotype
 
     @staticmethod
     def code_overdominance(genotype, snp_id):
         """Encodes genotype for an overdominant model (AA=0, Aa=1, aa=0)."""
-        genotype.loc[:, snp_id] = genotype[snp_id].replace(2, 0)
+        genotype.loc[:, str(snp_id)] = genotype[str(snp_id)].replace(2, 0)
         return genotype
 
     @staticmethod
     def code_underdominance(genotype, snp_id):
         """Encodes genotype for an underdominant model (AA=1, Aa=0, aa=1)."""
-        genotype.loc[:, snp_id] = genotype[snp_id].replace({1: 0, 0: 1, 2: 1})
+        genotype.loc[:, str(snp_id)] = genotype[str(snp_id)].replace({1: 0, 0: 1, 2: 1})
         return genotype
 
     def determine_inheritance_model(self, genotypes, phenotype, target_snp, verbose=0, loss='aic'):
@@ -513,12 +512,27 @@ class EpistasisFinder(object):
 
         model_aics = {}
         for model_name, encoder in self.model_encoders.items():
-            coded_g = encoder(genotypes, target_snp)
-            ols_model = sm.OLS(phenotype, coded_g.values).fit()
-            if loss == 'aic':
-                model_aics[model_name] = ols_model.aic
-            else:
-                model_aics[model_name] = ols_model.bic
+            coded_g = encoder(genotypes.copy(), target_snp)
+            if coded_g.shape[0] == 0:
+                if verbose > 0:
+                    print(f"Skipping {target_snp} for model {model_name} due to no valid genotypes.")
+                model_aics[model_name] = float('inf')
+                continue
+            
+            try:
+                ols_model = sm.OLS(phenotype, coded_g.values).fit()
+                if loss == 'aic':
+                    model_aics[model_name] = ols_model.aic
+                else:
+                    model_aics[model_name] = ols_model.bic
+            except ValueError:
+                if verbose > 0:
+                    print(f"Could not fit model for {target_snp} with {model_name} model.")
+                model_aics[model_name] = float('inf')
+
+
+        if not model_aics or all(v == float('inf') for v in model_aics.values()):
+             return 'additive' # Return default if no model could be fit
 
         best_model = min(model_aics, key=model_aics.get)
 
@@ -601,5 +615,3 @@ class EpistasisFinder(object):
         if out_dir is not None:
             plt.savefig(out_dir)
         plt.show()
-
-

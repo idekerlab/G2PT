@@ -31,6 +31,7 @@ class HierarchicalTransformerUpdate(nn.Module):
         feed_forward_hidden: int,
         norm: nn.Module,
         dropout: float = 0.2,
+        attention_dropout: float = 0.1,
         norm_channel_first: bool = False,
         softmax=True,
     ) -> None:
@@ -51,6 +52,7 @@ class HierarchicalTransformerUpdate(nn.Module):
         self.norm_ffn  = nn.LayerNorm(hidden, eps=1e-5)
         self.ffn = SwiGLUFFN(hidden, feed_forward_hidden, dropout)
         self.drop = nn.Dropout(dropout)
+        self.attention_dropout = attention_dropout
         self.drop_opposite = nn.Dropout(1-dropout)
         self.softmax = softmax
         #self.gate_attn = nn.Parameter(torch.zeros(1))
@@ -71,7 +73,7 @@ class HierarchicalTransformerUpdate(nn.Module):
         out = xops.memory_efficient_attention(
             q, k, v,
             attn_bias=mask,
-            p=self.drop.p if self.training else 0.0,
+            p=self.attention_dropout if self.training else 0.0,
         )
         if return_attention:
             # Re-calculate attention scores for retrieval
@@ -243,6 +245,7 @@ class PositionWiseFeedForward(nn.Module):
 
 class HierarchicalTransformer(nn.Module):
     def __init__(self, hidden: object, attn_heads: object, feed_forward_hidden: object, inner_norm: object, outer_norm: object, dropout: object = 0.2,
+                 attention_dropout: float = 0.1,
                  conv_type: object = 'system',
                  norm_channel_first: object = False, transform: object = True, n_type: object = 1, activation: object = 'softmax', poincare: object = False) -> object:
         """
@@ -255,7 +258,7 @@ class HierarchicalTransformer(nn.Module):
 
         super(HierarchicalTransformer, self).__init__()
         self.hierarchical_transformer_update = HierarchicalTransformerUpdate(hidden, attn_heads, feed_forward_hidden, inner_norm,
-                                                                     dropout, norm_channel_first=norm_channel_first, softmax=activation=='softmax')
+                                                                     dropout, attention_dropout=attention_dropout, norm_channel_first=norm_channel_first, softmax=activation=='softmax')
         self.norm = outer_norm
         self.conv_type = conv_type
         self.dropout = nn.Dropout(dropout)

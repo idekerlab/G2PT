@@ -13,6 +13,7 @@ import copy
 from torch.utils.data import get_worker_info
 from src.utils.data import move_to
 from src.utils.trainer import CCCLoss, FocalLoss, VarianceLoss, MultiplePhenotypeLoss
+from src.utils.trainer.utils import EarlyStopping
 import torch.nn.functional as F
 import copy
 
@@ -111,6 +112,7 @@ class SNP2PTrainer(object):
         n_sys2pad = int(np.ceil(len(tree_parser.sys2ind)/8)*8) - len(tree_parser.sys2ind)
         system_temp_tensor = [np.log(1+len(tree_parser.sys2gene_full[tree_parser.ind2sys[i]])) for i in range(len(tree_parser.sys2ind))] + [10.0] * n_sys2pad
         self.system_temp_tensor = move_to(torch.tensor(system_temp_tensor, dtype=torch.float32), device)
+        self.early_stopping = EarlyStopping(patience=args.patience, verbose=True)
 
     def train(self, epochs, output_path=None):
         ccc = False
@@ -176,25 +178,28 @@ class SNP2PTrainer(object):
                         performance = self.evaluate(self.snp2p_model, self.validation_dataloader, epoch + 1,
                                                     name="Validation", print_importance=False, phenotypes=self.phenotypes)
                         self.scheduler.step(performance)
+                        if self.early_stopping(performance, self.snp2p_model):
+                            print("Early stopping")
+                            break
                         torch.cuda.empty_cache()
                         gc.collect()
-                if output_path:
-                    output_path_epoch = output_path + ".%d" % epoch
-                    if self.args.distributed:
-                        if self.args.rank == 0:
-                            print("Save to...", output_path_epoch)
-                            torch.save({"arguments": self.args,
-                                    "state_dict": self.snp2p_model.module.state_dict()},
-                                   output_path_epoch)
-                            if self.use_mlflow:
-                                mlflow.log_artifact(output_path_epoch)
-                    else:
-                        print("Save to...", output_path_epoch)
-                        torch.save(
-                            {"arguments": self.args, "state_dict": self.snp2p_model.state_dict()},
-                            output_path_epoch)
-                        if self.use_mlflow:
-                            mlflow.log_artifact(output_path_epoch)
+        if self.args.rank == 0:
+            if self.validation_dataloader is not None:
+                self.snp2p_model.load_state_dict(self.early_stopping.best_weights)
+            if output_path:
+                output_path_epoch = f"{output_path}.{epoch}"
+                print("Save to...", output_path_epoch)
+                if self.args.distributed:
+                    torch.save({"arguments": self.args,
+                                "state_dict": self.snp2p_model.module.state_dict()},
+                                output_path_epoch)
+                else:
+                    torch.save(
+                        {"arguments": self.args, "state_dict": self.snp2p_model.state_dict()},
+                        output_path_epoch)
+                if self.use_mlflow:
+                    mlflow.log_artifact(output_path_epoch)
+                print(f"MODEL_PATH:{output_path_epoch}")
             
 
     def evaluate(self, model, dataloader, epoch, phenotypes, name="Validation", print_importance=False, snp_only=False):
@@ -343,7 +348,7 @@ class SNP2PTrainer(object):
             print("Pearson R", pearson[0])
             print("Spearman Rho: ", spearman[0])
             print(" ")
-        return (female_performance + male_performance)/2
+        return performance#(female_performance + male_performance)/2
 
     #@staticmethod
     def evaluate_binary_phenotype(self, trues, results, covariates=None, phenotype_name="", epoch=0, rank=0):
@@ -390,7 +395,7 @@ class SNP2PTrainer(object):
             print("AUC: ", male_auc_performance)
             print("AUPR: ", male_performance)
             print(" ")
-        return (male_auc_performance + female_auc_performance)/2
+        return performance#(male_auc_performance + female_auc_performance)/2
 
 
     def train_epoch(self, epoch, ccc=False, sex=False):

@@ -23,13 +23,14 @@ def lambda_init_fn(depth):
     return 0.8 - 0.6 * math.exp(-0.3 * depth)
 
 class MultiheadDiffAttn(nn.Module):
-    def __init__(self, h, d_model, depth):
+    def __init__(self, h, d_model, depth, attention_dropout=0.1):
         """
         Multi-head Differential Attention.
         """
         super().__init__()
         self.embed_dim = d_model
         self.num_heads = h
+        self.attention_dropout = attention_dropout
         
         # For Grouped-Query Attention
         if h > 1 and h % 2 == 0:
@@ -92,6 +93,9 @@ class MultiheadDiffAttn(nn.Module):
         # Differential attention
         attn_weights = attn_weights1 - self.lambda_ * attn_weights2
         
+        if self.training:
+            attn_weights = F.dropout(attn_weights, p=self.attention_dropout)
+
         return attn_weights, v
 
     def forward(self, q, k, v, mask=None):

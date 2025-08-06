@@ -20,7 +20,7 @@ class EarlyStopping:
 
     def __init__(self,
                  patience: int = 10,
-                 min_delta: float = 0.0,
+                 min_delta: float = 1e-5,
                  mode: str = 'max',
                  restore_best_weights: bool = True,
                  verbose: bool = True):
@@ -82,11 +82,14 @@ class EarlyStopping:
 
             if self.verbose:
                 self.logger.info(f"New best score: {current_score:.6f}")
+                print(f"New best score: {current_score:.6f}")
 
         else:
             self.wait += 1
             if self.verbose:
                 self.logger.info(f"No improvement for {self.wait}/{self.patience} epochs. "
+                                 f"Current: {current_score:.6f}, Best: {self.best_score:.6f}")
+                print(f"No improvement for {self.wait}/{self.patience} epochs. "
                                  f"Current: {current_score:.6f}, Best: {self.best_score:.6f}")
 
         # Check if we should stop

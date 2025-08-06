@@ -88,14 +88,19 @@ class GenotypeDataset(Dataset):
 
         self.pheno2ind = {pheno:i for i, pheno in enumerate(self.pheno_ids)}
         self.ind2pheno = {i:pheno for i, pheno in enumerate(self.pheno_ids)}
+        self.pheno2type = {}
         if (len(bt) == 0) & (len(qt) == 0):
             self.qt = self.pheno_ids # all phenotypes will be regression tasks
+            self.bt = []
+            self.qt_inds = [self.pheno2ind[pheno] for pheno in self.qt]
+            self.bt_inds = []
+            for pheno in self.qt:
+                self.pheno2type[pheno] = 'qt'
         else:
             self.qt = qt
             self.bt = bt
             self.qt_inds = [self.pheno2ind[pheno] for pheno in qt]
             self.bt_inds = [self.pheno2ind[pheno] for pheno in bt]
-            self.pheno2type = {}
             for pheno in qt:
                 self.pheno2type[pheno] = 'qt'
             for pheno in bt:
@@ -127,7 +132,7 @@ class GenotypeDataset(Dataset):
         if (int(sex) == -1) or (int(sex) == -9):
             pass
         else:
-            covariates_tensor[int(sex)] = 1
+            covariates_tensor[int(sex)-1] = 1
         i_cov += 2
         for cov_id in self.cov_ids:
             if cov_id == 'SEX':
@@ -149,6 +154,74 @@ class GenotypeDataset(Dataset):
         end = time.time()
         result_dict["datatime"] = torch.tensor(end - start)
         result_dict["covariates"] = covariates_tensor
+        return result_dict
+
+class TSVDataset(GenotypeDataset):
+    def __init__(self, tree_parser : SNPTreeParser, genotype_path, cov, pheno=None, cov_mean_dict=None, cov_std_dict=None, flip=False,
+                 input_format='indices', cov_ids=(), pheno_ids=(), bt=(), qt=()):
+        super().__init__(tree_parser=tree_parser, cov=cov, pheno=pheno, cov_mean_dict=cov_mean_dict, cov_std_dict=cov_std_dict, cov_ids=cov_ids, pheno_ids=pheno_ids, bt=bt, qt=qt)
+
+        print('Loading Genotype data at %s' % genotype_path)
+        genotype_df = pd.read_csv(genotype_path, sep='\t', index_col=0)
+        genotype_df.columns = genotype_df.columns.astype(int)
+        print('loading done')
+        self.input_format = input_format
+        genotype = genotype_df.values.astype(np.int8)
+
+        snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
+
+        self.iid2ind = {str(iid): idx for idx, iid in enumerate(genotype_df.index.values)}
+        self.ind2iid = {idx: str(iid) for idx, iid in enumerate(genotype_df.index.values)}
+
+        genotype_df = genotype_df[snp_sorted]
+        print("genotype data shape: ", genotype_df.shape)
+        genotype = genotype_df.values
+        if not flip:
+            genotype = 2 - genotype
+        else:
+            print("Swapping Ref and Alt!")
+        self.N, self.n_snps = genotype.shape
+
+        n_snps          = tree_parser.n_snps
+        self.snp_offset      = n_snps
+        self.snp_pad    = n_snps * 3
+
+        alleles = torch.as_tensor(genotype, dtype=torch.long)
+        alleles = torch.clip(alleles, min=0, max=2)
+        base = torch.arange(self.n_snps, dtype=torch.long)
+        snp_idx = alleles * self.snp_offset + base
+
+        pad = torch.full((self.N, self.n_snp2pad), self.snp_pad, dtype=torch.long)
+        snp_idx = torch.cat((snp_idx, pad), dim=1)
+
+        self.snp_idx = snp_idx.contiguous()
+        block_pad = self.tree_parser.n_blocks
+        block_idx = torch.tensor([self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)], dtype=torch.long)
+
+        self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad+1,), block_pad, dtype=torch.long)))
+
+        self.flip = flip
+        print("From TSV %d variants with %d samples are queried" % (genotype.shape[1], genotype.shape[0]))
+        del genotype_df
+        del genotype
+
+        if self.cov_df is not None:
+            self.cov_df = self.cov_df.set_index('IID').loc[self.ind2iid.values()].reset_index()
+
+        if self.pheno_df is not None:
+            self.pheno_df = self.pheno_df.set_index('IID').loc[self.ind2iid.values()].reset_index()
+
+        self.subtree = None
+        self.subtree_phenotypes = []
+
+    def __getitem__(self, index):
+        result_dict = super().__getitem__(index)
+        sample2snp_dict = {}
+        sample2snp_dict['block_ind'] = self.block_idx[self.block_range]
+        sample2snp_dict['snp'] = self.snp_idx[index, self.snp_range]
+        sample2snp_dict['gene'] = self.gene_idx[self.gene_range]
+        sample2snp_dict['sys'] = self.sys_idx[self.sys_range]
+        result_dict['genotype'] = sample2snp_dict
         return result_dict
 
 class PLINKDataset(GenotypeDataset):

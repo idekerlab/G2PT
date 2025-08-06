@@ -8,7 +8,7 @@ from src.model.utils import poincare_log_map_zero
 
 class Genotype2Phenotype(nn.Module):
 
-    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, transform=True,
+    def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2, attention_dropout=0.1, transform=True,
                  activation='softmax', diff_transform=True, poincare=False, use_hierarchical_transformer=False):
         super().__init__()
         self.attn_heads = attn_heads
@@ -16,10 +16,11 @@ class Genotype2Phenotype(nn.Module):
         self.use_hierarchical_transformer = use_hierarchical_transformer
         if use_hierarchical_transformer:
             self.attention = HierarchicalTransformer(hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout,
+                                                     attention_dropout=attention_dropout,
                                                      conv_type='system', norm_channel_first=False, transform=transform,
                                                      n_type=1, activation=activation, poincare=poincare)
         elif diff_transform:
-            self.attention = MultiheadDiffAttn(h=attn_heads, d_model=hidden, depth=0)
+            self.attention = MultiheadDiffAttn(h=attn_heads, d_model=hidden, depth=0, attention_dropout=attention_dropout)
 
         self.feed_forward = SwiGLUFFN(d_model=hidden, d_ff=feed_forward_hidden, p=dropout)
         self.dropout = nn.Dropout(dropout)
