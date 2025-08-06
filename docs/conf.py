@@ -16,8 +16,6 @@ import os
 import sys
 import shutil
 
-sys.path.insert(0, os.path.abspath('../src'))
-
 autodoc_mock_imports = ["torch", "pandas", "numpy", "scipy", "sklearn", "statsmodels", "networkx", "matplotlib", "seaborn", "tqdm", "mlflow", "dvc", "obonet"]
 
 # -- Copy Markdown files to source directory -------------------------------------
