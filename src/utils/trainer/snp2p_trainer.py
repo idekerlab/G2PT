@@ -54,8 +54,29 @@ def get_param_groups(model, base_lr):
 
 
 class SNP2PTrainer(object):
+    """
+    Trainer for the SNP2P model.
+
+    Handles training, validation, and evaluation of the SNP2P model.
+    """
 
     def __init__(self, snp2p_model, tree_parser, snp2p_dataloader, device, args, target_phenotype, validation_dataloader=None, fix_system=False, pretrain_dataloader=None, label_smoothing=0.0, use_mlflow=False):
+        """
+        Initializes the SNP2PTrainer.
+
+        Args:
+            snp2p_model: The SNP2P model to train.
+            tree_parser: The tree parser object.
+            snp2p_dataloader: The dataloader for training.
+            device: The device to train on.
+            args: The command line arguments.
+            target_phenotype: The target phenotype for training.
+            validation_dataloader: The dataloader for validation.
+            fix_system: Whether to fix the system embeddings.
+            pretrain_dataloader: The dataloader for pretraining.
+            label_smoothing: The label smoothing factor.
+            use_mlflow: Whether to use mlflow for logging.
+        """
         self.args = args
         self.device = device
         self.use_mlflow = use_mlflow
@@ -115,6 +136,13 @@ class SNP2PTrainer(object):
         self.early_stopping = EarlyStopping(patience=args.patience, verbose=True)
 
     def train(self, epochs, output_path=None):
+        """
+        Trains the SNP2P model.
+
+        Args:
+            epochs: The number of epochs to train for.
+            output_path: The path to save the model to.
+        """
         ccc = False
         '''
         self.dynamic_phenotype_sampling = False
@@ -203,6 +231,21 @@ class SNP2PTrainer(object):
             
 
     def evaluate(self, model, dataloader, epoch, phenotypes, name="Validation", print_importance=False, snp_only=False):
+        """
+        Evaluates the SNP2P model.
+
+        Args:
+            model: The SNP2P model to evaluate.
+            dataloader: The dataloader for evaluation.
+            epoch: The current epoch.
+            phenotypes: The phenotypes to evaluate.
+            name: The name of the evaluation.
+            print_importance: Whether to print the importance scores.
+            snp_only: Whether to only use SNPs for evaluation.
+
+        Returns:
+            The performance of the model.
+        """
 
         if self.args.rank == 0:
             print("Evaluating ", ",".join(phenotypes))
@@ -287,6 +330,20 @@ class SNP2PTrainer(object):
 
 
     def evaluate_continuous_phenotype(self, trues, results, covariates=None, phenotype_name="", epoch=0, rank=0):
+        """
+        Evaluates a continuous phenotype.
+
+        Args:
+            trues: The true values.
+            results: The predicted values.
+            covariates: The covariates.
+            phenotype_name: The name of the phenotype.
+            epoch: The current epoch.
+            rank: The rank of the process.
+
+        Returns:
+            The performance of the model.
+        """
 
         mask = (trues != -9)
         if mask.sum() == 0:
@@ -352,6 +409,20 @@ class SNP2PTrainer(object):
 
     #@staticmethod
     def evaluate_binary_phenotype(self, trues, results, covariates=None, phenotype_name="", epoch=0, rank=0):
+        """
+        Evaluates a binary phenotype.
+
+        Args:
+            trues: The true values.
+            results: The predicted values.
+            covariates: The covariates.
+            phenotype_name: The name of the phenotype.
+            epoch: The current epoch.
+            rank: The rank of the process.
+
+        Returns:
+            The performance of the model.
+        """
         if rank == 0:
             print(trues[:50])
             print(results[:50])
@@ -399,6 +470,14 @@ class SNP2PTrainer(object):
 
 
     def train_epoch(self, epoch, ccc=False, sex=False):
+        """
+        Trains the SNP2P model for one epoch.
+
+        Args:
+            epoch: The current epoch.
+            ccc: Whether to use CCC loss.
+            sex: Whether to use sex as a covariate.
+        """
 
 
         self.snp2p_model.train()
@@ -423,6 +502,21 @@ class SNP2PTrainer(object):
                 mlflow.log_metric("train_loss_epoch", avg_loss, step=epoch)
 
     def iter_minibatches(self, model, dataloader, optimizer, epoch, name="", snp_only=False, sex=False):
+        """
+        Iterates over minibatches.
+
+        Args:
+            model: The SNP2P model.
+            dataloader: The dataloader.
+            optimizer: The optimizer.
+            epoch: The current epoch.
+            name: The name of the iteration.
+            snp_only: Whether to only use SNPs for training.
+            sex: Whether to use sex as a covariate.
+
+        Returns:
+            The average loss.
+        """
         mean_response_loss = 0.
         mean_ccc_loss = 0.
         mean_score_loss = 0.

@@ -10,8 +10,23 @@ import obonet
 import re
 
 class TreeParser(object):
+    """
+    Parses and represents a hierarchical ontology of systems and genes.
+
+    This class loads an ontology from a file or DataFrame,
+    representation, and provides methods for manipulating and analyzing the
+    ontology.
+    """
 
     def __init__(self, ontology, dense_attention=False, sys_annot_file=None):
+        """
+        Initializes the TreeParser.
+
+        Args:
+            ontology: A pandas DataFrame or path to a file containing the ontology.
+            dense_attention: Whether to use dense attention.
+            sys_annot_file: Path to a file containing system annotations.
+        """
         if isinstance(ontology, pd.DataFrame):
             ontology_df = ontology
         else:
@@ -69,6 +84,14 @@ class TreeParser(object):
         return f"'{term}'"
 
     def init_ontology(self, ontology_df, inplace=True, verbose=True):
+        """
+        Initializes the ontology from a DataFrame.
+
+        Args:
+            ontology_df: A pandas DataFrame containing the ontology.
+            inplace: Whether to modify the object in place.
+            verbose: Whether to print progress messages.
+        """
         # If inplace is False, work on a deep copy of self.
         if not inplace:
             obj = copy.deepcopy(self)
@@ -187,6 +210,20 @@ class TreeParser(object):
             return obj
 
     def build_mask(self, ordered_query, ordered_key, query2key_dict, interaction_value=0, mask_value=-10**4):
+        """
+        Builds a mask for attention.
+
+        Args:
+            ordered_query: A list of query items.
+            ordered_key: A list of key items.
+            query2key_dict: A dictionary mapping query items to key items.
+            interaction_value: The value to use for interactions.
+            mask_value: The value to use for non-interactions.
+
+        Returns:
+            A tuple containing the query-to-index mapping, the index-to-query mapping,
+            the key-to-index mapping, the index-to-key mapping, and the mask.
+        """
         mask = np.full((int(np.ceil((len(ordered_query)+1)/8)*8), (int(np.ceil((len(ordered_key)+1)/8)*8))), mask_value)
         query2ind = {q: i for i, q in enumerate(ordered_query)}
         ind2query = {i: q for i, q in enumerate(ordered_query)}
@@ -291,6 +328,15 @@ class TreeParser(object):
     
 
     def collapse(self, to_keep=None, min_term_size=2, verbose=True, inplace=False):
+        """
+        Collapses the ontology by removing small terms.
+
+        Args:
+            to_keep: A list of terms to keep, even if they are small.
+            min_term_size: The minimum number of genes a term must have to be kept.
+            verbose: Whether to print progress messages.
+            inplace: Whether to modify the object in place.
+        """
         if not inplace:
             obj = copy.deepcopy(self)
         else:
@@ -493,45 +539,122 @@ class TreeParser(object):
         f.close()
 
     def get_gene2ind(self, gene):
+        """
+        Gets the index of a gene.
+
+        Args:
+            gene: The gene to get the index of.
+
+        Returns:
+            The index of the gene.
+        """
         if type(gene)==str:
             return self.gene2ind[gene]
         elif type(gene)==list:
             return [self.gene2ind[g] for g in gene]
 
     def get_system2ind(self, system):
+        """
+        Gets the index of a system.
+
+        Args:
+            system: The system to get the index of.
+
+        Returns:
+            The index of the system.
+        """
         if type(system)==str:
             return self.sys2ind[system]
         elif type(system)==list:
             return [self.sys2ind[sys] for sys in system]
 
     def get_ind2system(self, system):
+        """
+        Gets the system from an index.
+
+        Args:
+            system: The index of the system.
+
+        Returns:
+            The system.
+        """
         if type(system)==int:
             return self.ind2sys[system]
         elif type(system)==list:
             return [self.ind2sys[sys] for sys in system]
 
     def get_system_hierarchies(self, system, interaction_type):
+        """
+        Gets the hierarchies of a system.
+
+        Args:
+            system: The system to get the hierarchies of.
+            interaction_type: The type of interaction to get the hierarchies of.
+
+        Returns:
+            The hierarchies of the system.
+        """
         subtree = self.subtree_reverse_graphs[interaction_type]
         subtree_root = self.subtree_reverse_roots[interaction_type]
         return [path for path in nx.all_simple_paths(subtree, system, subtree_root)]
 
 
     def get_parent_system_of_gene(self, gene):
+        """
+        Gets the parent systems of a gene.
+
+        Args:
+            gene: The gene to get the parent systems of.
+
+        Returns:
+            The parent systems of the gene.
+        """
         systems = [system for system in self.gene2sys_df.loc[self.gene2sys_df["child"] == gene]["parent"]]
         return systems
 
     def get_gene_hierarchies(self, gene, interaction_type):
+        """
+        Gets the hierarchies of a gene.
+
+        Args:
+            gene: The gene to get the hierarchies of.
+            interaction_type: The type of interaction to get the hierarchies of.
+
+        Returns:
+            The hierarchies of the gene.
+        """
         systems = self.get_parent_system_of_gene(gene)
         system_hierarchy_dict = {system: self.get_system_hierarchies(system, interaction_type) for system in systems}
         return system_hierarchy_dict
 
     def get_system2genotype_mask(self, mut_vector):
+        """
+        Gets the system-to-genotype mask.
+
+        Args:
+            mut_vector: The mutation vector.
+
+        Returns:
+            The system-to-genotype mask.
+        """
         system2mut_mask =  torch.logical_and(torch.tensor(self.gene2sys_mask, dtype=torch.bool),
                                              mut_vector.unsqueeze(0).expand(self.n_systems, -1).bool())
         return system2mut_mask.float()
 
 
     def get_hierarchical_interactions(self, interaction_types, direction='forward', format='indices', sys_ind_alias_dict=None):
+        """
+        Gets the hierarchical interactions.
+
+        Args:
+            interaction_types: The types of interactions to get.
+            direction: The direction of the interactions.
+            format: The format of the interactions.
+            sys_ind_alias_dict: A dictionary of system index aliases.
+
+        Returns:
+            The hierarchical interactions.
+        """
         tree_roots = set([node for node in self.sys_graph.nodes() if self.sys_graph.in_degree(node)==0])
         result_masks = []
         cur_parents = set(tree_roots)
@@ -623,10 +746,30 @@ class TreeParser(object):
         return padded_query, padded_key, padded_tensor
 
     def get_nested_subtree_mask(self, subtree_order, direction='forward', format='indices'):
+        """
+        Gets the nested subtree mask.
+
+        Args:
+            subtree_order: The order of the subtrees.
+            direction: The direction of the interactions.
+            format: The format of the interactions.
+
+        Returns:
+            The nested subtree mask.
+        """
         nested_subtrees = [self.get_subtree_mask(subtree_type, direction=direction, format=format) for subtree_type in subtree_order]
         return nested_subtrees
 
     def get_target_components(self, target_go):
+        """
+        Gets the target components.
+
+        Args:
+            target_go: The target GO term.
+
+        Returns:
+            The target components.
+        """
         if self.tree_parser.node_height_dict[target_go] != 0:
             target_gos = self.tree_parser.get_descendants_sorted_by_height(target_go) + [target_go]
         else:
@@ -657,6 +800,16 @@ class TreeParser(object):
         return sys2sys_forward_partial, sys2sys_backward_partial, sys2ind_partial, all_edges_forward
 
     def get_paths_from_node_to_leaves(self, G, start_node):
+        """
+        Gets all paths from a node to the leaves of a graph.
+
+        Args:
+            G: The graph.
+            start_node: The node to start from.
+
+        Returns:
+            A list of all paths from the node to the leaves.
+        """
         all_paths = []
         for node in G.nodes:
             if G.out_degree(node) == 0:  # If it's a leaf node
@@ -665,6 +818,15 @@ class TreeParser(object):
         return all_paths
 
     def get_edges_from_paths(self, paths):
+        """
+        Gets all edges from a list of paths.
+
+        Args:
+            paths: A list of paths.
+
+        Returns:
+            A list of all edges in the paths.
+        """
         edges = set()
         for path in paths:
             edges.update([(path[i], path[i + 1]) for i in range(len(path) - 1)])
@@ -937,6 +1099,15 @@ class TreeParser(object):
         return [target_id2ind_dict[source_ind2id_dict[ind]] for ind in indices]
 
     def collapse_by_gene_similarity(self, similarity_threshold=0.7, to_keep=None, verbose=True, inplace=False):
+        """
+        Collapses the ontology by merging terms with similar gene sets.
+
+        Args:
+            similarity_threshold: The Jaccard similarity threshold for merging terms.
+            to_keep: A list of terms to keep, even if they are similar to other terms.
+            verbose: Whether to print progress messages.
+            inplace: Whether to modify the object in place.
+        """
         if not inplace:
             obj = copy.deepcopy(self)
         else:
@@ -1042,6 +1213,15 @@ class TreeParser(object):
             return obj
 
     def collapse_by_structural_similarity(self, similarity_threshold=0.7, to_keep=None, verbose=True, inplace=False):
+        """
+        Collapses the ontology by merging terms with similar structural properties.
+
+        Args:
+            similarity_threshold: The structural similarity threshold for merging terms.
+            to_keep: A list of terms to keep, even if they are similar to other terms.
+            verbose: Whether to print progress messages.
+            inplace: Whether to modify the object in place.
+        """
         if not inplace:
             obj = copy.deepcopy(self)
         else:
