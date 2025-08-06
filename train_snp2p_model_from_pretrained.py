@@ -115,6 +115,7 @@ def main():
     parser.add_argument('--sys2pheno', action='store_true', default=True)
     parser.add_argument('--gene2pheno', action='store_true', default=False)
     parser.add_argument('--snp2pheno', action='store_true', default=False)
+    parser.add_argument('--use_hierarchical_transformer', action='store_true', default=False)
 
     parser.add_argument('--dynamic-phenotype-sampling', action='store_true', default=False)
 
@@ -340,7 +341,7 @@ def main_worker(args):
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          n_phenotypes=snp2p_dataset.n_pheno, activation='softmax', input_format='block',
                                          pretrained_transformer=block_model_dict,
-                                         freeze_pretrained = args.freeze_pretrained)
+                                         freeze_pretrained = args.freeze_pretrained, use_hierarchical_transformer=args.use_hierarchical_transformer)
 
         snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
         print(args.model, 'Loaded')
@@ -356,7 +357,7 @@ def main_worker(args):
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          activation='softmax', input_format='block', pretrained_transformer=block_model_dict,
                                          freeze_pretrained=args.freeze_pretrained,
-                                         n_phenotypes=snp2p_dataset.n_pheno)
+                                         n_phenotypes=snp2p_dataset.n_pheno, use_hierarchical_transformer=args.use_hierarchical_transformer)
         #snp2p_model = snp2p_model.half()
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)

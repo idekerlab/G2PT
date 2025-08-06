@@ -289,7 +289,7 @@ def main_worker(args):
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          activation='softmax', input_format=args.input_format,
-                                         n_phenotypes=snp2p_dataset.n_pheno)
+                                         n_phenotypes=snp2p_dataset.n_pheno, use_hierarchical_transformer=args.use_hierarchical_transformer)
         #snp2p_model = snp2p_model.half()
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)

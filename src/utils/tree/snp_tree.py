@@ -58,24 +58,23 @@ class SNPTreeParser(TreeParser):
         parser = parent_result if parent_result is not None else self
 
         # ———— 2) load snp2gene (either file‐path or DataFrame) ————
-        '''
         if isinstance(snp2gene, str):
-            # assume tab‑delimited with headers ['snp','gene','chr'] or auto‑detect
-            if multiple_phenotypes:
-                parser.snp2gene_df = pd.read_csv(snp2gene, sep='\t')
-                #print(parser.snp2gene_df.head())
-            else:
-        
-            parser.snp2gene_df = pd.read_csv(snp2gene, names=['snp', 'gene', 'chr'],
-                                            sep='\t',
-                                            dtype={'snp':str,'gene':str,'chr':str})
-        '''
-        parser.snp2gene_df = pd.read_csv(snp2gene, sep='\t')
-        #else:
-        #    parser.snp2gene_df = snp2gene.copy()
+            parser.snp2gene_df = pd.read_csv(snp2gene, sep='\t')
+        else:
+            parser.snp2gene_df = snp2gene.copy()
         print(parser.snp2gene_df.head())
+        
+        # Conditionally sort by position if available
+        sort_columns = ["chr"]
+        if 'pos' in parser.snp2gene_df.columns:
+            sort_columns.append('pos')
         if 'block' in parser.snp2gene_df.columns:
-            parser.snp2gene_df =  parser.snp2gene_df.sort_values(by=["chr", "block"]).reset_index(drop=True)
+            sort_columns.append('block')
+        
+        if len(sort_columns) > 1:
+            parser.snp2gene_df = parser.snp2gene_df.sort_values(by=sort_columns).reset_index(drop=True)
+
+        if 'block' in parser.snp2gene_df.columns:
             parser.blocks = sorted(list(
                 parser.snp2gene_df[["chr", "block"]].drop_duplicates().sort_values(["chr", "block"]).itertuples(
                     index=False, name=None)))
@@ -108,7 +107,7 @@ class SNPTreeParser(TreeParser):
             #parser.block2sig_ind = {block: sorted(list(set(sig_inds))) for block, sig_inds in parser.block2sig_ind.items()}
         #else:
         #    parser.snp2gene_df = parser.snp2gene_df.sort_values(by=["chr", "snp"]).reset_index(drop=True)
-        parser.snp2gene_df = parser.snp2gene_df.loc[parser.snp2gene_df['gene'].isin(parser.gene2ind.keys())]
+        #parser.snp2gene_df = parser.snp2gene_df.loc[parser.snp2gene_df['gene'].isin(parser.gene2ind.keys())]
         #print(parser.snp2gene_df.head())
         '''
         print(parser.snp2gene_df.head())
@@ -140,8 +139,9 @@ class SNPTreeParser(TreeParser):
         #parser.snp2gene_df = parser.snp2gene_df.loc[
         #    parser.snp2gene_df['gene'].isin(parser.gene2ind)
         #]
+        #]
         #print(parser.snp2gene_df.shape)
-        snps = parser.snp2gene_df.drop_duplicates(subset=['snp'])['snp'].values.tolist()
+        snps = sorted(parser.snp2gene_df.drop_duplicates(subset=['snp'])['snp'].values.tolist())
         if multiple_phenotypes:
             if 'block' in parser.snp2gene_df.columns:
                 if 'sig_in' in parser.snp2gene_df.columns:
@@ -193,6 +193,7 @@ class SNPTreeParser(TreeParser):
         parser.sys2ind, parser.ind2sys, parser.gene2ind, parser.ind2gene, parser.gene2sys_mask = parser.build_mask(list(parser.sys2ind.keys()), ordered_genes,
                                                                                                                    parser.sys2gene)
         parser.sys2gene_mask = parser.gene2sys_mask.T
+        parser.n_genes = len(parser.gene2ind)
         parser.n_snps = len(snps)
         print("The number of SNPs:", parser.n_snps)
         parser.snp_pad_index = parser.n_snps
@@ -239,7 +240,7 @@ class SNPTreeParser(TreeParser):
             si = parser.snp2ind[snp]
             if parser.block_bias:
                 snp_block = self.snp2block[snp]
-                parser.snp2gene_mask[gi, si] = 1
+                parser.snp2gene_mask[gi, si] = 0
                 block2genes = self.block2gene[snp_block]
                 for gene_in_block in block2genes:
                     if gene_in_block in parser.gene2ind.keys():
@@ -274,7 +275,9 @@ class SNPTreeParser(TreeParser):
                 parser.snp2gene_by_phenotype_dict[pheno] = pheno_dict
 
         # ———— 5) return only if non‑inplace ————
-        if parent_result is not None:
+        #if parent_result is not None:
+        #    return parser
+        if not inplace:
             return parser
 
 
@@ -310,9 +313,10 @@ class SNPTreeParser(TreeParser):
                                key=lambda g: gene_to_first_snp[g])
 
         # Add any genes not connected to SNPs at the end
-        all_genes = set(self.ind2gene.values())
-        unconnected_genes = all_genes - set(ordered_genes)
-        ordered_genes.extend(sorted(unconnected_genes))
+        all_genes_in_parser = set(self.gene2ind.keys())
+        genes_in_ordered_list = set(ordered_genes)
+        unconnected_genes = all_genes_in_parser - genes_in_ordered_list
+        ordered_genes.extend(sorted(list(unconnected_genes)))
 
         return ordered_genes
 
@@ -478,6 +482,41 @@ class SNPTreeParser(TreeParser):
                     systems_to_process.add(parent)
 
         return collected_systems
+
+    def collapse_by_gene_similarity(self, similarity_threshold=0.7, to_keep=None, verbose=True, inplace=False):
+        # Call the parent method to get the collapsed ontology
+        collapsed_parser = super().collapse_by_gene_similarity(
+            similarity_threshold=similarity_threshold,
+            to_keep=to_keep,
+            verbose=verbose,
+            inplace=False  # Always work on a copy
+        )
+
+        # Save the collapsed ontology to a temporary file
+        temp_ontology_path = "/cellar/projects/G2PT_T2D/tests/temp_collapsed_ontology.tsv"
+        collapsed_parser.ontology.to_csv(temp_ontology_path, sep='	', index=False, header=False)
+
+        # Re-initialize with the SNP data
+        if inplace:
+            self.init_ontology_with_snp(
+                collapsed_parser.ontology,
+                self.snp2gene_df,
+                inplace=True,
+                verbose=verbose
+            )
+        else:
+            # Create a new SNPTreeParser instance
+            new_parser = SNPTreeParser(
+                ontology=temp_ontology_path,
+                snp2gene=self.snp2gene_df,
+                dense_attention=self.dense_attention,
+                sys_annot_file=None, # Annotations are already in the collapsed parser
+                by_chr=self.by_chr,
+                multiple_phenotypes=hasattr(self, 'phenotypes'),
+                block_bias=self.block_bias
+            )
+            new_parser.sys_annot_dict = collapsed_parser.sys_annot_dict
+            return new_parser
 
 
 

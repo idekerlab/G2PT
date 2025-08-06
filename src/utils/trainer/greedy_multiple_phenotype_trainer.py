@@ -27,11 +27,12 @@ from src.utils.tree import SNPTreeParser
 class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
 
     def __init__(self, snp2p_model, tree_parser, snp2p_dataloader, device, args, target_phenotype,
-                 validation_dataloader=None, fix_system=False, pretrained_checkpoint=None):
+                 validation_dataloader=None, fix_system=False, pretrained_checkpoint=None, use_mlflow=False):
         super(GreedyMultiplePhenotypeTrainer, self).__init__(snp2p_model, tree_parser, snp2p_dataloader,
                                                              device, args, target_phenotype=target_phenotype,
                                                              fix_system=fix_system,
-                                                             validation_dataloader=validation_dataloader)
+                                                             validation_dataloader=validation_dataloader,
+                                                             use_mlflow=use_mlflow)
 
         self.target_phenotype = target_phenotype
         self.improvement_threshold = 0.0001
@@ -41,6 +42,11 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
         # History tracking
         self.selection_history = []
         self.logger = logging.getLogger(__name__)
+
+        # Store indices of pretrained embeddings
+        self.pretrained_sys_indices = None
+        self.pretrained_gene_indices = None
+        self.pretrained_snp_indices = None
 
         # Load pretrained model if provided
         if self.pretrained_checkpoint is not None:
@@ -134,6 +140,14 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                 state_dict[key] = self.map_embeddings(state_dict[key], new_state_dict[key],
                                                                 checkpoint['arguments'].pheno2ind,
                                                                 self.args.pheno2ind)
+            if 'system_value_scale' in key:
+                state_dict[key] = self.map_embeddings(state_dict[key].unsqueeze(1), new_state_dict[key].unsqueeze(1),
+                                                                old_snp_tree_parser.sys2ind,
+                                                                new_snp_tree_parser.sys2ind).squeeze(1)
+            if 'gene_value_scale' in key:
+                state_dict[key] = self.map_embeddings(state_dict[key].unsqueeze(1), new_state_dict[key].unsqueeze(1),
+                                                                old_snp_tree_parser.gene2ind,
+                                                                new_snp_tree_parser.gene2ind).squeeze(1)
             if 'snp_batch_norm.running_mean' in key:
                 state_dict[key] = self.map_embeddings(state_dict[key][0], new_state_dict[key][0],
                                                                 old_snp_tree_parser.snp2ind,
@@ -142,10 +156,84 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                 state_dict[key] = self.map_embeddings(state_dict[key][0], new_state_dict[key][0],
                                                                 old_snp_tree_parser.snp2ind,
                                                                 new_snp_tree_parser.snp2ind).unsqueeze(0)
+        # Store pretrained indices
+        self.pretrained_sys_indices = [new_snp_tree_parser.sys2ind[s] for s in old_snp_tree_parser.sys2ind if s in new_snp_tree_parser.sys2ind]
+        self.pretrained_gene_indices = [new_snp_tree_parser.gene2ind[g] for g in old_snp_tree_parser.gene2ind if g in new_snp_tree_parser.gene2ind]
+        self.pretrained_snp_indices = [new_snp_tree_parser.snp2ind[snp] for snp in old_snp_tree_parser.snp2ind if snp in new_snp_tree_parser.snp2ind]
+
         # Load the state dict
         self.snp2p_model.load_state_dict(state_dict, strict=False)
         self.logger.info("Pretrained model loaded successfully")
         self.snp2p_model = self.snp2p_model.to(self.device)
+
+    def _create_optimizer_with_param_groups(self, model, lr):
+        params = []
+        pretrained_lr = lr / 5.0
+
+        # Handle DDP and non-DDP models
+        prefix = 'module.' if isinstance(model, nn.parallel.DistributedDataParallel) else ''
+
+        embedding_param_names = {
+            f'{prefix}system_embedding.weight': (self.pretrained_sys_indices, self.tree_parser.n_systems + 1),
+            f'{prefix}gene_embedding.weight': (self.pretrained_gene_indices, self.tree_parser.n_genes + 1),
+            f'{prefix}snp_embedding.weight': (self.pretrained_snp_indices, self.tree_parser.n_snps * 3 + 2),
+        }
+
+        other_params = []
+        for name, param in model.named_parameters():
+            if name in embedding_param_names:
+                pretrained_indices, total_size = embedding_param_names[name]
+
+                if pretrained_indices is None:
+                    # No pretrained indices, treat all as new
+                    other_params.append(param)
+                    continue
+
+                # Create masks for pretrained and new embeddings
+                pretrained_mask = torch.zeros(total_size, dtype=torch.bool, device=param.device)
+                pretrained_mask[pretrained_indices] = True
+                
+                # Add pretrained params
+                params.append({'params': param[pretrained_mask], 'lr': pretrained_lr})
+                # Add new params
+                params.append({'params': param[~pretrained_mask], 'lr': lr})
+            else:
+                other_params.append(param)
+
+        params.append({'params': other_params, 'lr': lr})
+        return optim.AdamW(params, weight_decay=self.args.wd)
+
+    def add_phenotype_as_embedding(self, model, phenotypes):
+        """
+        Pre-trains embedding layers using phenotype labels.
+        """
+        self.logger.info(f"Pre-training embedding layer with phenotype labels for: {', '.join(phenotypes)}")
+
+        model_to_train = model.module if self.args.distributed else model
+
+        # Freeze all parameters except for embedding layers
+        for name, param in model_to_train.named_parameters():
+            if 'embedding' in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+
+        optimizer = self._create_optimizer_with_param_groups(model_to_train, self.args.lr / 5)
+
+        train_dataset = self.snp2p_dataloader.dataset
+        train_dataset.select_phenotypes(phenotypes)
+        dataloader = DataLoader(train_dataset, batch_size=None, num_workers=self.args.jobs, prefetch_factor=2)
+
+        # Run for a few epochs
+        for epoch in range(3):
+            self.iter_minibatches(
+                model, dataloader, optimizer, epoch=epoch,
+                name=f"Pre-training embeddings with phenotypes: {', '.join(phenotypes)}"
+            )
+
+        # Unfreeze all parameters for the main training
+        for param in model_to_train.parameters():
+            param.requires_grad = True
 
     def greedy_phenotype_selection(self, skip_initial_training=False) -> Tuple[float, nn.Module, List[str]]:
         """
@@ -168,7 +256,8 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
 
             # Just evaluate the pretrained model
             if self.args.rank == 0:
-                mlflow.start_run(nested=True, run_name=f"Pretrained_Evaluation_{self.target_phenotype}")
+                if self.use_mlflow:
+                    mlflow.start_run(nested=True, run_name=f"Pretrained_Evaluation_{self.target_phenotype}")
 
             model2train = self.snp2p_model
 
@@ -190,26 +279,28 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
 
                 if self.args.rank == 0:
                     print(f"Pretrained model performance: {initial_performance:.4f}")
-                    mlflow.log_metric("pretrained_performance", initial_performance)
+                    if self.use_mlflow:
+                        mlflow.log_metric("pretrained_performance", initial_performance)
             else:
                 initial_performance = 0.0
                 self.logger.warning("No validation dataloader provided - cannot evaluate pretrained model")
 
             if self.args.rank == 0:
-                mlflow.end_run()
+                if self.use_mlflow:
+                    mlflow.end_run()
 
         else:
             # Train initial model with target phenotype only (original behavior)
             self.logger.info(f"Training baseline model with {self.target_phenotype} only...")
 
             if self.args.rank == 0:
-                mlflow.start_run(nested=True, run_name=f"Baseline_Training_{self.target_phenotype}")
+                if self.use_mlflow:
+                    mlflow.start_run(nested=True, run_name=f"Baseline_Training_{self.target_phenotype}")
             if self.args.distributed:
                 dist.barrier()
 
             model2train = self.snp2p_model
-            optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model2train.parameters()),
-                                    lr=self.args.lr, weight_decay=self.args.wd)
+            optimizer = self._create_optimizer_with_param_groups(model2train, self.args.lr)
 
             train_dataset = self.snp2p_dataloader.dataset
             train_dataset.select_phenotypes(phenotype_set)
@@ -307,10 +398,16 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                     f"Initial training finished. Best performance: {initial_performance:.4f} at epoch {best_epoch_tracked}")
 
             if self.args.rank == 0:
-                mlflow.end_run()
+                if self.use_mlflow:
+                    mlflow.end_run()
 
         # Save initial model
         self.save_model(model2train, phenotype_set, epoch='best')
+
+        # Update pretrained indices to all current indices
+        self.pretrained_sys_indices = list(self.tree_parser.sys2ind.values())
+        self.pretrained_gene_indices = list(self.tree_parser.gene2ind.values())
+        self.pretrained_snp_indices = list(self.tree_parser.snp2ind.values())
 
         # Track history
         self.selection_history.append({
@@ -360,6 +457,12 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                 best_phenotype_set = candidate_phenotype_set
                 best_model = candidate_model  # Update to use the best model for next iteration
                 self.save_model(best_model, best_phenotype_set)
+                
+                # Update pretrained indices to all current indices
+                self.pretrained_sys_indices = list(self.tree_parser.sys2ind.values())
+                self.pretrained_gene_indices = list(self.tree_parser.gene2ind.values())
+                self.pretrained_snp_indices = list(self.tree_parser.snp2ind.values())
+
                 # Track history
 
                 self.selection_history.append({
@@ -440,10 +543,13 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
             self.logger.info(f"  Full training for {phenotype}...")
 
             if self.args.rank == 0:
-                mlflow.start_run(nested=True, run_name=f"Candidate_Training_{'/'.join(temporal_phenotype_set)}")
+                if self.use_mlflow:
+                    mlflow.start_run(nested=True, run_name=f"Candidate_Training_{'/'.join(temporal_phenotype_set)}")
 
             # Create a copy of the model for this candidate
             candidate_model = copy.deepcopy(model)
+
+            self.add_phenotype_as_embedding(candidate_model, temporal_phenotype_set)
 
             # Early stopping for individual candidates
             candidate_early_stopping = EarlyStopping(
@@ -493,7 +599,7 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                         if current_best_model is not None:
                             del current_best_model
                         current_best_model = copy.deepcopy(candidate_model)
-
+            self.save_model(candidate_model, temporal_phenotype_set)
             # Phase 2: Transformer training (only if embedding phase was promising)
             if candidate_best_performance > best_performance:  # Only continue if showing promise
                 candidate_early_stopping.reset()  # Reset for transformer phase
@@ -534,11 +640,13 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                             if current_best_model is not None:
                                 del current_best_model
                             current_best_model = copy.deepcopy(candidate_model)
+                self.save_model(candidate_model, temporal_phenotype_set)
             else:
                 self.logger.info(f"    Skipping transformer phase for {phenotype} (insufficient improvement)")
 
             if self.args.rank == 0:
-                mlflow.end_run()
+                if self.use_mlflow:
+                    mlflow.end_run()
 
             # Clean up candidate model if it's not the best
             if candidate_model is not current_best_model:
@@ -575,15 +683,15 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                     parameter.requires_grad = True
                 else:
                     parameter.requires_grad = False
-        optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model2train.parameters()), lr=self.args.lr/10,
-                                     weight_decay=self.args.wd)
+        optimizer = self._create_optimizer_with_param_groups(model2train, self.args.lr/10)
         avg_loss = self.iter_minibatches(model2train, snp2p_dataloader, optimizer, epoch=epoch, name=f"Training with phenotypes, {','.join(phenotypes) }, {str(train)}")
 
         # All ranks should participate in evaluation
         performance = self.evaluate(model2train, val_snp2p_dataloader, epoch, phenotypes=phenotypes, name=f"Validation with phenotypes, {','.join(phenotypes) }, {str(train)}")
 
         if self.args.rank == 0:
-            mlflow.log_metric("train_loss_epoch", avg_loss, step=epoch)
+            if self.use_mlflow:
+                mlflow.log_metric("train_loss_epoch", avg_loss, step=epoch)
 
         # All-reduce performance across all ranks
         if self.args.distributed:
@@ -623,10 +731,12 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                     torch.save({"arguments": self.args,
                                 "state_dict": model.module.state_dict()},
                                output_path)
-                    mlflow.log_artifact(output_path)
+                    if self.use_mlflow:
+                        mlflow.log_artifact(output_path)
             else:
                 print("Save to...", output_path)
                 torch.save(
                     {"arguments": self.args, "state_dict": model.state_dict()},
                     output_path)
-                mlflow.log_artifact(output_path)
+                if self.use_mlflow:
+                    mlflow.log_artifact(output_path)

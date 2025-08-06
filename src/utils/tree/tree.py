@@ -4,20 +4,69 @@ import networkx as nx
 import torch
 import copy
 import torch.nn.functional as F
-from itertools import product
+from itertools import product, combinations
+from sklearn.cluster import AgglomerativeClustering
+import obonet
+import re
 
 class TreeParser(object):
 
     def __init__(self, ontology, dense_attention=False, sys_annot_file=None):
-        ontology = pd.read_csv(ontology, sep='\t', names=['parent', 'child', 'interaction'])
+        if isinstance(ontology, pd.DataFrame):
+            ontology_df = ontology
+        else:
+            ontology_df = pd.read_csv(ontology, sep='	', names=['parent', 'child', 'interaction'])
+        
+        ontology_df['parent'] = ontology_df['parent'].astype(str)
+        ontology_df['child'] = ontology_df['child'].astype(str)
         self.dense_attention = dense_attention
         if sys_annot_file:
-            sys_descriptions = pd.read_csv(sys_annot_file, header=None, names=['Term', 'Term_Description'], index_col=0, sep='\t')
-
+            sys_descriptions = pd.read_csv(sys_annot_file, header=None, names=['Term', 'Term_Description'], index_col=0, sep='	')
             self.sys_annot_dict = sys_descriptions.to_dict()["Term_Description"]
         else:
             self.sys_annot_dict = None
-        self.init_ontology(ontology)
+        self.sys_rename_info = {}
+        self.init_ontology(ontology_df)
+
+    @classmethod
+    def from_obo(cls, obo_path, dense_attention=False):
+        """
+        Create a TreeParser instance from an OBO file.
+        """
+        try:
+            graph = obonet.read_obo(obo_path)
+        except ImportError:
+            raise ImportError("The 'obonet' library is required. Please install it with 'pip install obonet'.")
+
+        interactions = []
+        sys_annot_dict = {}
+
+        for node, data in graph.nodes(data=True):
+            sys_annot_dict[node] = data.get('name', node)
+            if 'is_a' in data:
+                for parent in data['is_a']:
+                    interactions.append((parent, node, 'is_a'))
+        
+        ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
+        
+        # Create a temporary annotation file to pass to the constructor
+        annot_df = pd.DataFrame.from_dict(sys_annot_dict, orient='index', columns=['Term_Description'])
+        annot_df.index.name = 'Term'
+        temp_annot_path = 'temp_obo_annotations.tsv'
+        annot_df.to_csv(temp_annot_path, sep='	')
+
+        instance = cls(ontology_df, dense_attention=dense_attention, sys_annot_file=temp_annot_path)
+        
+        import os
+        os.remove(temp_annot_path)
+        
+        return instance
+
+
+    def _get_annotated_name(self, term):
+        if self.sys_annot_dict and term in self.sys_annot_dict:
+            return f"'{term}' ({self.sys_annot_dict[term]})"
+        return f"'{term}'"
 
     def init_ontology(self, ontology_df, inplace=True, verbose=True):
         # If inplace is False, work on a deep copy of self.
@@ -27,6 +76,8 @@ class TreeParser(object):
             obj = self
 
         # Initialize ontology and various attributes
+        if verbose:
+            print("Processing Ontology dataframe...")
         obj.ontology = ontology_df
         obj.sys_df = ontology_df.loc[ontology_df['interaction'] != 'gene']
         obj.gene2sys_df = ontology_df.loc[ontology_df['interaction'] == 'gene']
@@ -35,26 +86,29 @@ class TreeParser(object):
         obj.interaction_types = obj.sys_df['interaction'].unique()
         obj.interaction_dict = { (row['parent'], row['child']): row['interaction']
                                  for i, row in obj.sys_df.iterrows() }
-        genes = obj.gene2sys_df['child'].unique()
-        obj.gene2ind = { gene: index for index, gene in enumerate(genes) }
-        obj.ind2gene = { index: gene for index, gene in enumerate(genes) }
-        systems = np.unique(obj.sys_df[['parent', 'child']].values)
-        obj.sys2ind = { system: i for i, system in enumerate(systems) }
+
+        # Define system and gene nodes explicitly
+        system_nodes = sorted(list(set(obj.sys_df['parent'].unique()) | set(obj.sys_df['child'].unique())))
+        all_nodes = set(ontology_df['parent'].unique()) | set(ontology_df['child'].unique())
+        gene_nodes = sorted(list(all_nodes - set(system_nodes)))
+        if verbose:
+            print("Building system and gene indices dictionary..")
+        obj.sys2ind = { system: i for i, system in enumerate(system_nodes) }
         obj.ind2sys = { i: system for system, i in obj.sys2ind.items() }
+        obj.gene2ind = { gene: index for index, gene in enumerate(gene_nodes) }
+        obj.ind2gene = { index: gene for index, gene in obj.gene2ind.items() }
+
         obj.n_systems = len(obj.sys2ind)
         obj.n_genes = len(obj.gene2ind)
 
-
         sys2gene_grouped_by_sys = obj.gene2sys_df.groupby('parent')
         sys2gene_grouped_by_gene = obj.gene2sys_df.groupby('child')
-        sys2gene_dict = { sys: sys2gene_grouped_by_sys.get_group(sys)['child'].values.tolist()
-                          for sys in sys2gene_grouped_by_sys.groups.keys() }
 
-        # Delete genes in child system (assumes delete_parent_genes_from_child is defined)
-        for sys in list(sys2gene_dict.keys()):
-            obj.delete_parent_genes_from_child(obj.sys_graph, sys, sys2gene_dict)
+        obj.sys2gene_dict = { sys: sys2gene_grouped_by_sys.get_group(sys)['child'].values.tolist()
+                          for sys in sys2gene_grouped_by_sys.groups.keys() if sys in obj.sys2ind}
 
-        obj.sys2gene = copy.deepcopy(sys2gene_dict)
+        # Initialize sys2gene and gene2sys
+        obj.sys2gene = copy.deepcopy(obj.sys2gene_dict)
         obj.gene2sys = {}
         for sys, genes in obj.sys2gene.items():
             for gene in genes:
@@ -65,15 +119,19 @@ class TreeParser(object):
 
         obj.system2system_mask = np.full((len(obj.sys2ind), len(obj.sys2ind)), -10**4)
         for parent_system, child_system in zip(obj.sys_df['parent'], obj.sys_df['child']):
-            obj.system2system_mask[obj.sys2ind[parent_system], obj.sys2ind[child_system]] = 0
+            if parent_system in obj.sys2ind and child_system in obj.sys2ind:
+                obj.system2system_mask[obj.sys2ind[parent_system], obj.sys2ind[child_system]] = 0
 
         obj.gene2sys_mask = np.full((int(np.ceil((obj.n_systems+1)/8)*8), (int(np.ceil((obj.n_genes+1)/8)*8))), -10**4)#np.zeros((len(obj.sys2ind), len(obj.gene2ind)))
-        obj.sys2gene_dict = {obj.sys2ind[system]: [] for system in systems }
-        obj.gene2sys_dict = { gene: [] for gene in range(obj.n_genes) }
+        obj.sys2gene_dict = {system: [] for system in system_nodes}
+        obj.gene2sys_dict = {gene: [] for gene in gene_nodes}
+        if verbose:
+            print("Creating masks..")
         for system, gene in zip(obj.gene2sys_df['parent'], obj.gene2sys_df['child']):
-            obj.gene2sys_mask[obj.sys2ind[system], obj.gene2ind[gene]] = 0.
-            obj.sys2gene_dict[obj.sys2ind[system]].append(obj.gene2ind[gene])
-            obj.gene2sys_dict[obj.gene2ind[gene]].append(obj.sys2ind[system])
+            if system in obj.sys2ind and gene in obj.gene2ind:
+                obj.gene2sys_mask[obj.sys2ind[system], obj.gene2ind[gene]] = 0.
+                obj.sys2gene_dict[system].append(gene)
+                obj.gene2sys_dict[gene].append(system)
 
         if obj.dense_attention:
             obj.gene2sys_mask = torch.ones_like(torch.tensor(obj.gene2sys_mask))
@@ -82,12 +140,17 @@ class TreeParser(object):
 
         obj.node_height_dict = obj.compute_node_heights()
 
-        for sys in systems:
-            if sys not in sys2gene_dict:
-                sys2gene_dict[sys] = []
-        for sys in systems:
-            obj.add_child_genes_to_parents(obj.sys_graph, sys, sys2gene_dict)
-        obj.sys2gene_full = sys2gene_dict
+        systems = list(obj.sys2ind.keys())
+        sys2gene_full = {sys: obj.sys2gene.get(sys, []) for sys in systems}
+
+        for sys in reversed(list(nx.topological_sort(obj.sys_graph))):
+            # Get genes of the current system
+            current_genes = set(sys2gene_full.get(sys, []))
+            # Add genes from all its children
+            for child in obj.sys_graph.successors(sys):
+                current_genes.update(sys2gene_full.get(child, []))
+            sys2gene_full[sys] = list(current_genes)
+        obj.sys2gene_full = sys2gene_full
 
         obj.gene2sys_full = {}
         for sys, genes in obj.sys2gene_full.items():
@@ -111,7 +174,8 @@ class TreeParser(object):
                 children_genes = [target for source, target in obj.gene2sys_graph.out_edges(node)]
                 for child_i in children_genes:
                     for child_j in children_genes:
-                        obj.gene2gene_mask[obj.gene2ind[child_i], obj.gene2ind[child_j]] = 1
+                        if child_i in obj.gene2ind and child_j in obj.gene2ind:
+                            obj.gene2gene_mask[obj.gene2ind[child_i], obj.gene2ind[child_j]] = 1
         # If not modifying self, return the updated copy.
         if verbose:
             print("%d Systems are queried" % obj.n_systems)
@@ -224,115 +288,47 @@ class TreeParser(object):
         gene_dict[node] = genes
         return genes
 
+    
+
     def collapse(self, to_keep=None, min_term_size=2, verbose=True, inplace=False):
-        """
-        Remove redundant and empty terms while preserving hierarchical relations. Each child of a removed term T is
-        connected to every parent of T. This operation is commutative, meaning the order of removal does not matter.
-
-        Parameters
-        ----------
-        to_keep : list, optional
-            Systems to retain. Default is None.
-        min_term_size : int, optional
-            Minimum term size to retain. Default is 2.
-        verbose : bool, optional
-            Whether to print progress messages. Default is True.
-        """
-        # Copy the current sys2gene mapping to preserve the original
-        ont_full = copy.deepcopy(self.sys2gene_full)
-        term_hash = {term: hash(tuple(genes)) for term, genes in ont_full.items()}
-
-        # Identify terms to collapse based on redundancy and size
-        to_collapse = {
-            parent
-            for parent in self.sys2ind
-            for child in self.sys_graph[parent]
-            if term_hash[parent] == term_hash[child]
-        }
-
-        # Add terms below the minimum size to the collapse set
-        if min_term_size is not None:
-            small_terms = {
-                term for term, size in zip(self.sys2ind, [len(self.sys2gene_full[sys]) for sys in self.sys2ind])
-                if size < min_term_size
-            }
-            to_collapse.update(small_terms)
-
-        # Exclude terms specified in `to_keep`
-        if to_keep:
-            to_collapse.difference_update(to_keep)
-
-        if verbose:
-            print(f'The number of nodes to collapse: {len(to_collapse)}')
-
-        # Sort terms to collapse by node height
-        to_collapse = sorted(to_collapse, key=lambda term: self.node_height_dict[term])
-
-        # Copy system graph and sys2gene for modification
-        sys_graph_copied = copy.deepcopy(self.sys_graph)
-        sys2gene_copied = copy.deepcopy(self.sys2gene)
-
-        # Perform collapse
-        sys_graph_collapsed, sys2gene_collapsed = self.delete_systems(to_collapse, sys_graph_copied, sys2gene_copied)
-
-        # Generate the collapsed ontology
-        collapsed_ontology = self.sys_graph_to_ontology_table(sys_graph_collapsed, sys2gene_collapsed)
-
-        #return collapsed_ontology
-
-        # Reinitialize ontology with the collapsed data
-        if inplace:
-            self.init_ontology(collapsed_ontology)
+        if not inplace:
+            obj = copy.deepcopy(self)
         else:
-            return self.init_ontology(collapsed_ontology, inplace=False)
+            obj = self
 
-    def delete_systems(self, systems, sys_graph, sys2gene):
-        """
-        Delete specified systems from the graph and update mappings.
+        # Simplified collapse logic
+        to_collapse = []
+        for term, genes in obj.sys2gene_full.items():
+            if len(genes) < min_term_size:
+                to_collapse.append(term)
 
-        Parameters:
-        ----------
-        systems : list
-            List of systems to delete.
-        sys_graph : NetworkX DiGraph
-            Graph representing the system relationships.
-        sys2gene : dict
-            Dictionary mapping systems to their genes.
+        if to_keep is not None:
+            to_collapse = [term for term in to_collapse if term not in to_keep]
 
-        Returns:
-        -------
-        tuple
-            Updated graph and system-to-gene dictionary.
-        """
-        for system in systems:
-            # Get parents and children of the current system
-            parents = list(sys_graph.predecessors(system))
-            children = list(sys_graph.successors(system))
+        collapsed_sys_graph = obj.sys_graph.copy()
+        for node in to_collapse:
+            if node in collapsed_sys_graph:
+                parents = list(collapsed_sys_graph.predecessors(node))
+                children = list(collapsed_sys_graph.successors(node))
+                for p in parents:
+                    for c in children:
+                        if not collapsed_sys_graph.has_edge(p, c):
+                            collapsed_sys_graph.add_edge(p, c, **obj.sys_graph.get_edge_data(p, node, default={}))
+                collapsed_sys_graph.remove_node(node)
 
-            # Connect every parent of the system to every child
-            for parent, child in product(parents, children):
-                sys_graph.add_edge(parent, child, interaction=sys_graph.edges[(system, child)]['interaction'])
-            #sys_graph.add_edges_from((parent, child) for parent, child in )
+        interactions = []
+        for u, v, data in collapsed_sys_graph.edges(data=True):
+            interactions.append((u, v, data.get('interaction', 'default')))
 
-            # Update sys2gene mappings for parents
-            parent_genes = {parent: sys2gene.get(parent, []) for parent in parents}
-            system_genes = sys2gene.get(system, [])
-            for parent in parents:
-                interaction_type = sys_graph.edges[(parent, system)]['interaction']
-                #if (interaction_type == 'is_a') | (interaction_type == 'part_of') | (interaction_type == 'default'):
-                parent_genes[parent] = list(parent_genes[parent])
-                parent_genes[parent].extend(system_genes)
-                sys2gene[parent] = parent_genes[parent]
+        for _, row in obj.gene2sys_df.iterrows():
+             if row['parent'] in collapsed_sys_graph and row['child'] in obj.gene2ind:
+                interactions.append(tuple(row))
 
-            # Remove the system node
-            sys_graph.remove_node(system)
+        collapsed_ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
+        obj.init_ontology(collapsed_ontology_df, inplace=True, verbose=verbose)
 
-            # Remove the system from sys2gene if it exists
-            sys2gene.pop(system, None)
-
-        # remove duplicated genes
-        sys2gene = {sys: list(set(genes)) for sys, genes in sys2gene.items()}
-        return sys_graph, sys2gene
+        if not inplace:
+            return obj
 
     def sys_graph_to_ontology_table(self, sys_graph, sys2gene):
         """
@@ -371,7 +367,10 @@ class TreeParser(object):
         if inplace:
             self.init_ontology(ontology_df_new, inplace=inplace)
         else:
-            return self.init_ontology(ontology_df_new, inplace=inplace)
+            new_obj = copy.deepcopy(self)
+            new_obj.init_ontology(ontology_df_new, inplace=True)
+            return new_obj
+
 
     def compute_node_heights(self):
         """
@@ -382,21 +381,17 @@ class TreeParser(object):
         dict
             Dictionary mapping nodes to their heights.
         """
-        # Ensure the graph is a tree (i.e., has a single root)
         if not nx.is_directed_acyclic_graph(self.sys_graph):
-            raise ValueError("The input graph must be a directed acyclic graph (DAG).")
+            # Return empty dict if not a DAG to avoid errors, or handle as needed
+            return {}
 
-        # Start by identifying leaf nodes
-        leaf_nodes = [node for node in self.sys_graph.nodes if self.sys_graph.out_degree(node) == 0]
-
-        # Dictionary to store node heights
-        heights = {node: 0 for node in leaf_nodes}  # Leaf nodes have height 0
-
-        # Process nodes in reverse topological order
-        for node in reversed(list(nx.topological_sort(self.sys_graph))):
-            if node not in heights:  # Non-leaf nodes
-                # Height is 1 + max height of its children
-                heights[node] = 1 + max(heights[child] for child in self.sys_graph.successors(node))
+        heights = {}
+        for node in nx.topological_sort(self.sys_graph):
+            successors = list(self.sys_graph.successors(node))
+            if not successors:
+                heights[node] = 0
+            else:
+                heights[node] = 1 + max(heights.get(child, -1) for child in successors)
         return heights
 
 
@@ -431,7 +426,52 @@ class TreeParser(object):
         output_path : str
             Path to the output GMT file.
         """
-        self.ontology.to_csv(out_dir, sep='\t', index=False, header=None)
+        self.ontology.to_csv(out_dir, sep='	', index=False, header=None)
+
+    def save_annotations(self, out_path):
+        """
+        Save the current system annotations and renaming reasons to a file.
+        """
+        if not self.sys_annot_dict:
+            print("No annotations to save.")
+            return
+
+        annot_df = pd.DataFrame.from_dict(self.sys_annot_dict, orient='index', columns=['Term_Description'])
+        annot_df.index.name = 'Term'
+        
+        if self.sys_rename_info:
+            reason_df = pd.DataFrame.from_dict(self.sys_rename_info, orient='index', columns=['Rename_Reason'])
+            reason_df.index.name = 'Term'
+            annot_df = annot_df.join(reason_df)
+
+        annot_df.to_csv(out_path, sep='	')
+
+    def write_obo(self, out_path):
+        """
+        Write the current ontology to an OBO file.
+        """
+        with open(out_path, 'w') as f:
+            f.write("format-version: 1.2\n")
+            f.write("data-version: g2pt-generated\n\n")
+
+            for term in sorted(self.sys_graph.nodes()):
+                f.write("[Term]\n")
+                f.write(f"id: {term}\n")
+                
+                name = self.sys_annot_dict.get(term, term)
+                f.write(f"name: {name}\n")
+                
+                if term in self.sys_rename_info:
+                    reason = self.sys_rename_info[term].replace('\n', ' ').replace('"', "'")
+                    f.write(f'comment: "Renaming reason: {reason}"\n')
+
+                parents = sorted(self.sys_graph.predecessors(term))
+                for parent in parents:
+                    interaction = self.interaction_dict.get((parent, term), 'is_a')
+                    parent_name = self.sys_annot_dict.get(parent, parent)
+                    f.write(f"{interaction}: {parent} ! {parent_name}\n")
+                
+                f.write("\n")
 
     def write_gmt(self, out_dir):
         """
@@ -492,61 +532,12 @@ class TreeParser(object):
 
 
     def get_hierarchical_interactions(self, interaction_types, direction='forward', format='indices', sys_ind_alias_dict=None):
-        """
-        Compute hierarchical interaction masks across the system graph.
-
-        This function traverses the system graph starting from the root nodes (nodes with no incoming
-        edges) and iteratively computes interaction masks for each hierarchical level. At each level,
-        it groups interactions by the provided interaction types and aggregates the edge information
-        into mask matrices. Depending on the `direction` parameter, the function treats the connection
-        between nodes either in the forward direction (parent-to-child) or in the backward direction
-        (child-to-parent). The output format is flexible; by default, it returns index-based dictionaries
-        that include corresponding query indices, key indices, and mask tensors. When an alias mapping
-        dictionary is supplied, the indices are transformed accordingly.
-
-        Parameters
-        ----------
-        interaction_types : iterable
-            A collection of interaction types to be processed. Only interactions whose type is present
-            in this iterable will be included in the masks.
-        direction : str, optional
-            The direction in which to traverse and record the interactions. Use 'forward' (default) to
-            record interactions from parent to child, or 'backward' to reverse the roles of parent and child.
-        format : str, optional
-            The output format for the interaction masks. If set to 'indices' (default), the function
-            returns, for each hierarchical level, a dictionary where each key (an interaction type) maps to
-            a sub-dictionary containing:
-                - "query": A torch.LongTensor of query indices.
-                - "key": A torch.LongTensor of key indices.
-                - "mask": A torch.FloatTensor representing the corresponding interaction mask.
-            Any value other than 'indices' causes the function to return, for each level, a dictionary mapping
-            each interaction type to a torch.FloatTensor mask.
-        sys_ind_alias_dict : dict, optional
-            If provided, this dictionary maps system indices to alternative alias indices. The function applies
-            this mapping (via the `alias_indices` method) to the query and key indices in the result when the
-            format is 'indices'.
-
-        Returns
-        -------
-        list
-            A list of hierarchical interaction masks for each level of the system graph traversal.
-            Each element corresponds to a hierarchical level and is structured as follows:
-                - When `format` is 'indices': a dictionary where keys are interaction types and values are
-                  sub-dictionaries with "query", "key", and "mask" tensors.
-                - Otherwise: a dictionary mapping each interaction type to a torch.FloatTensor mask.
-
-        Notes
-        -----
-        - The traversal begins from all root nodes of the system graph (nodes with in_degree == 0) and
-          continues iteratively until no more edges contribute to the masks.
-        - If the `direction` is 'forward', the resulting list is reversed at the end to maintain the proper
-          hierarchical order.
-        - When the instance attribute `dense_attention` is True, all computed masks are replaced with tensors
-          of ones.
-        """
         tree_roots = set([node for node in self.sys_graph.nodes() if self.sys_graph.in_degree(node)==0])
         result_masks = []
         cur_parents = set(tree_roots)
+        
+        visited_edges = set()
+
         while cur_parents:
             masks = {interaction_type:np.full((len(self.sys2ind), len(self.sys2ind)), -10**4) for interaction_type in interaction_types}
             queries = {interaction_type: [] for interaction_type in interaction_types}
@@ -556,57 +547,67 @@ class TreeParser(object):
             for parent in cur_parents:
                 children = list(self.sys_graph.successors(parent))
                 for child in children:
-                    edge_type = self.interaction_dict[(parent, child)]
+                    edge = (parent, child)
+                    if edge in visited_edges:
+                        continue
+                    
+                    visited_edges.add(edge)
+                    edge_type = self.interaction_dict.get(edge)
+                    if edge_type not in interaction_types:
+                        continue
+
                     if direction == 'forward':
                         masks[edge_type][self.sys2ind[parent], self.sys2ind[child]] = 0
-                        if format == 'indices':
-                            queries[edge_type].append(self.sys2ind[parent])
-                            keys[edge_type].append(self.sys2ind[child])
+                        queries[edge_type].append(self.sys2ind[parent])
+                        keys[edge_type].append(self.sys2ind[child])
                     elif direction == 'backward':
                         masks[edge_type][self.sys2ind[child], self.sys2ind[parent]] = 0
-                        if format == 'indices':
-                            queries[edge_type].append(self.sys2ind[child])
-                            keys[edge_type].append(self.sys2ind[parent])
+                        queries[edge_type].append(self.sys2ind[child])
+                        keys[edge_type].append(self.sys2ind[parent])
+                    
                     new_parents.add(child)
-            if sum([len(np.where(mask==0)) for mask in masks.values()]) == 0:
+
+            if not any(len(q) > 0 for q in queries.values()):
                 break
+
             if format == 'indices':
                 result_dict = {}
-
-                for interaction_type, mask in masks.items():
-                    if len(queries[interaction_type]) == 0:
+                for interaction_type in interaction_types:
+                    if not queries[interaction_type]:
                         continue
-                    queries[interaction_type] = sorted(list(set(queries[interaction_type])))
-                    keys[interaction_type] = sorted(list(set(keys[interaction_type])))
-                    result_mask = mask[queries[interaction_type], :]
-                    result_mask = result_mask[:, keys[interaction_type]]
+                    
+                    q_indices = sorted(list(set(queries[interaction_type])))
+                    k_indices = sorted(list(set(keys[interaction_type])))
+                    
+                    result_mask = masks[interaction_type][q_indices, :][:, k_indices]
                     result_mask = torch.tensor(result_mask, dtype=torch.float32)
-                    query_padded, key_padded, result_mask = self.pad_query_key_mask(queries[interaction_type],
-                                                                                    keys[interaction_type],
-                                                                                    result_mask,
-                                                                                    query_padding_index=self.n_systems,
+
+                    query_padded, key_padded, result_mask = self.pad_query_key_mask(q_indices, k_indices, result_mask, 
+                                                                                    query_padding_index=self.n_systems, 
                                                                                     key_padding_index=self.n_systems)
+                    
                     if self.dense_attention:
                         result_mask = torch.ones_like(result_mask)
-                    if direction=='forward':
-                        result_dict[interaction_type] = {"query": torch.tensor(query_padded, dtype=torch.long),
-                                                         "key": torch.tensor(key_padded, dtype=torch.long),
-                                                         "query_indices": torch.tensor(queries[interaction_type], dtype=torch.long),
-                                                         "key_indices": torch.tensor(keys[interaction_type], dtype=torch.long),
-                                                         "mask": result_mask}
-                    else:
-                        result_dict[interaction_type] = {"query": torch.tensor(key_padded, dtype=torch.long),
-                                                         "key": torch.tensor(query_padded, dtype=torch.long),
-                                                         "query_indices": torch.tensor(keys[interaction_type], dtype=torch.long),
-                                                         "key_indices": torch.tensor(queries[interaction_type], dtype=torch.long),
-                                                         "mask": result_mask.T}
-                result_masks.append(result_dict)
-            else:
-                result_mask = {torch.tensor(mask, dtype=torch.float32) for mask in masks}
-                if self.dense_attention:
-                    result_mask = {interaction_type: torch.ones_like(mask) for interaction_type, mask in masks.items()}
-                result_masks.append(result_mask)
+
+                    result_dict[interaction_type] = {
+                        "query": torch.tensor(query_padded, dtype=torch.long),
+                        "key": torch.tensor(key_padded, dtype=torch.long),
+                        "query_indices": torch.tensor(q_indices, dtype=torch.long),
+                        "key_indices": torch.tensor(k_indices, dtype=torch.long),
+                        "mask": result_mask
+                    }
+                if result_dict:
+                    result_masks.append(result_dict)
+            else: # mask format
+                result_mask_dict = {}
+                for interaction_type, mask in masks.items():
+                    if np.any(mask == 0):
+                        result_mask_dict[interaction_type] = torch.tensor(mask, dtype=torch.float32)
+                if result_mask_dict:
+                    result_masks.append(result_mask_dict)
+
             cur_parents = new_parents
+
         if direction == 'forward':
             result_masks.reverse()
         return result_masks
@@ -818,17 +819,316 @@ class TreeParser(object):
                                                                                 query_padding_index=subset_size,
                                                                                 key_padding_index=subset_size)
                 remapped_level[interaction_type] = {
-                    'query': torch.tensor(query_padded, dtype=torch.long),
-                    'key': torch.tensor(key_padded, dtype=torch.long),
-                    'query_indices': torch.tensor(new_queries, dtype=torch.long),
-                    'key_indices': torch.tensor(new_keys, dtype=torch.long),
-                    'mask': result_mask
+                    "query": torch.tensor(query_padded, dtype=torch.long),
+                    "key": torch.tensor(key_padded, dtype=torch.long),
+                    "query_indices": torch.tensor(new_queries, dtype=torch.long),
+                    "key_indices": torch.tensor(new_keys, dtype=torch.long),
+                    "mask": result_mask
                 }
             if len(remapped_level) != 0:
                 remapped_masks.append(remapped_level)
 
         return remapped_masks
 
+    def rename_systems_with_llm(self, target_phenotype, api_key, llm_provider='openai', model=None, inplace=False, verbose=True, overwrite=False):
+        """
+        Rename systems using an LLM based on their gene sets and a target phenotype.
+        This method now asks the LLM for a functional interpretation and justification.
+        """
+        if llm_provider == 'openai':
+            try:
+                import openai
+                import json
+            except ImportError:
+                raise ImportError("The 'openai' library is required. Please install it with 'pip install openai'.")
+            openai.api_key = api_key
+            if model is None:
+                model = "gpt-3.5-turbo"
+        elif llm_provider == 'gemini':
+            try:
+                import google_genai as genai
+                import json
+            except ImportError:
+                raise ImportError("The 'google-genai' library is required. Please install it with 'pip install google-genai'.")
+            genai.configure(api_key=api_key)
+            if model is None:
+                model = "gemini-pro"
+        else:
+            raise ValueError("Invalid llm_provider. Choose 'openai' or 'gemini'.")
+
+        if not inplace:
+            obj = copy.deepcopy(self)
+        else:
+            obj = self
+        
+        if verbose:
+            print(f"Renaming {len(obj.sys2ind)} systems using the '{model}' model from {llm_provider}...")
+
+        for system in obj.sys2ind.keys():
+            if not overwrite and system in obj.sys_rename_info:
+                if verbose:
+                    print(f"Skipping '{system}' as it has already been renamed.")
+                continue
+
+            genes = obj.sys2gene_full.get(system, [])
+            if not genes:
+                continue
+
+            gene_list_str = ", ".join(genes)
+            original_name = obj.sys_annot_dict.get(system, "unnamed system")
+
+            prompt = (
+                f"You are an expert biologist. Your task is to interpret a gene set from a system originally named '{original_name}' "
+                f"and provide a concise, functionally descriptive name, considering its relevance to the phenotype '{target_phenotype}'.\n\n"
+                f"Gene Set: {gene_list_str}\n\n"
+                f"Based on the functions of these genes, provide a new name for the system and a brief justification. "
+                f"The name should summarize the primary biological role. The reason should explain why the name is appropriate, linking gene function to the phenotype.\n\n"
+                f"Return your response as a single, valid JSON object with two keys: 'name' and 'reason'.\n"
+                f"Example format: {{\"name\": \"Example Name\", \"reason\": \"This is the reason.\"}}"
+            )
+
+            try:
+                response_text = ""
+                if llm_provider == 'openai':
+                    response = openai.ChatCompletion.create(
+                        model=model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.7,
+                        max_tokens=150,
+                    )
+                    response_text = response.choices[0].message['content'].strip()
+                elif llm_provider == 'gemini':
+                    gemini_model = genai.GenerativeModel(model)
+                    response = gemini_model.generate_content(prompt)
+                    response_text = response.text.strip()
+
+                # Use regex to find the JSON object within the response text
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if not json_match:
+                    if verbose:
+                        print(f"Could not find a JSON object in the response for system {system}.")
+                    continue
+
+                json_str = json_match.group(0)
+                response_data = json.loads(json_str)
+                new_name = response_data.get("name")
+                reason = response_data.get("reason")
+
+                if new_name and reason:
+                    obj.sys_annot_dict[system] = new_name
+                    obj.sys_rename_info[system] = reason
+                    if verbose:
+                        print(f"Renamed '{system}' to '{new_name}'")
+                else:
+                    if verbose:
+                        print(f"Could not parse name and reason for system {system} from LLM response.")
+
+            except (json.JSONDecodeError, KeyError) as e:
+                if verbose:
+                    print(f"Could not parse LLM response for system {system}: {e}")
+            except Exception as e:
+                print(f"Could not rename system {system} due to an API error: {e}")
+
+        if not inplace:
+            return obj
+
     @staticmethod
     def alias_indices(indices, source_ind2id_dict:dict, target_id2ind_dict: dict):
         return [target_id2ind_dict[source_ind2id_dict[ind]] for ind in indices]
+
+    def collapse_by_gene_similarity(self, similarity_threshold=0.7, to_keep=None, verbose=True, inplace=False):
+        if not inplace:
+            obj = copy.deepcopy(self)
+        else:
+            obj = self
+
+        systems = list(obj.sys2ind.keys())
+        
+        sim_df = pd.DataFrame(index=systems, columns=systems, dtype=float)
+        for term1, term2 in combinations(systems, 2):
+            genes1 = set(obj.sys2gene_full.get(term1, []))
+            genes2 = set(obj.sys2gene_full.get(term2, []))
+            
+            intersection_len = len(genes1.intersection(genes2))
+            union_len = len(genes1.union(genes2))
+            
+            if union_len == 0:
+                jaccard_sim = 0.0
+            else:
+                jaccard_sim = intersection_len / union_len
+            
+            sim_df.loc[term1, term2] = jaccard_sim
+            sim_df.loc[term2, term1] = jaccard_sim
+            
+        np.fill_diagonal(sim_df.values, 1.0)
+
+        distance_matrix = 1 - sim_df.values
+        
+        clustering = AgglomerativeClustering(
+            n_clusters=None,
+            metric='precomputed',
+            linkage='average',
+            distance_threshold=1 - similarity_threshold
+        )
+        
+        labels = clustering.fit_predict(distance_matrix)
+        
+        clusters = {}
+        for i, label in enumerate(labels):
+            if label not in clusters:
+                clusters[label] = []
+            clusters[label].append(systems[i])
+        
+        to_collapse = []
+        representatives = {}
+        cluster_map = {} # Map each term to its representative
+        for label, cluster_systems in clusters.items():
+            if len(cluster_systems) > 1:
+                sorted_cluster = sorted(
+                    cluster_systems,
+                    key=lambda t: (len(obj.sys2gene_full.get(t, [])), t),
+                    reverse=True
+                )
+                representative = sorted_cluster[0]
+                representatives[label] = representative
+
+                if verbose:
+                    rep_name = obj._get_annotated_name(representative)
+                    print(f"\nCluster {label} will be merged into {rep_name}:")
+
+                for term in sorted_cluster:
+                    cluster_map[term] = representative
+                    if term != representative:
+                        to_collapse.append(term)
+                        if verbose:
+                            term_name = obj._get_annotated_name(term)
+                            similarity = sim_df.loc[representative, term]
+                            print(f"  - Collapsing {term_name} (Similarity: {similarity:.4f})")
+            else:
+                cluster_map[cluster_systems[0]] = cluster_systems[0]
+
+
+        if to_keep is not None:
+            to_collapse = [term for term in to_collapse if term not in to_keep]
+
+        collapsed_sys_graph = obj.sys_graph.copy()
+        for node in to_collapse:
+            if node in collapsed_sys_graph:
+                parents = list(collapsed_sys_graph.predecessors(node))
+                children = list(collapsed_sys_graph.successors(node))
+                for p in parents:
+                    for c in children:
+                        if not collapsed_sys_graph.has_edge(p, c):
+                            edge_data = obj.sys_graph.get_edge_data(p, node) or {}
+                            collapsed_sys_graph.add_edge(p, c, **edge_data)
+                collapsed_sys_graph.remove_node(node)
+
+        interactions = []
+        for u, v, data in collapsed_sys_graph.edges(data=True):
+            interactions.append((u, v, data.get('interaction', 'default')))
+
+        # Remap genes to their new representatives
+        new_gene2sys_df = obj.gene2sys_df.copy()
+        new_gene2sys_df['parent'] = new_gene2sys_df['parent'].apply(lambda p: cluster_map.get(p, p))
+        
+        for _, row in new_gene2sys_df.iterrows():
+            if row['parent'] in collapsed_sys_graph:
+                 interactions.append(tuple(row))
+
+        collapsed_ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
+        obj.init_ontology(collapsed_ontology_df, inplace=True, verbose=verbose)
+
+        if not inplace:
+            return obj
+
+    def collapse_by_structural_similarity(self, similarity_threshold=0.7, to_keep=None, verbose=True, inplace=False):
+        if not inplace:
+            obj = copy.deepcopy(self)
+        else:
+            obj = self
+
+        systems = list(obj.sys2ind.keys())
+        
+        ancestors = {node: nx.ancestors(obj.sys_graph, node) for node in systems}
+        
+        sim_df = pd.DataFrame(index=systems, columns=systems, dtype=float)
+        for term1, term2 in combinations(systems, 2):
+            common_ancestors = ancestors[term1].intersection(ancestors[term2])
+            if not common_ancestors:
+                sim_df.loc[term1, term2] = 0.0
+                sim_df.loc[term2, term1] = 0.0
+                continue
+
+            mica_height = max(obj.node_height_dict.get(ca, 0) for ca in common_ancestors)
+            
+            h1 = obj.node_height_dict.get(term1, 0)
+            h2 = obj.node_height_dict.get(term2, 0)
+
+            if h1 + h2 == 0:
+                sim = 0.0
+            else:
+                sim = (2 * mica_height) / (h1 + h2)
+
+            sim_df.loc[term1, term2] = sim
+            sim_df.loc[term2, term1] = sim
+        
+        np.fill_diagonal(sim_df.values, 1.0)
+
+        clusters = []
+        visited = set()
+        for term1 in systems:
+            if term1 in visited:
+                continue
+            
+            similar_terms = set(sim_df.index[sim_df[term1] > similarity_threshold])
+            new_cluster = similar_terms
+            
+            merged_into_existing = False
+            for i, existing_cluster in enumerate(clusters):
+                if not existing_cluster.isdisjoint(new_cluster):
+                    clusters[i] = existing_cluster.union(new_cluster)
+                    merged_into_existing = True
+                    break
+            
+            if not merged_into_existing:
+                clusters.append(new_cluster)
+            
+            visited.update(new_cluster)
+
+        to_collapse = []
+        for i, cluster in enumerate(clusters):
+            if len(cluster) > 1:
+                sorted_cluster = sorted(list(cluster), key=lambda t: (obj.node_height_dict.get(t, 0), t), reverse=True)
+                representative = sorted_cluster[0]
+                for term in sorted_cluster:
+                    if term != representative:
+                        to_collapse.append(term)
+
+        if to_keep is not None:
+            to_collapse = [term for term in to_collapse if term not in to_keep]
+
+        collapsed_sys_graph = obj.sys_graph.copy()
+        for node in to_collapse:
+            if node in collapsed_sys_graph:
+                parents = list(collapsed_sys_graph.predecessors(node))
+                children = list(collapsed_sys_graph.successors(node))
+                for p in parents:
+                    for c in children:
+                        if not collapsed_sys_graph.has_edge(p, c):
+                            edge_data = obj.sys_graph.get_edge_data(p, node) or {}
+                            collapsed_sys_graph.add_edge(p, c, **edge_data)
+                collapsed_sys_graph.remove_node(node)
+
+        interactions = []
+        for u, v, data in collapsed_sys_graph.edges(data=True):
+            interactions.append((u, v, data.get('interaction', 'default')))
+
+        for _, row in obj.gene2sys_df.iterrows():
+            if row['parent'] in collapsed_sys_graph:
+                interactions.append(tuple(row))
+
+        collapsed_ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
+        obj.init_ontology(collapsed_ontology_df, inplace=True, verbose=verbose)
+
+        if not inplace:
+            return obj

@@ -74,7 +74,7 @@ class MultiplePhenotypeLoss(nn.Module):
         mse_cols (list): Column indices for which Mean Squared Error loss is applied.
     """
 
-    def __init__(self, bce_cols, mse_cols):
+    def __init__(self, bce_cols, mse_cols, label_smoothing=0.0):
         """
         Initializes the CustomLoss.
 
@@ -87,6 +87,11 @@ class MultiplePhenotypeLoss(nn.Module):
         self.mse_cols = mse_cols
         self.n_tasks = len(bce_cols) + len(mse_cols)
         self.log_vars = nn.Parameter(torch.zeros(self.n_tasks))
+        self.label_smoothing = label_smoothing
+        if label_smoothing > 0:
+            self.bce_loss = BCEWithLogitsLossWithLabelSmoothing(alpha=label_smoothing)
+        else:
+            self.bce_loss = nn.BCEWithLogitsLoss()
 
     def forward(self, predictions, targets):
         """
@@ -112,7 +117,7 @@ class MultiplePhenotypeLoss(nn.Module):
             valid_mask = (target != -9)
             if valid_mask.sum() > 0:
                 # F.binary_cross_entropy_with_logits expects raw logits as input.
-                loss = F.binary_cross_entropy_with_logits(pred[valid_mask], target[valid_mask].float())
+                loss = self.bce_loss(pred[valid_mask], target[valid_mask].float())
                 loss = torch.exp(-s) * loss + s
                 total_loss += loss * 2
                 loss_count += 1
@@ -130,3 +135,15 @@ class MultiplePhenotypeLoss(nn.Module):
                 loss_count += 1
 
         return total_loss / loss_count if loss_count > 0 else total_loss
+
+
+class BCEWithLogitsLossWithLabelSmoothing(nn.Module):
+    def __init__(self, alpha=0.1, reduction='mean'):
+        super(BCEWithLogitsLossWithLabelSmoothing, self).__init__()
+        self.alpha = alpha
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        smoothed_labels = targets * (1.0 - self.alpha) + 0.5 * self.alpha
+        loss = F.binary_cross_entropy_with_logits(inputs, smoothed_labels, reduction=self.reduction)
+        return loss

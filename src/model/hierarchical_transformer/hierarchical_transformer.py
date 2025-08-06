@@ -31,6 +31,7 @@ class HierarchicalTransformerUpdate(nn.Module):
         feed_forward_hidden: int,
         norm: nn.Module,
         dropout: float = 0.2,
+        attention_dropout: float = 0.1,
         norm_channel_first: bool = False,
         softmax=True,
     ) -> None:
@@ -51,10 +52,11 @@ class HierarchicalTransformerUpdate(nn.Module):
         self.norm_ffn  = nn.LayerNorm(hidden, eps=1e-5)
         self.ffn = SwiGLUFFN(hidden, feed_forward_hidden, dropout)
         self.drop = nn.Dropout(dropout)
+        self.attention_dropout = attention_dropout
         self.drop_opposite = nn.Dropout(1-dropout)
         self.softmax = softmax
-        self.gate_attn = nn.Parameter(torch.zeros(1))
-        self.gate_ffn = nn.Parameter(torch.zeros(1))
+        #self.gate_attn = nn.Parameter(torch.zeros(1))
+        #self.gate_ffn = nn.Parameter(torch.zeros(1))
 
     def _xops_softmax_attn(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -71,7 +73,7 @@ class HierarchicalTransformerUpdate(nn.Module):
         out = xops.memory_efficient_attention(
             q, k, v,
             attn_bias=mask,
-            p=self.drop.p if self.training else 0.0,
+            p=self.attention_dropout if self.training else 0.0,
         )
         if return_attention:
             # Re-calculate attention scores for retrieval
@@ -207,14 +209,15 @@ class HierarchicalTransformerUpdate(nn.Module):
             attn_out, attn_scores = attn_output
         else:
             attn_out = attn_output
-
-        gate_a = torch.sigmoid(self.gate_attn)
-        x = q * (1 - gate_a) + attn_out * gate_a
+        x = q + attn_out
+        #gate_a = torch.sigmoid(self.gate_attn)
+        #x = q * (1 - gate_a) + attn_out * gate_a
 
         y = self.norm_ffn(x)
         ffn_out = self.drop(self.ffn(y))
-        gate_f = torch.sigmoid(self.gate_ffn)
-        x = x * (1 - gate_f) + ffn_out * gate_f
+        #gate_f = torch.sigmoid(self.gate_ffn)
+        #x = x * (1 - gate_f) + ffn_out * gate_f
+        x = x + ffn_out
 
         if self.norm_channel_first:
             x = x.transpose(-1, -2)
@@ -242,6 +245,7 @@ class PositionWiseFeedForward(nn.Module):
 
 class HierarchicalTransformer(nn.Module):
     def __init__(self, hidden: object, attn_heads: object, feed_forward_hidden: object, inner_norm: object, outer_norm: object, dropout: object = 0.2,
+                 attention_dropout: float = 0.1,
                  conv_type: object = 'system',
                  norm_channel_first: object = False, transform: object = True, n_type: object = 1, activation: object = 'softmax', poincare: object = False) -> object:
         """
@@ -254,7 +258,7 @@ class HierarchicalTransformer(nn.Module):
 
         super(HierarchicalTransformer, self).__init__()
         self.hierarchical_transformer_update = HierarchicalTransformerUpdate(hidden, attn_heads, feed_forward_hidden, inner_norm,
-                                                                     dropout, norm_channel_first=norm_channel_first, softmax=activation=='softmax')
+                                                                     dropout, attention_dropout=attention_dropout, norm_channel_first=norm_channel_first, softmax=activation=='softmax')
         self.norm = outer_norm
         self.conv_type = conv_type
         self.dropout = nn.Dropout(dropout)
@@ -289,12 +293,12 @@ class HierarchicalTransformer(nn.Module):
 
     def get_attention(self, q, k, mask):
         batch_size = q.size(0)
-        if self.conv_type == 'system':
+        if (self.conv_type == 'system') & (mask is not None):
             mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
         return self.hierarchical_transformer_update.get_attention_scores(q, k, mask=mask)
     def get_score(self, q, k, mask):
         batch_size = q.size(0)
-        if self.conv_type == 'system':
+        if (self.conv_type == 'system') & (mask is not None):
             mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
         return self.hierarchical_transformer_update.get_attention_scores(q, k, mask=mask)
 

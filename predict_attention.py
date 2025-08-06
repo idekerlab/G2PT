@@ -22,7 +22,7 @@ from prettytable import PrettyTable
 
 from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
-from src.utils.data.dataset import SNP2PCollator, PLINKDataset, EmbeddingDataset, BlockQueryDataset, BlockDataset
+from src.utils.data.dataset import SNP2PCollator, PLINKDataset, EmbeddingDataset, BlockQueryDataset, BlockDataset, TSVDataset
 from src.utils.tree import SNPTreeParser
 from src.model.LD_infuser.LDRoBERTa import RoBERTa, RoBERTaConfig
 from src.utils.trainer import SNP2PTrainer
@@ -57,6 +57,7 @@ def main():
     parser.add_argument('--onto', help='Ontology file used to guide the neural network', type=str)
     parser.add_argument('--subtree_order', help='Subtree cascading order', nargs='+', default=['default'])
     parser.add_argument('--bfile', help='Training genotype dataset', type=str, default=None)
+    parser.add_argument('--tsv-path', help='Training genotype dataset in TSV format', type=str, default=None)
     parser.add_argument('--cov', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--pheno', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--input-format', default='indices', choices=["indices", "embedding", "block"])
@@ -66,7 +67,7 @@ def main():
     parser.add_argument('--snp2id', help='Gene to ID mapping file', type=str)
     parser.add_argument('--cuda', type=int)
     parser.add_argument('--model', help='trained model')
-    parser.add_argument('--cpu', type=int)
+    parser.add_argument('--cpu', type=int, default=4)
     parser.add_argument('--prediction-only', action='store_true')
     parser.add_argument('--out', help='output csv')
     parser.add_argument('--system_annot', type=str, default=None)
@@ -91,7 +92,12 @@ def main():
 
 
     #genotypes = pd.read_csv(args.snp, index_col=0, sep='\t')
-    if args.input_format == 'indices':
+    if args.tsv_path:
+        dataset = TSVDataset(tree_parser, os.path.join(args.tsv_path, 'genotypes.tsv'), args.cov, args.pheno, cov_ids=g2p_model_dict['arguments'].cov_ids,
+                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=g2p_model_dict['arguments'].pheno_ids,
+                               bt=g2p_model_dict['arguments'].bt, qt=g2p_model_dict['arguments'].qt,
+                               cov_std_dict=g2p_model_dict['arguments'].cov_std_dict, input_format=g2p_model_dict['arguments'].input_format)
+    elif args.input_format == 'indices':
         dataset = PLINKDataset(tree_parser, args.bfile, args.cov, args.pheno, cov_ids=g2p_model_dict['arguments'].cov_ids,
                                cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[], bt=args.bt, qt=args.qt, dynamic_phenotype_sampling=False,
                                cov_std_dict=g2p_model_dict['arguments'].cov_std_dict, input_format=g2p_model_dict['arguments'].input_format)
@@ -158,8 +164,9 @@ def main():
     nested_subtrees_backward = tree_parser.get_hierarchical_interactions(args.subtree_order, direction='backward', format='indices')
     nested_subtrees_backward = move_to(nested_subtrees_backward, device)
 
-    sys2gene_mask = move_to(torch.tensor(tree_parser.sys2gene_mask, dtype=torch.bool), device)
+    sys2gene_mask = move_to(torch.tensor(tree_parser.sys2gene_mask, dtype=torch.float32), device)
     gene2sys_mask = sys2gene_mask.T
+    snp2gene_mask = move_to(torch.tensor(tree_parser.snp2gene_mask, dtype=torch.float32), device)
 
     g2p_model = SNP2PhenotypeModel(tree_parser, hidden_dims=g2p_model_dict['arguments'].hidden_dims,
                                          dropout=0.0, n_covariates=dataset.n_cov,
@@ -198,6 +205,7 @@ def main():
                                                                                batch['phenotype_indices'],
                                                 nested_subtrees_forward,
                                                 nested_subtrees_backward,
+                                                snp2gene_mask=snp2gene_mask,
                                                 gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
                                                 sys2gene_mask=sys2gene_mask,
                                                 sys2env=g2p_model_dict['arguments'].sys2env,
@@ -205,8 +213,8 @@ def main():
                                                 sys2gene=g2p_model_dict['arguments'].sys2gene,
                                                 attention=True)
                 phenotypes.append(phenotype_predicted.detach().cpu().numpy())
-                sys_attentions.append(sys_attention.detach().cpu().numpy())
-                gene_attentions.append(gene_attention.detach().cpu().numpy())
+                sys_attentions.append(sys_attention[0].detach().cpu().numpy())
+                gene_attentions.append(gene_attention[0].detach().cpu().numpy())
         #phenotypes.append(prediction.detach().cpu().numpy())  
     
     phenotypes = np.concatenate(phenotypes)#[:, :, 0]
@@ -221,14 +229,14 @@ def main():
     sys_attentions = np.concatenate(sys_attentions)
     gene_attentions = np.concatenate(gene_attentions)
 
-    sys_attentions = sys_attentions[:, 0, 0, :]
-    gene_attentions = gene_attentions[:, 0, 0, :]
+    sys_attentions = sys_attentions[:, 0, 0, :len(tree_parser.ind2sys)]
+    gene_attentions = gene_attentions[:, 0, 0, :len(tree_parser.ind2gene)]
 
     sys_attention_df = pd.DataFrame(sys_attentions)
     gene_attention_df = pd.DataFrame(gene_attentions)
 
-    sys_score_cols = [tree_parser.ind2sys[i] for i in range(len(tree_parser.ind2sys))]
-    gene_score_cols = [tree_parser.ind2gene[i] for i in range(len(tree_parser.ind2gene))]
+    sys_score_cols = [tree_parser.ind2sys[i] for i in range(sys_attention_df.shape[1])]
+    gene_score_cols = [tree_parser.ind2gene[i] for i in range(gene_attention_df.shape[1])]
 
     sys_attention_df.columns = sys_score_cols
     gene_attention_df.columns = gene_score_cols
@@ -251,8 +259,14 @@ def main():
     female_sys_corr_dict = {}
 
     for sys in sys_score_cols:
-        male_sys_corr, _ = pearsonr(whole_dataset_with_attentions_0['prediction'], whole_dataset_with_attentions_0[sys])
-        female_sys_corr, _ = pearsonr(whole_dataset_with_attentions_1['prediction'], whole_dataset_with_attentions_1[sys])
+        if len(whole_dataset_with_attentions_0) > 1:
+            male_sys_corr, _ = pearsonr(whole_dataset_with_attentions_0['phenotype'], whole_dataset_with_attentions_0[sys])
+        else:
+            male_sys_corr = np.nan
+        if len(whole_dataset_with_attentions_1) > 1:
+            female_sys_corr, _ = pearsonr(whole_dataset_with_attentions_1['phenotype'], whole_dataset_with_attentions_1[sys])
+        else:
+            female_sys_corr = np.nan
         male_sys_corr_dict[sys] = male_sys_corr
         female_sys_corr_dict[sys] = female_sys_corr
     
