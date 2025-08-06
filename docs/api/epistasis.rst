@@ -1,5 +1,5 @@
 Epistasis
 =========
 
-.. automodule:: src.utils.analysis.epistasis
+.. automodule:: utils.analysis.epistasis
    :members:

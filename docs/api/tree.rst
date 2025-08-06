@@ -1,8 +1,8 @@
 Tree
 ====
 
-.. automodule:: src.utils.tree.tree
+.. automodule:: utils.tree.tree
    :members:
 
-.. automodule:: src.utils.tree.snp_tree
+.. automodule:: utils.tree.snp_tree
    :members:
