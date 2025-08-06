@@ -1,5 +1,5 @@
 SNP2Phenotype
 =============
 
-.. automodule:: model.model.snp2phenotype
+.. automodule:: src.model.model.snp2phenotype
    :members:
