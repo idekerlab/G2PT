@@ -137,6 +137,7 @@ def main():
     parser.add_argument('--dropout', help='dropout ratio', type=float, default=0.2)
     parser.add_argument('--batch-size', help='Batch size', type=int, default=128)
     parser.add_argument('--val-step', help='Validation step', type=int, default=20)
+    parser.add_argument('--patience', help='Patience for early stopping', type=int, default=10)
     parser.add_argument('--jobs', help="The number of threads", type=int, default=0)
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)

@@ -132,7 +132,7 @@ class GenotypeDataset(Dataset):
         if (int(sex) == -1) or (int(sex) == -9):
             pass
         else:
-            covariates_tensor[int(sex)] = 1
+            covariates_tensor[int(sex)-1] = 1
         i_cov += 2
         for cov_id in self.cov_ids:
             if cov_id == 'SEX':
