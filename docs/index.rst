@@ -11,12 +11,10 @@ Welcome to G2PT's documentation!
    :caption: Contents:
 
    Home <self>
+   README <source/README.md>
    Tree Parser API <source/tree_parser.md>
    Epistasis Analysis <source/epistasis_analysis.md>
    Sankey Visualization <source/sankey_visualization.md>
-
-.. include:: ../README.md
-   :parser: myst_parser
 
 .. automodule:: src
    :members:

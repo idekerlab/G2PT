@@ -24,6 +24,7 @@ def copy_markdown_files(app):
     renaming them for clarity in the toctree.
     """
     source_files = {
+        "../README.md": "README.md",
         "../src/utils/tree/README.md": "tree_parser.md",
         "../src/utils/analysis/README.md": "epistasis_analysis.md",
         "../src/utils/visualization/README.md": "sankey_visualization.md",
