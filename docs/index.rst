@@ -16,8 +16,15 @@ Welcome to G2PT's documentation!
    Epistasis Analysis <source/epistasis_analysis.md>
    Sankey Visualization <source/sankey_visualization.md>
 
-.. automodule:: src
-   :members:
+API Documentation
+=================
+
+.. toctree::
+   :maxdepth: 2
+
+   api/snp2phenotype
+   api/epistasis
+   api/tree
 
 
 Indices and tables
