@@ -22,7 +22,7 @@ from prettytable import PrettyTable
 
 from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
-from src.utils.data.dataset import SNP2PCollator, PLINKDataset, EmbeddingDataset, BlockQueryDataset, BlockDataset, TSVDataset
+from src.utils.data.dataset.SNP2PDataset import SNP2PCollator, PLINKDataset, EmbeddingDataset, BlockQueryDataset, BlockDataset, TSVDataset
 from src.utils.tree import SNPTreeParser
 from src.model.LD_infuser.LDRoBERTa import RoBERTa, RoBERTaConfig
 from src.utils.trainer import SNP2PTrainer
@@ -57,7 +57,7 @@ def main():
     parser.add_argument('--onto', help='Ontology file used to guide the neural network', type=str)
     parser.add_argument('--subtree_order', help='Subtree cascading order', nargs='+', default=['default'])
     parser.add_argument('--bfile', help='Training genotype dataset', type=str, default=None)
-    parser.add_argument('--tsv-path', help='Training genotype dataset in TSV format', type=str, default=None)
+    parser.add_argument('--tsv-path', help='Training genotype dataset in tsv format', type=str, default=None)
     parser.add_argument('--cov', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--pheno', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--input-format', default='indices', choices=["indices", "embedding", "block"])
@@ -94,18 +94,16 @@ def main():
     #genotypes = pd.read_csv(args.snp, index_col=0, sep='\t')
     if args.tsv_path:
         dataset = TSVDataset(tree_parser, os.path.join(args.tsv_path, 'genotypes.tsv'), args.cov, args.pheno, cov_ids=g2p_model_dict['arguments'].cov_ids,
-                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=g2p_model_dict['arguments'].pheno_ids,
-                               bt=g2p_model_dict['arguments'].bt, qt=g2p_model_dict['arguments'].qt,
+                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[], bt=[], qt=[],
                                cov_std_dict=g2p_model_dict['arguments'].cov_std_dict, input_format=g2p_model_dict['arguments'].input_format)
     elif args.input_format == 'indices':
         dataset = PLINKDataset(tree_parser, args.bfile, args.cov, args.pheno, cov_ids=g2p_model_dict['arguments'].cov_ids,
-                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[], bt=args.bt, qt=args.qt, dynamic_phenotype_sampling=False,
+                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[], dynamic_phenotype_sampling=False,
                                cov_std_dict=g2p_model_dict['arguments'].cov_std_dict, input_format=g2p_model_dict['arguments'].input_format)
     elif args.input_format == 'embedding':
         dataset = EmbeddingDataset(tree_parser, args.bfile, embedding=g2p_model_dict['arguments'].embedding, cov=args.cov, pheno=args.pheno,
                                cov_ids=g2p_model_dict['arguments'].cov_ids,
-                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[], bt=args.bt,
-                               qt=args.qt,
+                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[],
                                cov_std_dict=g2p_model_dict['arguments'].cov_std_dict,)
     elif args.input_format == 'block':
         blocks = tree_parser.blocks
@@ -193,6 +191,7 @@ def main():
                 phenotype_predicted = g2p_model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
                                                 nested_subtrees_forward,
                                                 nested_subtrees_backward,
+                                                snp2gene_mask=snp2gene_mask,
                                                 gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
                                                 sys2gene_mask=sys2gene_mask,
                                                 sys2env=g2p_model_dict['arguments'].sys2env,
@@ -226,77 +225,99 @@ def main():
     if args.prediction_only:
         print("Prediction-only, prediction done")
         quit()
-    sys_attentions = np.concatenate(sys_attentions)
-    gene_attentions = np.concatenate(gene_attentions)
+    sys_attentions = np.concatenate(sys_attentions)[..., :len(tree_parser.ind2sys)] # Shape: (num_samples, num_heads, num_phenotypes, num_systems)
+    gene_attentions = np.concatenate(gene_attentions)[..., :len(tree_parser.ind2gene)] # Shape: (num_samples, num_heads, num_phenotypes, num_genes)
 
-    sys_attentions = sys_attentions[:, 0, 0, :len(tree_parser.ind2sys)]
-    gene_attentions = gene_attentions[:, 0, 0, :len(tree_parser.ind2gene)]
+    sys_score_cols = [tree_parser.ind2sys[i] for i in range(len(tree_parser.ind2sys))]
+    gene_score_cols = [tree_parser.ind2gene[i] for i in range(len(tree_parser.ind2gene))]
 
-    sys_attention_df = pd.DataFrame(sys_attentions)
-    gene_attention_df = pd.DataFrame(gene_attentions)
+    num_heads = sys_attentions.shape[1] # Assuming num_heads is the second dimension
 
-    sys_score_cols = [tree_parser.ind2sys[i] for i in range(sys_attention_df.shape[1])]
-    gene_score_cols = [tree_parser.ind2gene[i] for i in range(gene_attention_df.shape[1])]
+    for pheno, pheno_ind in args.pheno2ind.items():
+        for head_idx in range(num_heads): # Loop through each head
+            current_sys_attention = sys_attentions[:, head_idx, pheno_ind, :len(sys_score_cols)]
+            sys_attention_df = pd.DataFrame(current_sys_attention, columns=sys_score_cols)
 
-    sys_attention_df.columns = sys_score_cols
-    gene_attention_df.columns = gene_score_cols
-    whole_dataset_with_attentions = pd.concat([cov_df, sys_attention_df, gene_attention_df], axis=1)
-    whole_dataset_with_attentions = whole_dataset_with_attentions#[whole_dataset_with_attentions.columns[1:]]
-    whole_dataset_with_attentions.to_csv(args.out+'.attention.csv', index=False)
+            if g2p_model_dict['arguments'].gene2pheno: # Check if gene2pheno is enabled
+                current_gene_attention = gene_attentions[:, head_idx, pheno_ind, :]
+                gene_attention_df = pd.DataFrame(current_gene_attention, columns=gene_score_cols)
+                combined_attention_df = pd.concat([cov_df, sys_attention_df, gene_attention_df], axis=1)
+            else:
+                combined_attention_df = pd.concat([cov_df, sys_attention_df], axis=1)
 
-    sys_importance_df = pd.DataFrame({'System':sys_score_cols})
-    
-    if args.system_annot is not None:
-        sys_importance_df['System_annot'] = sys_importance_df['System'].map(lambda a: tree_parser.sys_annot_dict[a])
+            output_filename = f"{args.out}.{pheno}.head_{head_idx}.csv"
+            combined_attention_df.to_csv(output_filename, index=False)
+            print(f"Saved attention for phenotype {pheno}, head {head_idx} to {output_filename}")
 
-    sys_importance_df['Genes'] = sys_importance_df.System.map(lambda a: ",".join(tree_parser.sys2gene_full[a]))
-    sys_importance_df['Size'] = sys_importance_df.System.map(lambda a: len(tree_parser.sys2gene_full[a]))
+            # Calculate and save importance scores for each head
+            sys_importance_df = pd.DataFrame({'System': sys_score_cols})
+            if args.system_annot is not None:
+                sys_importance_df['System_annot'] = sys_importance_df['System'].map(lambda a: tree_parser.sys_annot_dict[a])
+            sys_importance_df['Genes'] = sys_importance_df.System.map(lambda a: ",".join(tree_parser.sys2gene_full[a]))
+            sys_importance_df['Size'] = sys_importance_df.System.map(lambda a: len(tree_parser.sys2gene_full[a]))
 
-    whole_dataset_with_attentions_0 = whole_dataset_with_attentions.loc[whole_dataset_with_attentions.SEX==0]
-    whole_dataset_with_attentions_1 = whole_dataset_with_attentions.loc[whole_dataset_with_attentions.SEX==1]
+            # Calculate correlations for sys attention
+            sys_corr_dict = {}
+            for sys in sys_score_cols:
+                corr, _ = pearsonr(cov_df[pheno], sys_attention_df[sys])
+                sys_corr_dict[sys] = corr
+            sys_importance_df[f'corr_mean_abs'] = sys_importance_df['System'].map(lambda a: sys_corr_dict[a])
+            sys_importance_df.to_csv(f"{args.out}.{pheno}.head_{head_idx}.sys_importance.csv", index=False)
+            print(f"Saved system importance for phenotype {pheno}, head {head_idx} to {args.out}.{pheno}.head_{head_idx}.sys_importance.csv")
 
-    male_sys_corr_dict = {}
-    female_sys_corr_dict = {}
+            if g2p_model_dict['arguments'].gene2pheno:
+                gene_importance_df = pd.DataFrame({'Gene': gene_score_cols})
+                # Calculate correlations for gene attention
+                gene_corr_dict = {}
+                for gene in gene_score_cols:
+                    corr, _ = pearsonr(cov_df[pheno], gene_attention_df[gene])
+                    gene_corr_dict[gene] = corr
+                gene_importance_df[f'corr_with_{pheno}'] = gene_importance_df['Gene'].map(lambda a: gene_corr_dict[a])
+                gene_importance_df.to_csv(f"{args.out}.{pheno}.head_{head_idx}.gene_importance.csv", index=False)
+                print(f"Saved gene importance for phenotype {pheno}, head {head_idx} to {args.out}.{pheno}.head_{head_idx}.gene_importance.csv")
 
-    for sys in sys_score_cols:
-        if len(whole_dataset_with_attentions_0) > 1:
-            male_sys_corr, _ = pearsonr(whole_dataset_with_attentions_0['phenotype'], whole_dataset_with_attentions_0[sys])
+        # Handle sum of heads
+        sum_sys_attention = sys_attentions[:, :, pheno_ind, :len(sys_score_cols)].sum(axis=1) # Sum across heads
+        sys_attention_df_sum = pd.DataFrame(sum_sys_attention, columns=sys_score_cols)
+
+        if g2p_model_dict['arguments'].gene2pheno:
+            sum_gene_attention = gene_attentions[:, :, pheno_ind, :].sum(axis=1) # Sum across heads
+            gene_attention_df_sum = pd.DataFrame(sum_gene_attention, columns=gene_score_cols)
+            combined_attention_df_sum = pd.concat([cov_df, sys_attention_df_sum, gene_attention_df_sum], axis=1)
         else:
-            male_sys_corr = np.nan
-        if len(whole_dataset_with_attentions_1) > 1:
-            female_sys_corr, _ = pearsonr(whole_dataset_with_attentions_1['phenotype'], whole_dataset_with_attentions_1[sys])
-        else:
-            female_sys_corr = np.nan
-        male_sys_corr_dict[sys] = male_sys_corr
-        female_sys_corr_dict[sys] = female_sys_corr
-    
-    
-    sys_importance_df['man_corr'] = sys_importance_df['System'].map(lambda a: male_sys_corr_dict[a])
-    sys_importance_df['woman_corr'] = sys_importance_df['System'].map(lambda a: female_sys_corr_dict[a])
+            combined_attention_df_sum = pd.concat([cov_df, sys_attention_df_sum], axis=1)
 
-    sys_importance_df['corr_mean'] = (sys_importance_df['man_corr']+sys_importance_df['woman_corr'])/2
-    sys_importance_df['corr_mean_abs'] = (sys_importance_df['man_corr'].abs()+sys_importance_df['woman_corr'].abs())/2
-    sys_importance_df.to_csv(args.out+'.sys_corr.csv', index=False)
+        output_filename_sum = f"{args.out}.{pheno}.head_sum.csv"
+        combined_attention_df_sum.to_csv(output_filename_sum, index=False)
+        print(f"Saved attention for phenotype {pheno}, sum of heads to {output_filename_sum}")
 
+        # Calculate and save importance scores for sum of heads
+        sys_importance_df_sum = pd.DataFrame({'System': sys_score_cols})
+        if args.system_annot is not None:
+            sys_importance_df_sum['System_annot'] = sys_importance_df_sum['System'].map(lambda a: tree_parser.sys_annot_dict[a])
+        sys_importance_df_sum['Genes'] = sys_importance_df_sum.System.map(lambda a: ",".join(tree_parser.sys2gene_full[a]))
+        sys_importance_df_sum['Size'] = sys_importance_df_sum.System.map(lambda a: len(tree_parser.sys2gene_full[a]))
 
-    gene_importance_df = pd.DataFrame({'Gene':gene_score_cols})
-    male_gene_corr_dict = {}
-    female_gene_corr_dict = {}
+        # Calculate correlations for sys attention (sum of heads)
+        sys_corr_dict_sum = {}
+        for sys in sys_score_cols:
+            corr, _ = pearsonr(cov_df[pheno], sys_attention_df_sum[sys])
+            sys_corr_dict_sum[sys] = corr
+        sys_importance_df_sum[f'corr_mean_abs'] = sys_importance_df_sum['System'].map(lambda a: sys_corr_dict_sum[a])
+        sys_importance_df_sum.to_csv(f"{args.out}.{pheno}.head_sum.sys_importance.csv", index=False)
+        print(f"Saved system importance for phenotype {pheno}, sum of heads to {args.out}.{pheno}.head_sum.sys_importance.csv")
 
-    for gene in gene_score_cols:
-        male_gene_corr, _ = pearsonr(whole_dataset_with_attentions_0['prediction'], whole_dataset_with_attentions_0[gene])
-        female_gene_corr, _ = pearsonr(whole_dataset_with_attentions_1['prediction'], whole_dataset_with_attentions_1[gene])
-        male_gene_corr_dict[gene] = male_gene_corr
-        female_gene_corr_dict[gene] = female_gene_corr
-    
-    gene_importance_df['man_corr'] = gene_importance_df['Gene'].map(lambda a: male_gene_corr_dict[a])
-    gene_importance_df['woman_corr'] = gene_importance_df['Gene'].map(lambda a: female_gene_corr_dict[a])
+        if g2p_model_dict['arguments'].gene2pheno:
+            gene_importance_df_sum = pd.DataFrame({'Gene': gene_score_cols})
+            # Calculate correlations for gene attention (sum of heads)
+            gene_corr_dict_sum = {}
+            for gene in gene_score_cols:
+                corr, _ = pearsonr(cov_df[pheno], gene_attention_df_sum[gene])
+                gene_corr_dict_sum[gene] = corr
+            gene_importance_df_sum[f'corr_with_{pheno}'] = gene_importance_df_sum['Gene'].map(lambda a: gene_corr_dict_sum[a])
+            gene_importance_df_sum.to_csv(f"{args.out}.{pheno}.head_sum.gene_importance.csv", index=False)
+            print(f"Saved gene importance for phenotype {pheno}, sum of heads to {args.out}.{pheno}.head_sum.gene_importance.csv")
 
-    gene_importance_df['corr_mean'] = (gene_importance_df['man_corr']+gene_importance_df['woman_corr'])/2
-    gene_importance_df['corr_mean_abs'] = (gene_importance_df['man_corr'].abs()+gene_importance_df['woman_corr'].abs())/2
-    gene_importance_df.to_csv(args.out+'.gene_corr.csv', index=False)
-
-    #whole_df.to_csv(args.out, index=False)
     print("Saving to ... ", args.out)
 
 

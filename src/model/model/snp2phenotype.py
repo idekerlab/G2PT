@@ -39,8 +39,6 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             propagation. Defaults to ['default'].
         n_covariates (int, optional): The number of covariate features to include in the model.
             Defaults to 13.
-        n_phenotypes (int, optional): The number of distinct phenotypes the model can predict.
-            Defaults to 1.
         dropout (float, optional): The dropout rate for regularization. Defaults to 0.2.
         activation (str, optional): The activation function for attention mechanisms.
             Defaults to 'softmax'.
@@ -52,17 +50,23 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         pretrained_transformer (dict, optional): A dictionary of pretrained transformer models
             for block-based input. Defaults to None.
         freeze_pretrained (bool, optional): Unused parameter. Defaults to True.
-        phenotypes (tuple, optional): Unused parameter. Defaults to ('PHENOTYPE',).
+        phenotypes (list, optional): A list of phenotype names for which the model will create heads.
+        ind2pheno (dict, optional): A mapping from phenotype index to phenotype name.
         use_hierarchical_transformer (bool, optional): If True, uses a hierarchical transformer
             for the final prediction heads. Defaults to False.
+        use_moe (bool, optional): If True, uses a Mixture-of-Experts layer for the predictor.
+            Otherwise, uses a simple MLP. Defaults to True.
+        use_independent_predictors (bool, optional): If True, creates a separate prediction head
+            for each phenotype. Defaults to False.
     """
 
     # --- Initialization ---
     def __init__(self, tree_parser, hidden_dims, snp2pheno=False, gene2pheno=True, sys2pheno=True,
-                 interaction_types=['default'], n_covariates=13, n_phenotypes=1, dropout=0.2,
+                 interaction_types=['default'], n_covariates=13, dropout=0.2,
                  activation='softmax', input_format='indices', poincare=False, cov_effect='pre',
                  pretrained_transformer=None, freeze_pretrained=True,
-                 phenotypes=('PHENOTYPE'), use_hierarchical_transformer=False):
+                 phenotypes=('PHENOTYPE',), ind2pheno=None, use_hierarchical_transformer=False, use_moe=True,
+                 use_independent_predictors=False, prediction_head=1):
         super(SNP2PhenotypeModel, self).__init__(tree_parser, hidden_dims, interaction_types=interaction_types, dropout=dropout,
                                                  input_format=input_format, poincare=poincare)
         self.use_gene2pheno = gene2pheno
@@ -167,13 +171,15 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.covariate_norm_2 = nn.LayerNorm(hidden_dims)
 
 
-        self.n_phenotypes = n_phenotypes
+        self.phenotypes = phenotypes
+        self.ind2pheno = ind2pheno
+        self.n_phenotypes = len(phenotypes)
         self.phenotype_embeddings = nn.Embedding(self.n_phenotypes, hidden_dims)
 
         self.gene2pheno_norm = nn.LayerNorm(hidden_dims)
         self.gene2pheno_update_norm_inner = nn.LayerNorm(hidden_dims)
         self.gene2pheno_update_norm_outer = nn.LayerNorm(hidden_dims)
-        self.gene2pheno = Genotype2Phenotype(hidden_dims, 4, hidden_dims,
+        self.gene2pheno = Genotype2Phenotype(hidden_dims, prediction_head, hidden_dims,
                                              inner_norm=self.gene2pheno_update_norm_inner,
                                              outer_norm=self.gene2pheno_update_norm_outer, dropout=dropout,
                                              attention_dropout=0.0,
@@ -183,7 +189,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.sys2pheno_norm = nn.LayerNorm(hidden_dims)
         self.sys2pheno_update_norm_inner = nn.LayerNorm(hidden_dims)
         self.sys2pheno_update_norm_outer = nn.LayerNorm(hidden_dims)
-        self.sys2pheno = Genotype2Phenotype(hidden_dims, 4, hidden_dims,
+        self.sys2pheno = Genotype2Phenotype(hidden_dims, prediction_head, hidden_dims,
                                             inner_norm=self.sys2pheno_update_norm_inner,
                                             outer_norm=self.sys2pheno_update_norm_outer, dropout=dropout,
                                             attention_dropout=0.0,
@@ -193,10 +199,29 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.last_activation = nn.Tanh()
         self.n_geno2pheno = sum([sys2pheno, gene2pheno])
         self.cov_effect = cov_effect
+        self.use_independent_predictors = use_independent_predictors
         print("Cov effect: ", self.cov_effect)
         print("Input format: ", self.input_format)
         print("The number of geno2pheno: ", self.n_geno2pheno)
-        self.predictor = MoEHeadPrediction(hidden_dims * self.n_geno2pheno, k_experts=8, top_k=2)
+        print(f"Using independent predictors: {self.use_independent_predictors}")
+
+        def create_predictor():
+            if use_moe:
+                return MoEHeadPrediction(hidden_dims * self.n_geno2pheno, k_experts=8, top_k=2)
+            else:
+                return nn.Sequential(
+                    nn.Linear(hidden_dims * self.n_geno2pheno, hidden_dims),
+                    nn.Tanh(),
+                    nn.Linear(hidden_dims, 1)
+                )
+
+        if self.use_independent_predictors:
+            print(f"Creating independent predictors for {self.n_phenotypes} phenotypes.")
+            self.predictors = nn.ModuleDict({pheno: create_predictor() for pheno in self.phenotypes})
+        else:
+            print("Using a single shared predictor.")
+            self.predictor = create_predictor()
+
         self.system_value_scale = nn.Parameter(torch.ones(self.n_systems + 1))
         self.gene_value_scale = nn.Parameter(torch.ones(self.n_genes + 1))
         #self.snp_predictor = nn.Linear(hidden_dims, self.n_snps * 3 + 2)
@@ -239,7 +264,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
         # 3. Predict phenotype from final embeddings
         prediction = self.prediction(phenotype_embedding, system_embedding, gene_embedding,
-                                     genotype_dict, chunk,
+                                     genotype_dict, chunk, phenotype_ids,
                                      sys_temp=sys_temp, covariates=covariates)
 
         # 4. Optionally, return attention scores for interpretability
@@ -283,7 +308,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         system_embedding = self.system_embedding(genotype_dict['sys'])
 
         if (self.cov_effect == 'pre') or (self.cov_effect == 'both'):
-            gene_embedding = self.get_cov2gene(gene_embedding, covariates)
+            gene_embedding = gene_embedding + self.get_cov2gene(gene_embedding, covariates)
 
         snp_embedding, _ = self.get_snp_embedding(genotype_dict)
         snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, snp2gene_mask)
@@ -293,7 +318,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
         batch_size = covariates.size(0)
         system_embedding_total = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1).clone()
-        system_embedding_total[:, genotype_dict['sys_indices']] += self.effect_norm(gene_effect_on_system)
+        system_embedding_total[:, genotype_dict['sys_indices']] = system_embedding_total[:, genotype_dict['sys_indices']] + self.effect_norm(gene_effect_on_system)
 
         system_effect_forward = self.get_sys2sys(system_embedding_total, nested_hierarchical_masks_forward, direction='forward')
         system_embedding_total = system_embedding_total + self.effect_norm(system_effect_forward)
@@ -306,8 +331,8 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         gene_embedding = gene_embedding + self.effect_norm(system_effect_on_gene)
 
         if (self.cov_effect=='post') or (self.cov_effect=='both'):
-            gene_embedding = self.get_cov2gene(gene_embedding, covariates)
-            system_embedding = self.get_cov2sys(system_embedding, covariates)
+            gene_embedding = gene_embedding + self.get_cov2gene(gene_embedding, covariates)
+            system_embedding = system_embedding + self.get_cov2sys(system_embedding, covariates)
 
         return gene_embedding, system_embedding
 
@@ -405,8 +430,8 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
     def get_gene2sys(self, system_embedding, gene_embedding, gene2sys_mask):
         """Propagates information from gene embeddings to system embeddings."""
         system_embedding_input = self.dropout(self.sys_norm(system_embedding))
-        gene_embedding = self.dropout(self.gene_norm(gene_embedding))
-        gene_effect = self.gene2sys.forward(system_embedding_input, gene_embedding, gene2sys_mask)
+        gene_embedding_input = self.dropout(self.gene_norm(gene_embedding))
+        gene_effect = self.gene2sys.forward(system_embedding_input, gene_embedding_input, gene2sys_mask)
         return gene_effect
 
     def get_covariate_embedding(self, covariates):
@@ -416,7 +441,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         return covariates_vector
 
     # --- Attention & Prediction Heads ---
-    def prediction(self, phenotype_vector, system_embedding, gene_embedding, genotype_dict, chunk, sys_temp=None, covariates=None):
+    def prediction(self, phenotype_vector, system_embedding, gene_embedding, genotype_dict, chunk, phenotype_ids, sys_temp=None, covariates=None):
         """
         Generates the final phenotype prediction from the propagated embeddings.
 
@@ -426,6 +451,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             gene_embedding (torch.Tensor): The final gene embeddings.
             genotype_dict (dict): Dictionary with genotype data for the batch.
             chunk (bool): Flag indicating if chunk-wise propagation was used.
+            phenotype_ids (torch.Tensor): Tensor of phenotype IDs for the current batch.
             sys_temp (torch.Tensor, optional): Temperature mask for system attention. Defaults to None.
             covariates (torch.Tensor, optional): Covariate data. Defaults to None.
 
@@ -445,17 +471,26 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         if self.use_sys2pheno:
             phenotype_weighted_by_systems = self.get_sys2pheno(phenotype_vector, system_embedding, system_embedding_value, mask=sys_temp)
             if self.cov_effect == 'direct':
-                phenotype_weighted_by_systems = self.cov2pheno(phenotype_weighted_by_systems, covariates)
+                phenotype_weighted_by_systems = phenotype_weighted_by_systems + self.cov2pheno(phenotype_weighted_by_systems, covariates)
             phenotype_features.append(phenotype_weighted_by_systems)
 
         if self.use_gene2pheno:
             phenotype_weighted_by_genes = self.get_gene2pheno(phenotype_vector, gene_embedding, gene_embedding_value, mask=None)
             if self.cov_effect == 'direct':
-                phenotype_weighted_by_genes = self.cov2pheno(phenotype_weighted_by_genes, covariates)
+                phenotype_weighted_by_genes = phenotype_weighted_by_genes + self.cov2pheno(phenotype_weighted_by_genes, covariates)
             phenotype_features.append(phenotype_weighted_by_genes)
 
         phenotype_feature = torch.cat(phenotype_features, dim=-1)
-        phenotype_prediction = self.predictor(phenotype_feature)
+
+        if self.use_independent_predictors:
+            # Assuming the batch contains samples for a single phenotype
+            pheno_id = phenotype_ids[0].item()
+            pheno_name = self.ind2pheno[pheno_id]
+            predictor = self.predictors[pheno_name]
+            phenotype_prediction = predictor(phenotype_feature)
+        else:
+            phenotype_prediction = self.predictor(phenotype_feature)
+
         return phenotype_prediction
 
     def prediction_with_snp(self, phenotype_embedding, snp_embedding):
@@ -523,3 +558,10 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         """Sets the temperature for Gumbel-Softmax sampling in block-based transformers."""
         for block_id, module in self.pretrained_transformer_tuner.items():
             module.set_temperature(temperature)
+
+    def get_gumbel_gates(self):
+        """Retrieves the Gumbel gates from block-based transformers."""
+        gumbel_gates = {}
+        for block_id, module in self.pretrained_transformer_tuner.items():
+            gumbel_gates[block_id] = module.gumbel_gates
+        return gumbel_gates

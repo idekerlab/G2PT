@@ -19,7 +19,7 @@ from .. import pad_indices
 
 class GenotypeDataset(Dataset):
     def __init__(self, tree_parser : SNPTreeParser, cov, pheno=None, cov_mean_dict=None, cov_std_dict=None,
-                 cov_ids=(), pheno_ids=(), bt=(), qt=(), dynamic_phenotype_sampling=False):
+                 cov_ids=(), pheno_ids=(), bt=(), qt=(), dynamic_phenotype_sampling=False,):
 
         self.tree_parser = tree_parser
         self.n_snp2pad = int(np.ceil((self.tree_parser.n_snps+1) /8)) * 8 - self.tree_parser.n_snps
@@ -57,7 +57,7 @@ class GenotypeDataset(Dataset):
         if len(cov_ids) != 0:
             self.cov_ids = cov_ids
         else:
-            self.cov_ids = [] #[cov for cov in self.cov_df.columns[2:] if cov != 'PHENOTYPE']
+            self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov != 'PHENOTYPE']
         self.n_cov = len(self.cov_ids) + 1 ## +1 for sex cov
 
         if cov_mean_dict is None:
@@ -132,7 +132,7 @@ class GenotypeDataset(Dataset):
         if (int(sex) == -1) or (int(sex) == -9):
             pass
         else:
-            covariates_tensor[int(sex)-1] = 1
+            covariates_tensor[int(sex)] = 1
         i_cov += 2
         for cov_id in self.cov_ids:
             if cov_id == 'SEX':

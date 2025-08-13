@@ -326,7 +326,7 @@ class SNPTreeParser(TreeParser):
         snps = [self.gene2snp[gene] for gene in genes if gene in self.gene2snp.keys()]
         snps = list(set(sum(snps, [])))
         return snps
-
+    '''
     def get_snp2gene_mask(self, type_indices=None):
         if type_indices is not None:
             snp2gene_mask = np.copy(self.snp2gene_mask)
@@ -338,6 +338,12 @@ class SNPTreeParser(TreeParser):
             snp2gene_mask = np.copy(self.snp2gene_mask)
 
         return snp2gene_mask
+    '''
+    def get_snp2gene_mask_with_interation(self, snp_indices):
+        snp2gene_mask = torch.tensor(self.snp2gene_mask, dtype=torch.float32)
+        snp2gene_mask_interaction = torch.full_like(snp2gene_mask, fill_value=-10000)
+        snp2gene_mask_interaction[:, snp_indices] = snp2gene_mask[:, snp_indices]
+        return snp2gene_mask_interaction
 
     def get_snp2gene_sub_mask(self, gene_indices, snp_indices, type_indices=None, CHR=None):
 

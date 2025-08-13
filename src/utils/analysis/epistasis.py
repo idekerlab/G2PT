@@ -100,7 +100,7 @@ class EpistasisFinder(object):
             'underdominant': self.code_underdominance
         }
 
-    def search_epistasis_on_system(self, system, sex=0, quantile=0.9, fisher=True, return_significant_only=True, check_inheritance=True, verbose=0,
+    def search_epistasis_on_system(self, system, sex=0, quantile=0.9, chi=True, fisher=True, return_significant_only=True, check_inheritance=True, verbose=0,
                                    snp_inheritance_dict = {}, binary=False, target='PHENOTYPE'):
         """
         Searches for epistatic interactions for a given biological system.
@@ -122,6 +122,8 @@ class EpistasisFinder(object):
                 for all). Defaults to 0.
             quantile (float, optional): The attention score quantile to define the
                 high-risk cohort. Defaults to 0.9.
+            chi (bool, optional): Whether to perform the Chi-square Test
+                step. Defaults to True.
             fisher (bool, optional): Whether to perform the Fisher's Exact Test
                 step. Defaults to True.
             return_significant_only (bool, optional): If True, returns only the
@@ -171,25 +173,29 @@ class EpistasisFinder(object):
                     target_snp_type = self.determine_inheritance_model(genotype_for_ineritance_model[[str(target_snp)]+self.cov_ids], genotype_for_ineritance_model['PHENOTYPE'].values, target_snp, verbose=verbose)
                     snp_inheritance_dict[target_snp] = target_snp_type
 
-        print("Running Chi-Square Test...")
+
         if quantile >=0.5:
             risky_samples = attention_results.loc[attention_results[system] >= thr].IID.map(str)
         else:
             risky_samples = attention_results.loc[attention_results[system] <= thr].IID.map(str)
 
-        result_chi = []
-        print("\tTesting %d SNPs on %d risky individuals"%(len(target_snps), len(risky_samples)))
-        for target_snp in target_snps:
-            df, p_val, _, _ = self.get_snp_chi_sqaure(attention_results.IID.map(str), risky_samples, target_snp,
-                                                      snp_inheritance_dict=snp_inheritance_dict)
-            if p_val * n_target_snps < 0.05:
-                result_chi.append(target_snp)
-                if verbose==1:
-                    print(f'\t\t{target_snp} -> {self.tree_parser.snp2gene[target_snp]} passes Chi-Square test with p-value {p_val}')
-        print(f'\tFrom {n_target_snps} SNPs, {len(result_chi)} SNPs pass Chi-Square test')
+        if chi:
+            print("Running Chi-Square Test...")
+            result_chi = []
+            print("\tTesting %d SNPs on %d risky individuals"%(len(target_snps), len(risky_samples)))
+            for target_snp in target_snps:
+                df, p_val, _, _ = self.get_snp_chi_sqaure(attention_results.IID.map(str), risky_samples, target_snp,
+                                                          snp_inheritance_dict=snp_inheritance_dict)
+                if p_val * n_target_snps < 0.05:
+                    result_chi.append(target_snp)
+                    if verbose==1:
+                        print(f'\t\t{target_snp} -> {self.tree_parser.snp2gene[target_snp]} passes Chi-Square test with p-value {p_val}')
+            print(f'\tFrom {n_target_snps} SNPs, {len(result_chi)} SNPs pass Chi-Square test')
 
-        # Generate all possible pairs from Chi-square results
-        all_snp_pairs = list(itertools.combinations(result_chi, 2))
+            # Generate all possible pairs from Chi-square results
+            all_snp_pairs = list(itertools.combinations(result_chi, 2))
+        else:
+            all_snp_pairs = list(itertools.combinations(target_snps, 2))
 
         # 1. Filter out pairs that are too close physically
         print('Filtering Close SNPs...')
@@ -347,8 +353,10 @@ class EpistasisFinder(object):
         """
 
         target_snps = list(set(element for tup in pairs for element in tup))
+        #print(pairs, target_snps)
+        #print(self.genotype.columns)
         if len(snps_in_system) == 0:
-            partial_genotype = self.genotype.loc[cohort, target_snps].copy()
+            partial_genotype = self.genotype.loc[cohort, [str(snp) for snp in target_snps]].copy()
         else:
             partial_genotype = self.genotype.loc[cohort, snps_in_system].copy()
         for target_snp in target_snps:

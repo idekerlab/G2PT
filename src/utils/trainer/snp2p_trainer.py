@@ -183,11 +183,40 @@ class SNP2PTrainer(object):
                             break
                         torch.cuda.empty_cache()
                         gc.collect()
+                    if output_path:
+                        output_path_epoch = f"{output_path}.{epoch}"
+                        print("Save to...", output_path_epoch)
+                        if self.args.distributed:
+                            torch.save({"arguments": self.args,
+                                        "state_dict": self.snp2p_model.module.state_dict()},
+                                       output_path_epoch)
+                        else:
+                            torch.save(
+                                {"arguments": self.args, "state_dict": self.snp2p_model.state_dict()},
+                                output_path_epoch)
+                        if self.use_mlflow:
+                            mlflow.log_artifact(output_path_epoch)
+                        print(f"MODEL_PATH:{output_path_epoch}")
+                else:
+                    if output_path:
+                        output_path_epoch = f"{output_path}.{epoch}"
+                        print("Save to...", output_path_epoch)
+                        if self.args.distributed:
+                            torch.save({"arguments": self.args,
+                                        "state_dict": self.snp2p_model.module.state_dict()},
+                                       output_path_epoch)
+                        else:
+                            torch.save(
+                                {"arguments": self.args, "state_dict": self.snp2p_model.state_dict()},
+                                output_path_epoch)
+                        if self.use_mlflow:
+                            mlflow.log_artifact(output_path_epoch)
+                        print(f"MODEL_PATH:{output_path_epoch}")
         if self.args.rank == 0:
             if self.validation_dataloader is not None:
                 self.snp2p_model.load_state_dict(self.early_stopping.best_weights)
             if output_path:
-                output_path_epoch = f"{output_path}.{epoch}"
+                output_path_epoch = f"{output_path}.best"
                 print("Save to...", output_path_epoch)
                 if self.args.distributed:
                     torch.save({"arguments": self.args,
