@@ -196,6 +196,8 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                                             transform=True, activation='softmax', poincare=poincare,
                                             use_hierarchical_transformer=use_hierarchical_transformer)
 
+
+
         self.last_activation = nn.Tanh()
         self.n_geno2pheno = sum([sys2pheno, gene2pheno])
         self.cov_effect = cov_effect
@@ -224,7 +226,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
         self.system_value_scale = nn.Parameter(torch.ones(self.n_systems + 1))
         self.gene_value_scale = nn.Parameter(torch.ones(self.n_genes + 1))
-        #self.snp_predictor = nn.Linear(hidden_dims, self.n_snps * 3 + 2)
+        self.snp_predictor = nn.Linear(hidden_dims, self.n_snps * 3 + 2)
         self.block_sampling_prob = 0.1
 
 
@@ -255,9 +257,9 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         """
         # 1. Propagate effects up the hierarchy from SNPs to Systems
         if not chunk:
-            gene_embedding, system_embedding = self.propagate(genotype_dict, covariates, snp2gene_mask, gene2sys_mask, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, sys2gene_mask)
+            snp_embedding, gene_embedding, system_embedding = self.propagate(genotype_dict, covariates, snp2gene_mask, gene2sys_mask, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward, sys2gene_mask)
         else:
-            gene_embedding, system_embedding = self.chunk_wise_propagate(genotype_dict, covariates, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward)
+            snp_embedding, gene_embedding, system_embedding = self.chunk_wise_propagate(genotype_dict, covariates, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward)
 
         # 2. Get phenotype-specific embeddings
         phenotype_embedding = self.phenotype_embeddings(phenotype_ids)
@@ -266,7 +268,10 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         prediction = self.prediction(phenotype_embedding, system_embedding, gene_embedding,
                                      genotype_dict, chunk, phenotype_ids,
                                      sys_temp=sys_temp, covariates=covariates)
-
+        if predict_snp:
+            snp_embedding_updated = snp_embedding + self.get_gene2snps(snp_embedding, gene_embedding, snp2gene_mask.T)
+            snp_prediction = self.snp_predictor(snp_embedding_updated)
+            return prediction, snp_prediction
         # 4. Optionally, return attention scores for interpretability
         if attention or score:
             return self._get_attention_and_scores(
@@ -334,7 +339,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             gene_embedding = gene_embedding + self.get_cov2gene(gene_embedding, covariates)
             system_embedding = system_embedding + self.get_cov2sys(system_embedding, covariates)
 
-        return gene_embedding, system_embedding
+        return snp_embedding, gene_embedding, system_embedding
 
     def chunk_wise_propagate(self, genotype_dict, covariates, masks_fwd, masks_bwd):
         """
@@ -433,6 +438,14 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         gene_embedding_input = self.dropout(self.gene_norm(gene_embedding))
         gene_effect = self.gene2sys.forward(system_embedding_input, gene_embedding_input, gene2sys_mask)
         return gene_effect
+
+    def get_gene2snps(self, snp_embedding, gene_embedding, gene2snp_mask):
+        """Propagates information from gene embeddings to SNP embeddings."""
+        gene_embedding_input = self.dropout(self.gene_norm(gene_embedding))
+        snp_embedding_input = self.dropout(snp_embedding)
+        gene_effect_on_snp = self.gene2snp.forward(snp_embedding_input, gene_embedding_input, gene2snp_mask)
+        return gene_effect_on_snp
+
 
     def get_covariate_embedding(self, covariates):
         """Computes a single vector embedding from the covariate data."""
