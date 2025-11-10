@@ -13,7 +13,7 @@ import numpy as np
 class PLINKDataset(Dataset):
 
     def __init__(self, tree_parser : SNPTreeParser, bfile, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None, flip=False,
-                 input_format='indices', cov_ids=()):
+                 input_format='indices', cov_ids=(), target_phenotype='PHENOTYPE'):
         """
         tree_parser: SNP tree parser object
         bfile: PLINK bfile prefix
@@ -33,6 +33,7 @@ class PLINKDataset(Dataset):
         self.genotype.index = plink_data.sample_id.values
         self.genotype.columns = plink_data.variant_id.values
         self.input_format = input_format
+        self.target_phenotype = target_phenotype
         if flip:
             print("Swapping Ref and Alt!")
         else:
@@ -49,13 +50,14 @@ class PLINKDataset(Dataset):
                                         'IID': plink_data.sample_id.as_numpy(),
                                         'SEX': plink_data.sample_sex.as_numpy(),
                                         'PHENOTYPE': plink_data.sample_phenotype.as_numpy() })
-            self.cov_df = self.cov_df[['FID', 'IID', 'SEX', 'PHENOTYPE']]
+            self.cov_df = self.cov_df[['FID', 'IID', 'SEX', target_phenotype]]
             self.cov_df = self.cov_df.loc[self.cov_df.PHENOTYPE!=-1]
             self.cov_df['PHENOTYPE'] = self.cov_df['PHENOTYPE'] - 1
             self.genotype = self.genotype.loc[self.cov_df.IID]
 
         self.cov_df['FID'] = self.cov_df['FID'].astype(str)
         self.cov_df['IID'] = self.cov_df['IID'].astype(str)
+
 
         if pheno is not None:
             self.pheno_df = pd.read_csv(pheno, sep='\t')
@@ -66,19 +68,20 @@ class PLINKDataset(Dataset):
                 self.cov_df = self.cov_df.merge(self.pheno_df, left_on=['FID', 'IID'], right_on=['FID', 'IID'])
                 self.genotype = self.genotype.loc[self.cov_df.IID]
         else:
-            self.pheno_df = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
+            self.pheno_df = self.cov_df[['FID', 'IID', target_phenotype]]
             self.pheno_df['FID'] = self.pheno_df['FID'].astype(str)
             self.pheno_df['IID'] = self.pheno_df['IID'].astype(str)
 
         if len(cov_ids) != 0:
             self.cov_ids = cov_ids
         else:
-            self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov != 'PHENOTYPE']
+            self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov != target_phenotype]
         self.n_cov = len(self.cov_ids) + 1 ## +1 for sex cov
         self.genotype = self.genotype.loc[self.cov_df['IID']]
         self.genotype = self.genotype[snp_sorted]
         self.has_phenotype = False
-        if 'PHENOTYPE' in self.cov_df.columns:
+
+        if (target_phenotype in self.cov_df.columns) or (target_phenotype in self.pheno_df.columns):
             self.has_phenotype = True
         if cov_mean_dict is None:
             self.cov_mean_dict = dict()
@@ -135,7 +138,7 @@ class PLINKDataset(Dataset):
             snp_type_dict['heterozygous'] = self.tree_parser.get_snp2gene(heterozygous, {1.0: heterozygous})
         sample2snp_dict['embedding'] = snp_type_dict
         if self.has_phenotype:
-            result_dict['phenotype'] = covariates['PHENOTYPE']
+            result_dict['phenotype'] = covariates[self.target_phenotype]
         covariates_tensor = [0]*self.n_cov
         sex = covariates['SEX']
         i_cov = 0

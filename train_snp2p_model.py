@@ -57,6 +57,7 @@ def main():
     parser.add_argument('--cov-ids', nargs='*', default=[])
     parser.add_argument('--flip', action='store_true', default=False)
     parser.add_argument('--regression', action='store_true', default=False)
+    parser.add_argument('--target-phenotype', type=str, default='PHENOTYPE')
 
     # Propagation option
     parser.add_argument('--sys2env', action='store_true', default=False)
@@ -168,7 +169,7 @@ def main_worker(rank, ngpus_per_node, args):
 
     print("Loading PLINK bfile... at %s" % args.train_bfile)
     snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip, input_format=args.input_format,
-                                 cov_ids=args.cov_ids)
+                                 cov_ids=args.cov_ids, target_phenotype=args.target_phenotype)
     args.cov_mean_dict = snp2p_dataset.cov_mean_dict
     args.cov_std_dict = snp2p_dataset.cov_std_dict
     print("Loading done...")
@@ -274,7 +275,7 @@ def main_worker(rank, ngpus_per_node, args):
     if args.val_bfile is not None:
         val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, args.val_pheno, cov_mean_dict=args.cov_mean_dict,
                                          cov_std_dict=args.cov_std_dict, flip=args.flip, input_format=args.input_format,
-                                         cov_ids=args.cov_ids)
+                                         cov_ids=args.cov_ids, target_phenotype=args.target_phenotype)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.jobs, collate_fn=snp2p_collator)
     else:
