@@ -10,7 +10,7 @@ class EpistasisVisualizer:
     -----------
     tree_parser : object
         An object that provides access to the system graph and annotations.
-    system_graph : networkx.DiGraph
+    sys_graph : networkx.DiGraph
         The hierarchical graph representing system relationships.
     sys_annot_dict : dict
         A dictionary mapping system nodes to their annotations.
@@ -31,7 +31,7 @@ class EpistasisVisualizer:
             An object containing system graph data and annotations.
         """
         self.tree_parser = tree_parser
-        self.system_graph = self.tree_parser.system_graph
+        self.sys_graph = self.tree_parser.sys_graph
         self.sys_annot_dict = tree_parser.sys_annot_dict
 
     def visualize_epistasis(self, target_system, epistatic_interactions):
@@ -52,12 +52,12 @@ class EpistasisVisualizer:
         """
 
         # Extract relevant subgraph nodes
-        descendants = nx.descendants(self.system_graph, target_system)
+        descendants = nx.descendants(self.sys_graph, target_system)
         sub_nodes = set(descendants) | {target_system}
         systems = list(descendants) + [target_system]
 
         # Get sub-hierarchy edges
-        sub_edges = self.get_sub_hierarchy_edges(self.system_graph, target_system)
+        sub_edges = self.get_sub_hierarchy_edges(self.sys_graph, target_system)
         sub_edges_for_graphviz = [(child, parent) for parent, child in sub_edges]
 
         # Identify epistatic genes and their associated systems

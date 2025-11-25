@@ -1,4 +1,4 @@
-# G2PT: Mechanistic genotype-phenotype translation using hierarchical transformers
+# G2PT: A genotype-phenotype transformer to assess and explain polygenic risk
 
 ## Overview
 
@@ -19,36 +19,32 @@ conda env create python==3.6 --name envname --file=environment.yml
 
 ## Usage
 
-To train a new model using a custom data set, first make sure that you have
+To train a new model using a data set, first make sure that you have
 a proper virtual environment set up. Also make sure that you have all the required files
 to run the training scripts:
 
 1. Participant Genotype files:
     * You can put [PLINK binary file](https://www.cog-genomics.org/plink/1.9/input#bed) 
-      * _--flip_ argument will flip ref. and alt. allele (use to recommend `--flip` argument, which make homozygous alt. as 2)
-    * Or you can put tab-delimited file containing personal genotype data to reduce memory usage 
-      * Index will indicate Sample ID. 
-      * `homozygous_a0`, `heterozygous`, `homozygous_a1` contain index of SNP by the allele
+      * _--flip_ argument will flip ref. and alt. allele (`--flip` argument, which make homozygous ref. as 2)
 
-* Example of tab-delimited genotype file
-
-|         | homozygous_a0 | heterozygous | homozygous_a1 |
-|---------|---------------|--------------|---------------|
-| 1000909 | 0,1,3,5,7,9   | 2,4,5        | 6,8           |
-| 1000303 | 1,3,6,7,8,9   | 2,5          | 4             |
-
-2. Covariates files
+2. Covariate and phenotype files
    * File including covariates and phenotypes.
    * same as `.cov` and `.pheno` in [PLINK](https://www.cog-genomics.org/plink/1.9/formats#cov)
      * If you want to use subset of covariates, you can put _--cov-ids_ (i.e. with `--cov-ids SEX AGE`, model will use only SEX and AGE as covaritates)
    * If you do not put `.cov` while you put PLINK bfiles. Covariates will be generated from `.fam` file (Sex only)  
    * If you do not put `.pheno`, you should include `PHENOTYPE` in training and validation covariate file 
 
-* Example of covariates file 
+* [Example of covariates file](samples/train.cov) (tab-separated)
 
-| FID      | IID   | PHENOTYPE | SEX | AGE | PC1 | PC2 | ... | PC10 |
-|----------|-------|-----------|-----|-----|-----|-----| --- |------| 
-| 10008090 | 10008090 | 1.2       | 1   | 48  | 3   | 0.3 | ... | 0.5  |
+| FID      | IID   | SEX | AGE | PC1 | PC2 | ... | PC10 |
+|----------|-------|-----|-----|-----|-----| --- |------| 
+| 10008090 | 10008090 |  1   | 48  | 3   | 0.3 | ... | 0.5  |
+
+* [Example of phenotype file](samples/train.pheno) (tab-separated)
+
+| FID      | IID   | PHENOTYPE |
+|----------|-------|-----------| 
+| 10008090 | 10008090 | 1.2       |
 
 3. Ontology (hierarchy) file: 
     * _--onto_ : A tab-delimited file that contains the ontology (hierarchy) that defines the structure of a branch
@@ -59,9 +55,11 @@ to run the training scripts:
     The following is an example describing a sample hierarchy.
 
         ![Ontology](./Figures/ontology.png)
-      * * _--subtree_order_ : if you have nested subtrees in ontology, you can set this option default is `['default']` (no subtree inside)
+      * _--subtree_order_ : if you have nested subtrees in ontology, you can set this option default is `['default']` (no subtree inside)
 
-* Example of ontology file
+**If you want to collapse gene ontology based on a GWAS summary statistics please check first step of [G2PT overall pipeline](#1-collapse-gene-ontology-with-your-gwas-results)**
+
+* [Example of ontology file](samples/ontology.txt) (header should not be included in file)
 
 | parent     | child      | interaction_type |
 |------------|------------|------------------|
@@ -74,7 +72,7 @@ to run the training scripts:
   * _--snp2gene_ : A tab-delimited file for mapping SNPs to genes. The first column indicates SNP, second column for gene, and third for chromosome
 
   
-* Example of snp2gene file
+* [Example of snp2gene file](samples/snp2gene.txt)
 
 | SNP_ID           | Gene       | Chromosome |
 |------------------|------------|------------|
@@ -122,11 +120,25 @@ There are several optional parameters that you can provide in addition to the in
 
 # G2PT Pipeline in Overall
 
-## 1. Prune Gene Ontology with your GWAS results
+## 1. Collapse Gene Ontology with your GWAS results
 
-You can prune Gene Ontology (Biological Process) based on your GWAS summary statistics
+### Download Gene Ontology Data
 
-[Prune Gene Ontology based on Your GWAS results](Prune_Gene_Ontology_Based_on_GWAS_results.ipynb)
+Use the provided notebook to obtain Gene Ontology (Biological Process) data:
+
+**[Prepare GO File](go_file.ipynb)**
+
+*Special thanks to @RiccardoIannaco for this resource.*
+
+### Collapse Gene Ontology
+
+The complete Gene Ontology dataset is extensive, which can impact both interpretability and computational efficiency. To address this, we recommend collapsing the downloaded Gene Ontology based on your specific GWAS summary statistics.
+
+Use the following notebook to streamline your Gene Ontology data:
+
+**[Collapse Gene Ontology Based on Your GWAS Results](Collapse_Gene_Ontology_Based_on_GWAS_results.ipynb)**
+
+This creates a focused and computationally manageable Gene Ontology subset tailored to your research needs.
 
 ## 2. Train model
 
@@ -135,13 +147,19 @@ You can put ontology file made from step 1.
 ### Model Training Example (Single GPU) 
 
 
+**Warning: Sample data is randomly generated and won't produce meaningful results. Use sample data for tutorial purposes only and apply this pipeline to your actual data.**
+
+Training script: [train_model.sh](train_model.sh) 
+
+------------------
+
+
 ```          
 python train_snp2p_model.py \
                       --onto ONTO \
                       --snp2gene SNP2Gene \
                       --train-bfile TRAIN --train-cov TRAIN.cov --train-pheno TRAIN.pheno \
                       --val-bfile VAL --train-cov VAL.cov --val-pheno VAL.pheno \
-                      --test TEST --test-cov VAL.cov --test-pheno TEST.pheno \ 
                       --epochs EPOCHS \
                       --lr LR \
                       --wd WD \
@@ -151,7 +169,10 @@ python train_snp2p_model.py \
                       --jobs JOBS \
                       --cuda 0 \
                       --hidden_dims HIDDEN_DIMS \
-                      --out OUT
+                      --out OUT \
+                      --sys2env --env2sys --sys2gene \
+                      --gene2pheno --sys2pheno \
+                      --regression # if model is regression task
 ```
 
 ### Model Training Example (Multiple GPUs)
@@ -162,7 +183,6 @@ python train_snp2p_model.py \
                       --snp2gene SNP2Gene \
                       --train-bfile TRAIN --train-cov TRAIN.cov --train-pheno TRAIN.pheno \
                       --val-bfile VAL --train-cov VAL.cov --val-pheno VAL.pheno \
-                      --test TEST --test-cov VAL.cov --test-pheno TEST.pheno \ 
                       --epochs EPOCHS \
                       --lr LR \
                       --wd WD \
@@ -176,26 +196,35 @@ python train_snp2p_model.py \
                       --world-size 1 \ 
                       --rank 0 \
                       --hidden_dims HIDDEN_DIMS \
-                      --out OUT
+                      --out OUT \
+                      --sys2env --env2sys --sys2gene \
+                      --gene2pheno --sys2pheno \
+                      --regression # if model is regression task
 ```
 
+-----------------------------------
 ## 3. Predict with Trained Model
+
+You can predict with a trained model.
+
+please check [predict_model.sh](predict_model.sh)
+
 
 ```          
 python predict_attention.py \
                       --onto ONTO \
                       --snp2gene SNP2Gene \
                       --bfile BFILE_prefix --cov COVAR.cov --pheno PHENO.pheno \
-                      --model trained_model_dir
+                      --model trained_model
                       --out output_prefix \ 
                       --batch_size BATCH_SIZE \
-                      --cpu N_cpu 
+                      --jobs N_cpu 
 ```
 
 This will generate
 
 * Prediction: `{output_prefix}.prediction.csv`, containing only predictions (Good for performance evaluation!) 
-* Attention result: `{output_prefix}.attention.csv`, containing Nx(S+G) system and gene attention results for whole population
+* Attention result: `{output_prefix}.attention.csv`, containing Nx(C+S+G) covariates, system, and gene attention results for whole population
 * System importance score: `{output_prefix}.sys_corr.csv`, containing correlation between system attention and prediction
 * Gene importance score: `{output_prefix}.gene_corr.csv`, containing correlation between system attention and prediction
 
@@ -204,15 +233,27 @@ adding argument `--prediction-only` will make this script to predict only (no at
 
 ## 4. Analyze Attention, Epistasis
 
-## 4.1 Draw Sankey Plot from Trained Model
+## 4.1 Highlight systems in ontology
 
-You can visualize attention flow from trained G2PT model.
+**This notebook is intended for real data analysis. Please follow these steps using your trained model.** 
+
+Visualize ontology with highlighted high-importance systems (in tutorial I selected random systems): 
+
+[Highlight systems in ontology](Draw_ontology_with_highlighted_systems.ipynb)
+
+## 4.2 Draw Sankey Plot from Trained Model
+
+**This notebook is intended for real data analysis. Please follow these steps using your trained model.**
+
+Visualize attention flow from trained G2PT model:
 
 [Draw Sankey from Model Attention](Draw_Sankey.ipynb)
 
-## 4.2 Search Visualize, and Analyze Epistasis in system
+## 4.3 Search Visualize, and Analyze Epistasis in system
 
-You can search epistasis within system and visualize, and analyze. Please pass through example notebook
+**This notebook is intended for real data analysis. Please follow these steps using your trained model.**
+
+Search for epistasis within systems and create visualizations:
 
 [Epistais Search and Visualization Example](Epistasis_pipeline.ipynb)
 
@@ -221,4 +262,5 @@ You can search epistasis within system and visualize, and analyze. Please pass t
 - [x] Applying [Differential Transformer](https://github.com/microsoft/unilm/tree/master/Diff-Transformer) to genetic factor translation
 - [x] Build data loader for `plink` binary file using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/) 
 - [x] Adding `.cov` and `.pheno` for input
+- [x] Change model for multiple phenotypes
 

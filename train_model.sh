@@ -1,10 +1,28 @@
-python train_model.py \
-        --onto ./sample/ontology.txt \
-	--gene2id ./sample/gene2ind.txt \
-	--cell2id ./sample/cell2ind.txt \
-	--genotypes mutation:./sample/cell2mutation.txt,cna:./sample/cell2cnamplification.txt,cnd:./sample/cell2cndeletion.txt \
-	--jobs 16 --cuda 0 --compound_epochs 0 --epochs 1501 --hidden_dims 128 --lr 0.0001 --wd 0.01 --subtree_order default --compound_layers 512 128 --dropout 0.2 --l2_lambda 0.001 --batch_size 32 --z_weight 2 --radius 2 --n_bits 2048  --val_step 10 \
-	--out ./sample/output_model.pt \
-	--train ./sample/training_data.txt \
-	--val ./sample/test_data.txt 
+python train_snp2p_model.py \
+    --onto ./samples/ontology.txt \
+    --snp2gene ./samples/snp2gene.txt \
+    --train-bfile ./samples/train \
+    --train-cov ./samples/train.cov \
+    --train-pheno ./samples/train.pheno \
+    --val-bfile ./samples/val \
+    --val-cov ./samples/val.cov \
+    --val-pheno ./samples/val.pheno \
+    --jobs 8 \
+    --epochs 21 \
+    --hidden-dims 64 \
+    --lr 0.0001 \
+    --wd 0.0001 \
+    --subtree-order default \
+    --dropout 0.2 \
+    --batch-size 128 \
+    --val-step 5 \
+    --z-weight 0 \
+    --out ./samples/output_model.pt \
+    --cuda 0 \
+    --sys2env \
+    --env2sys \
+    --sys2gene \
+    --gene2pheno \
+    --sys2pheno \
+    --regression
 
