@@ -82,10 +82,11 @@ class GenotypeDataset(Dataset):
                 self.pheno_ids = [pheno for pheno in self.pheno_df.columns[2:]]
             self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
             self.pheno_df['FID'] = self.pheno_df['FID'].map(str)
+            self.pheno_df = self.pheno_df.fillna(-9)
 
         else:
             self.pheno_df = None # will be initialized in child class = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
-
+            self.pheno_df = self.pheno_df.fillna(-9)
         self.pheno2ind = {pheno:i for i, pheno in enumerate(self.pheno_ids)}
         self.ind2pheno = {i:pheno for i, pheno in enumerate(self.pheno_ids)}
         self.pheno2type = {}
@@ -245,17 +246,56 @@ class PLINKDataset(GenotypeDataset):
         print('Loading PLINK data at %s' % bfile)
         # Processing Genotypes
         plink_data = plink.read_plink(path=bfile)
-        print('loading done')
+        print(f'loading done with{len(plink_data.sample_id.values)} individuals and {len(plink_data.variant_id.values)} SNPs')
+
         self.input_format = input_format
         genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
 
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
 
-        self.iid2ind = {str(iid): idx for idx, iid in enumerate(plink_data.sample_id.values)}
-        self.ind2iid = {idx: str(iid) for idx, iid in enumerate(plink_data.sample_id.values)}
-
         genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
         genotype_df = genotype_df[snp_sorted]
+
+        # Processing Covariates
+        if self.cov_df is not None:
+            intersection_iid = list(set(genotype_df.index.tolist()).intersection(self.cov_df['IID'].tolist()))
+            self.cov_df = self.cov_df.set_index('IID').loc[intersection_iid].reset_index()
+            genotype_df = genotype_df.loc[intersection_iid]
+        else:
+            self.cov_df = pd.DataFrame({'FID': plink_data.sample_family_id.as_numpy(),
+                                        'IID': plink_data.sample_id.as_numpy(),
+                                        'SEX': plink_data.sample_sex.as_numpy(),
+                                        'PHENOTYPE': plink_data.sample_phenotype.as_numpy() })
+            self.cov_df = self.cov_df[['FID', 'IID', 'SEX', 'PHENOTYPE']]
+            self.cov_df = self.cov_df.loc[self.cov_df.PHENOTYPE!=-1]
+            self.cov_df['PHENOTYPE'] = self.cov_df['PHENOTYPE'] - 1
+            self.cov_df['IID'] = self.cov_df['IID'].astype(str)
+            self.cov_df['FID'] = self.cov_df['FID'].astype(str)
+            self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
+
+        if self.pheno_df is not None:
+            intersection_iid = list(set(genotype_df.index.tolist()).intersection(self.pheno_df['IID'].tolist()))
+            self.pheno_df = self.pheno_df.set_index('IID').loc[intersection_iid].reset_index()
+            self.cov_df = self.cov_df.set_index('IID').loc[intersection_iid].reset_index()
+            genotype_df = genotype_df.loc[intersection_iid]
+        else:
+            self.pheno_df = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
+            self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
+            self.pheno_df = self.pheno_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
+            self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
+            self.pheno_ids = ['PHENOTYPE']
+
+        self.iid2ind = {str(iid): idx for idx, iid in enumerate(genotype_df.index.values)}
+        self.ind2iid = {idx: str(iid) for idx, iid in enumerate(genotype_df.index.values)}
+
+        print(genotype_df.head())
+        print(self.cov_df.head())
+        print(self.pheno_df.head())
+
+        self.subtree = None
+        self.subtree_phenotypes = []
+
+
         print("genotype data shape: ", genotype_df.shape)
         genotype = genotype_df.values
         #print(genotype)
@@ -289,32 +329,6 @@ class PLINKDataset(GenotypeDataset):
         del genotype_df
         del genotype
 
-        # Processing Covariates
-        if self.cov_df is not None:
-            self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
-        else:
-            self.cov_df = pd.DataFrame({'FID': plink_data.sample_family_id.as_numpy(),
-                                        'IID': plink_data.sample_id.as_numpy(),
-                                        'SEX': plink_data.sample_sex.as_numpy(),
-                                        'PHENOTYPE': plink_data.sample_phenotype.as_numpy() })
-            self.cov_df = self.cov_df[['FID', 'IID', 'SEX', 'PHENOTYPE']]
-            self.cov_df = self.cov_df.loc[self.cov_df.PHENOTYPE!=-1]
-            self.cov_df['PHENOTYPE'] = self.cov_df['PHENOTYPE'] - 1
-            self.cov_df['IID'] = self.cov_df['IID'].astype(str)
-            self.cov_df['FID'] = self.cov_df['FID'].astype(str)
-            self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
-
-        if self.pheno_df is not None:
-            self.pheno_df = self.pheno_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
-        else:
-            self.pheno_df = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
-            self.pheno_df['IID'] = self.pheno_df['IID'].map(str)
-            self.pheno_df = self.pheno_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
-            self.pheno_ids = ['PHENOTYPE']
-
-        self.subtree = None
-        self.subtree_phenotypes = []
-
     def summary(self):
         print('PLINK data from %s'%self.bfile)
         print('Covariates for prediction %s' % ", ".join(self.cov_ids))
@@ -324,14 +338,16 @@ class PLINKDataset(GenotypeDataset):
         print("%d of participant with %d of variants"%(self.genotype.shape[0], self.genotype.shape[1]))
         print("The number of covariates:", self.n_cov)
 
-    def sample_population(self, n=100, inplace=False):
-        if not inplace:
-            sampled_individual = self.cov_df.IID.sample(n=n).tolist()
-            return sampled_individual
-        else:
-            self.genotype = self.genotype.sample(n=n)
-            self.cov_df = self.cov_df.set_index("IID").loc[self.genotype.index].reset_index().rename(columns={'index':"IID"})
-            self.pheno_df = self.pheno_df.set_index("IID").loc[self.genotype.index].reset_index().rename(columns={'index':"IID"})
+    def sample_population(self, n=100):
+        sampled_iids = self.cov_df['IID'].sample(n=n, random_state=42).tolist()
+        original_indices = [self.iid2ind[iid] for iid in sampled_iids]
+        self.snp_idx = self.snp_idx[original_indices]
+        self.cov_df = self.cov_df.set_index('IID').loc[sampled_iids].reset_index()
+        self.pheno_df = self.pheno_df.set_index('IID').loc[sampled_iids].reset_index()
+        self.iid2ind = {str(iid): idx for idx, iid in enumerate(sampled_iids)}
+        self.ind2iid = {idx: str(iid) for idx, iid in enumerate(sampled_iids)}
+        self.N = len(sampled_iids)
+        print(f"Subsampled to {self.N} individuals.")
 
 
     def sample_phenotypes(self, n, seed=None):
@@ -624,17 +640,17 @@ class SNP2PCollator(object):
         else:
             result_dict['genotype']['snp'] = torch.stack([d['genotype']['snp'] for d in data])  # .long()#genotype_dict
             result_dict['genotype']['block_ind'] = torch.stack([d['genotype']['block_ind'] for d in data])
-        '''
+
         if self.mlm:
             masked_snp = result_dict['genotype']['snp'].clone()
             label = result_dict['genotype']['snp'].clone()
             mask_prob = 0.1
             mask = torch.rand(masked_snp.shape, device=masked_snp.device) < mask_prob
-            masked_snp[mask] = self.padding_index['snp']
+            masked_snp[mask] = self.padding_index['snp'] + 1
             label[mask!=True] = -100
             result_dict['genotype']['snp'] = masked_snp
             result_dict['genotype']['snp_label'] = label
-        '''
+
 
         result_dict['covariates'] = torch.stack([d['covariates'] for d in data])
         result_dict['phenotype_indices'] = torch.stack([d['phenotype_indices'] for d in data])

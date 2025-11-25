@@ -1,7 +1,11 @@
 import pandas as pd
 import numpy as np
 import torch
+import math
 from . import TreeParser
+import re
+from collections import deque
+
 
 
 class SNPTreeParser(TreeParser):
@@ -136,10 +140,10 @@ class SNPTreeParser(TreeParser):
         '''
 
         # ———— 3) filter to known genes ————
-        #parser.snp2gene_df = parser.snp2gene_df.loc[
-        #    parser.snp2gene_df['gene'].isin(parser.gene2ind)
-        #]
-        #]
+        parser.snp2gene_df = parser.snp2gene_df.loc[
+            parser.snp2gene_df['gene'].isin(parser.gene2ind)
+        ]
+
         #print(parser.snp2gene_df.shape)
         snps = sorted(parser.snp2gene_df.drop_duplicates(subset=['snp'])['snp'].values.tolist())
         if multiple_phenotypes:
@@ -204,6 +208,12 @@ class SNPTreeParser(TreeParser):
                                    parser.snp2gene_df['chr']))
         parser.snp2chr  = dict(zip(parser.snp2gene_df['snp'],
                                    parser.snp2gene_df['chr']))
+        if 'pos' in parser.snp2gene_df.columns:
+            parser.snp2pos = dict(zip(parser.snp2gene_df['snp'],
+                                      parser.snp2gene_df['pos']))
+        else:
+            parser.snp2pos = self.snp_pos_dict(parser.snp2gene_df['snp'].values.tolist())
+
         parser.chr2gene = {
             c: [parser.gene2ind[g]
                 for g in parser.snp2gene_df
@@ -280,6 +290,26 @@ class SNPTreeParser(TreeParser):
         if not inplace:
             return parser
 
+    @staticmethod
+    def snp_pos_dict(ids):
+        """
+        Build {snp_id: pos} for items like CHR:POS:REF:ALT (rsIDs are skipped).
+        Accepts optional 'chr' prefix and common chrom labels.
+        """
+        pat = re.compile(
+            r'^(?:chr)?(?:[0-9]{1,2}|X|Y|MT|M):'  # CHR
+            r'(\d+):'  # POS (capture)
+            r'[ACGTN\-]+:'  # REF (allow N / indels)
+            r'[ACGTN,\-]+$',  # ALT (allow multiple alts, indels)
+            re.IGNORECASE
+        )
+        out = {}
+        for s in ids:
+            s = str(s).strip()
+            m = pat.match(s)
+            if m:
+                out[s] = int(m.group(1))
+        return out
 
     def summary(self, system=True, gene=True, snp=True):
         super(SNPTreeParser, self).summary(system=system, gene=gene)
@@ -524,6 +554,364 @@ class SNPTreeParser(TreeParser):
             new_parser.sys_annot_dict = collapsed_parser.sys_annot_dict
             return new_parser
 
+    def resnik_similarity(self, snp_a, snp_b, smoothing=1e-9):
+        cache = self._ensure_resnik_cache(smoothing)
+        terms_a = self._resnik_terms_for_snp(snp_a, cache)
+        terms_b = self._resnik_terms_for_snp(snp_b, cache)
+        if not terms_a or not terms_b:
+            return 0.0
+        return self._resnik_pairwise(terms_a, terms_b, cache)
 
+    def resnik_similarity_matrix(self, snps=None, smoothing=1e-9, as_dataframe=True):
+        cache = self._ensure_resnik_cache(smoothing)
+        if snps is None:
+            snp_names = self._resnik_all_snp_names()
+        else:
+            snp_names = [self._resnik_normalise_snp(s) for s in snps]
 
+        n = len(snp_names)
+        matrix = np.zeros((n, n), dtype=float)
+
+        for i, snp_i in enumerate(snp_names):
+            terms_i = self._resnik_terms_for_snp(snp_i, cache)
+            if not terms_i:
+                continue
+            for j in range(i, n):
+                terms_j = self._resnik_terms_for_snp(snp_names[j], cache)
+                if not terms_j:
+                    continue
+                score = self._resnik_pairwise(terms_i, terms_j, cache)
+                matrix[i, j] = matrix[j, i] = score
+
+        if as_dataframe:
+            return pd.DataFrame(matrix, index=snp_names, columns=snp_names)
+        return matrix
+
+    def _ensure_resnik_cache(self, smoothing):
+        if not hasattr(self, '_resnik_cache'):
+            self._resnik_cache = {}
+
+        key = float(smoothing)
+        cache = self._resnik_cache.get(key)
+        if cache is None:
+            self._validate_resnik_requirements()
+            cache = {
+                'smoothing': smoothing,
+                'term_ic': self._compute_resnik_information_content(smoothing),
+                'term_ancestors': self._compute_resnik_term_ancestors(),
+                'snp_terms': {}
+            }
+            self._resnik_cache[key] = cache
+        return cache
+
+    def _validate_resnik_requirements(self):
+        required_attrs = ['sys_graph', 'sys2gene_full', 'gene2ind', 'snp2sys']
+        missing = [attr for attr in required_attrs if not hasattr(self, attr)]
+        if missing:
+            raise AttributeError(f"SNPTreeParser is missing required attributes for Resnik similarity: {missing}")
+
+    def _resnik_all_snp_names(self):
+        if hasattr(self, 'snp2ind'):
+            return [snp for snp, _ in sorted(self.snp2ind.items(), key=lambda item: item[1])]
+        return sorted(self.snp2sys.keys())
+
+    def _resnik_normalise_snp(self, snp):
+        if isinstance(snp, str):
+            if hasattr(self, 'snp2ind') and snp in self.snp2ind:
+                return snp
+            if snp in self.snp2sys:
+                return snp
+        elif isinstance(snp, int) and hasattr(self, 'ind2snp') and snp in self.ind2snp:
+            return self.ind2snp[snp]
+        raise KeyError(f"Unknown SNP identifier: {snp}")
+
+    def _resnik_terms_for_snp(self, snp, cache):
+        snp_name = self._resnik_normalise_snp(snp)
+        snp_terms = cache['snp_terms']
+        if snp_name not in snp_terms:
+            terms = self.snp2sys.get(snp_name, [])
+            snp_terms[snp_name] = {term for term in terms if term in cache['term_ic']}
+        return snp_terms[snp_name]
+
+    def _compute_resnik_information_content(self, smoothing):
+        total_genes = len(self.gene2ind)
+        if total_genes == 0:
+            raise ValueError("SNPTreeParser does not contain any genes")
+
+        ic = {}
+        for term, genes in self.sys2gene_full.items():
+            gene_count = len(set(genes))
+            probability = (gene_count + smoothing) / (total_genes + smoothing)
+            ic[term] = -math.log(probability)
+        return ic
+
+    def _compute_resnik_term_ancestors(self):
+        ancestors = {}
+        for term in self.sys_graph.nodes:
+            visited = set()
+            stack = list(self.sys_graph.predecessors(term))
+            while stack:
+                parent = stack.pop()
+                if parent in visited:
+                    continue
+                visited.add(parent)
+                stack.extend(self.sys_graph.predecessors(parent))
+            visited.add(term)
+            ancestors[term] = visited
+        return ancestors
+
+    def _resnik_pairwise(self, terms_a, terms_b, cache):
+        best = 0.0
+        term_ic = cache['term_ic']
+        term_ancestors = cache['term_ancestors']
+        for term_a in terms_a:
+            ancestors_a = term_ancestors.get(term_a)
+            if not ancestors_a:
+                continue
+            for term_b in terms_b:
+                ancestors_b = term_ancestors.get(term_b)
+                if not ancestors_b:
+                    continue
+                common = ancestors_a & ancestors_b
+                if not common:
+                    continue
+                score = max(term_ic[term] for term in common)
+                if score > best:
+                    best = score
+        return best
+
+    def wu_palmer_similarity(self, snp_a, snp_b):
+        """Wu & Palmer style similarity derived from LCA depth."""
+        cache = self._ensure_structural_cache()
+        terms_a = self._structural_terms_for_snp(snp_a, cache)
+        terms_b = self._structural_terms_for_snp(snp_b, cache)
+        if not terms_a or not terms_b:
+            return 0.0
+
+        def score_terms(term_a, term_b):
+            return self._wu_palmer_terms(term_a, term_b, cache)
+
+        score = self._pairwise_term_score(terms_a, terms_b, score_terms, prefer='max')
+        return float(score) if score is not None else 0.0
+
+    def wu_palmer_similarity_matrix(self, snps=None, as_dataframe=True):
+        return self._structural_matrix(
+            snps,
+            scorer=self._wu_palmer_terms,
+            prefer='max',
+            default=0.0,
+            as_dataframe=as_dataframe,
+        )
+
+    def tree_distance(self, snp_a, snp_b):
+        """Shortest undirected path length between SNP leaf systems."""
+        cache = self._ensure_structural_cache()
+        terms_a = self._structural_terms_for_snp(snp_a, cache)
+        terms_b = self._structural_terms_for_snp(snp_b, cache)
+        if not terms_a or not terms_b:
+            return math.inf
+
+        def distance_terms(term_a, term_b):
+            return self._tree_distance_terms(term_a, term_b, cache)
+
+        distance = self._pairwise_term_score(terms_a, terms_b, distance_terms, prefer='min')
+        if distance is None:
+            return math.inf
+        return float(distance)
+
+    def tree_distance_matrix(self, snps=None, as_dataframe=True):
+        return self._structural_matrix(
+            snps,
+            scorer=self._tree_distance_terms,
+            prefer='min',
+            default=math.inf,
+            as_dataframe=as_dataframe,
+        )
+
+    def ancestor_jaccard_similarity(self, snp_a, snp_b):
+        """Jaccard similarity of ancestor sets for SNP leaf systems."""
+        cache = self._ensure_structural_cache()
+        terms_a = self._structural_terms_for_snp(snp_a, cache)
+        terms_b = self._structural_terms_for_snp(snp_b, cache)
+        if not terms_a or not terms_b:
+            return 0.0
+
+        def jaccard_terms(term_a, term_b):
+            return self._ancestor_jaccard_terms(term_a, term_b, cache)
+
+        score = self._pairwise_term_score(terms_a, terms_b, jaccard_terms, prefer='max')
+        return float(score) if score is not None else 0.0
+
+    def ancestor_jaccard_similarity_matrix(self, snps=None, as_dataframe=True):
+        return self._structural_matrix(
+            snps,
+            scorer=self._ancestor_jaccard_terms,
+            prefer='max',
+            default=0.0,
+            as_dataframe=as_dataframe,
+        )
+
+    def _ensure_structural_cache(self):
+        if not hasattr(self, '_structural_cache'):
+            self._structural_cache = {}
+
+        cache = self._structural_cache
+        if 'term_ancestors' not in cache:
+            if getattr(self, '_resnik_cache', None):
+                any_cache = next(iter(self._resnik_cache.values()), None)
+                if any_cache and 'term_ancestors' in any_cache:
+                    cache['term_ancestors'] = {
+                        term: set(ancestors)
+                        for term, ancestors in any_cache['term_ancestors'].items()
+                    }
+            if 'term_ancestors' not in cache:
+                self._validate_resnik_requirements()
+                cache['term_ancestors'] = self._compute_resnik_term_ancestors()
+
+        if 'term_depth' not in cache:
+            cache['term_depth'] = self._compute_structural_term_depths()
+
+        if 'leaf_systems' not in cache:
+            cache['leaf_systems'] = {
+                node for node in self.sys_graph.nodes
+                if self.sys_graph.out_degree(node) == 0
+            }
+
+        cache.setdefault('snp_leaf_terms', {})
+        return cache
+
+    def _compute_structural_term_depths(self):
+        roots = [node for node, indegree in self.sys_graph.in_degree() if indegree == 0]
+        depths = {}
+        queue = deque()
+
+        if roots:
+            for root in roots:
+                depths[root] = 0
+                queue.append((root, 0))
+        else:
+            # Fallback to treat every node as a root-level node
+            for node in self.sys_graph.nodes:
+                depths[node] = 0
+
+        while queue:
+            node, depth = queue.popleft()
+            for child in self.sys_graph.successors(node):
+                child_depth = depth + 1
+                if child not in depths or child_depth < depths[child]:
+                    depths[child] = child_depth
+                    queue.append((child, child_depth))
+
+        for node in self.sys_graph.nodes:
+            depths.setdefault(node, 0)
+
+        return depths
+
+    def _structural_terms_for_snp(self, snp, cache):
+        snp_name = self._resnik_normalise_snp(snp)
+        snp_terms = cache['snp_leaf_terms']
+        if snp_name not in snp_terms:
+            systems = self.snp2sys.get(snp_name, [])
+            leaf_terms = [term for term in systems if term in cache['leaf_systems']]
+            if not leaf_terms:
+                leaf_terms = [term for term in systems if term in cache['term_depth']]
+            snp_terms[snp_name] = set(leaf_terms)
+        return snp_terms[snp_name]
+
+    def _pairwise_term_score(self, terms_a, terms_b, scorer, prefer='max'):
+        best = None
+        for term_a in terms_a:
+            for term_b in terms_b:
+                value = scorer(term_a, term_b)
+                if value is None:
+                    continue
+                if best is None:
+                    best = value
+                elif prefer == 'max':
+                    if value > best:
+                        best = value
+                elif prefer == 'min':
+                    if value < best:
+                        best = value
+                else:
+                    raise ValueError(f"Unknown preference '{prefer}' for pairwise scoring")
+        return best
+
+    def _structural_matrix(self, snps, scorer, prefer, default, as_dataframe):
+        cache = self._ensure_structural_cache()
+        if snps is None:
+            snp_names = self._resnik_all_snp_names()
+        else:
+            snp_names = [self._resnik_normalise_snp(s) for s in snps]
+
+        n = len(snp_names)
+        matrix = np.zeros((n, n), dtype=float)
+        snp_terms = {
+            snp_name: self._structural_terms_for_snp(snp_name, cache)
+            for snp_name in snp_names
+        }
+
+        def score_terms(term_a, term_b):
+            return scorer(term_a, term_b, cache)
+
+        for i, snp_i in enumerate(snp_names):
+            terms_i = snp_terms[snp_i]
+            for j in range(i, n):
+                terms_j = snp_terms[snp_names[j]]
+                if not terms_i or not terms_j:
+                    value = default
+                else:
+                    value = self._pairwise_term_score(terms_i, terms_j, score_terms, prefer=prefer)
+                    if value is None:
+                        value = default
+                matrix[i, j] = matrix[j, i] = value
+
+        if as_dataframe:
+            return pd.DataFrame(matrix, index=snp_names, columns=snp_names)
+        return matrix
+
+    def _lca_info(self, term_a, term_b, cache):
+        term_ancestors = cache['term_ancestors']
+        ancestors_a = term_ancestors.get(term_a)
+        ancestors_b = term_ancestors.get(term_b)
+        if not ancestors_a or not ancestors_b:
+            return None, None
+        common = ancestors_a & ancestors_b
+        if not common:
+            return None, None
+        term_depth = cache['term_depth']
+        lca = max(common, key=lambda term: term_depth.get(term, 0))
+        return lca, term_depth.get(lca, 0)
+
+    def _wu_palmer_terms(self, term_a, term_b, cache):
+        lca, depth_lca = self._lca_info(term_a, term_b, cache)
+        if lca is None:
+            return None
+        term_depth = cache['term_depth']
+        depth_a = term_depth.get(term_a, depth_lca)
+        depth_b = term_depth.get(term_b, depth_lca)
+        denominator = depth_a + depth_b
+        if denominator == 0:
+            return 1.0 if term_a == term_b else 0.0
+        return (2.0 * depth_lca) / denominator
+
+    def _tree_distance_terms(self, term_a, term_b, cache):
+        lca, depth_lca = self._lca_info(term_a, term_b, cache)
+        if lca is None:
+            return None
+        term_depth = cache['term_depth']
+        depth_a = term_depth.get(term_a, depth_lca)
+        depth_b = term_depth.get(term_b, depth_lca)
+        return max(0.0, (depth_a + depth_b) - (2.0 * depth_lca))
+
+    def _ancestor_jaccard_terms(self, term_a, term_b, cache):
+        term_ancestors = cache['term_ancestors']
+        ancestors_a = term_ancestors.get(term_a)
+        ancestors_b = term_ancestors.get(term_b)
+        if not ancestors_a or not ancestors_b:
+            return None
+        union = ancestors_a | ancestors_b
+        if not union:
+            return None
+        return len(ancestors_a & ancestors_b) / len(union)
 

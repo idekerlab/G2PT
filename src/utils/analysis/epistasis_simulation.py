@@ -1,20 +1,20 @@
 import numpy as np
 import pandas as pd
 import networkx as nx
+import itertools
 from scipy.stats import t as t_dist
 
 def build_hierarchical_ontology(sim,
                                 n_genes=800,
                                 n_systems=60, # This is the number of leaf systems
-                                p_shared_system=0.8,
-                                p_epistatic_parent_child=0.1,
+                                epistatic_distinctness=0.5,
                                 overlap_prob=0.25,
-                                n_causal_systems=0,
+                                n_causal_systems=20,
                                 causal_system_enrichment=5.0,
                                 seed=123):
     """
     Construct SNP→Gene→System→...→Root hierarchy.
-    Injects epistatic interactions between parent and child systems.
+    Injects epistatic interactions based on a tunable "distinctness" parameter.
     Returns three DataFrames ready for .to_csv().
     """
     rng = np.random.default_rng(seed)
@@ -76,68 +76,79 @@ def build_hierarchical_ontology(sim,
         for g in gene_ids:
             gene2system[g].add(rng.choice(system_ids))
 
-    # ----------------- 4. SNP → Gene Mapping with Epistasis Logic -----------------
+    # --- 4a. Pre-calculate system pair pools for epistasis placement ---
+    print("Pre-calculating system pair pools for epistasis placement...")
+    leaf_systems = system_ids
+    root_nodes = [n for n, d in sys_graph.in_degree() if d == 0]
+    
+    if not root_nodes or not parent_child_edges:
+        print("Warning: No root node or hierarchy found. Using fallback for distinctness.")
+        all_pairs = list(itertools.combinations(leaf_systems, 2))
+        related_system_pairs = all_pairs
+        distant_system_pairs = all_pairs
+    else:
+        root = root_nodes[0]
+        related_system_pairs = []
+        distant_system_pairs = []
+        all_pairs = list(itertools.combinations(leaf_systems, 2))
+        for s1, s2 in all_pairs:
+            if s1 not in sys_graph or s2 not in sys_graph: continue
+            lca = nx.lowest_common_ancestor(sys_graph, s1, s2)
+            if lca == root:
+                distant_system_pairs.append((s1, s2))
+            else:
+                related_system_pairs.append((s1, s2))
+
+    same_system_pairs = [(s, s) for s in leaf_systems]
+    
+    rng.shuffle(same_system_pairs)
+    rng.shuffle(related_system_pairs)
+    rng.shuffle(distant_system_pairs)
+
+    print(f"  - Found {len(same_system_pairs)} same-system pairs.")
+    print(f"  - Found {len(related_system_pairs)} related-system pairs.")
+    print(f"  - Found {len(distant_system_pairs)} distant-system pairs.")
+
+    # ----------------- 4b. SNP → Gene Mapping with Epistasis Logic -----------------
     snp2gene = rng.choice(gene_ids, size=n_snps)
     epistatic_pairs = sim["pair_idx"]
-    n_epistatic_pairs = len(epistatic_pairs)
-    n_parent_child_epistasis = int(n_epistatic_pairs * p_epistatic_parent_child)
 
-    if not parent_child_edges:
-        print("Warning: No parent-child system relationships. Cannot inject parent-child epistasis.")
-        n_parent_child_epistasis = 0
-
-    # Inject epistasis between parent-child systems
-    for i in range(n_parent_child_epistasis):
-        snp_i, snp_j = epistatic_pairs[i]
-        parent, child = rng.choice(parent_child_edges)
-
-        # Get all leaf systems under the child
-        child_leaves = [n for n in nx.descendants(sys_graph, child) if sys_graph.out_degree(n) == 0]
-        if not child_leaves: child_leaves = [child] if sys_graph.out_degree(child) == 0 else []
-
-        # Get all leaf systems under the parent
-        parent_leaves = [n for n in nx.descendants(sys_graph, parent) if sys_graph.out_degree(n) == 0]
-        if not parent_leaves: parent_leaves = [parent] if sys_graph.out_degree(parent) == 0 else []
-        
-        # For a true parent-child interaction, one SNP should be in a leaf system
-        # descendant from the child, and the other should be in a leaf system
-        # that is a descendant of the parent, but NOT of the child (i.e. a sibling branch).
-        other_parent_leaves = list(set(parent_leaves) - set(child_leaves))
-
-        if not other_parent_leaves or not child_leaves:
-            # This can happen if the parent's only descendant leaves are through the child.
-            # In this case, fall back to the old behavior: pick any two leaves under the parent.
-            if not parent_leaves: continue
-            sys_for_i = rng.choice(parent_leaves)
-            sys_for_j = rng.choice(parent_leaves)
+    print(f"Assigning {len(epistatic_pairs)} epistatic pairs with distinctness = {epistatic_distinctness}...")
+    for snp_i, snp_j in epistatic_pairs:
+        # Determine which pool to use based on epistatic_distinctness
+        if epistatic_distinctness < 0.5:
+            prob_same = 1 - (epistatic_distinctness / 0.5)
+            pool = same_system_pairs if rng.random() < prob_same else related_system_pairs
         else:
-            # Assign one SNP to a leaf from the child's branch, and the other to a leaf from another branch under the parent.
-            sys_for_i = rng.choice(child_leaves)
-            sys_for_j = rng.choice(other_parent_leaves)
+            prob_related = 1 - ((epistatic_distinctness - 0.5) / 0.5)
+            pool = related_system_pairs if rng.random() < prob_related else distant_system_pairs
 
-        # Find genes in those leaf systems
+        # Failsafe logic if the chosen pool is empty
+        if not pool:
+            if related_system_pairs: pool = related_system_pairs
+            elif distant_system_pairs: pool = distant_system_pairs
+            elif same_system_pairs: pool = same_system_pairs
+            else:
+                sys_for_i, sys_for_j = rng.choice(leaf_systems, 2, replace=True)
+                pool = None
+
+        if pool:
+            sys_idx = rng.integers(len(pool))
+            sys_for_i, sys_for_j = pool[sys_idx]
+
+        # Find genes in those leaf systems and assign the SNPs
         genes_in_sys_i = [g for g, systems in gene2system.items() if sys_for_i in systems]
         genes_in_sys_j = [g for g, systems in gene2system.items() if sys_for_j in systems]
-        if not genes_in_sys_i: genes_in_sys_i = [rng.choice(gene_ids)] # Failsafe
-        if not genes_in_sys_j: genes_in_sys_j = [rng.choice(gene_ids)] # Failsafe
-
-        # Assign SNPs to genes in those systems
-        g_i = rng.choice(genes_in_sys_i)
-        g_j = rng.choice(genes_in_sys_j)
+        
+        g_i = rng.choice(genes_in_sys_i) if genes_in_sys_i else rng.choice(gene_ids)
+        g_j = rng.choice(genes_in_sys_j) if genes_in_sys_j else rng.choice(gene_ids)
+        
         snp2gene[snp_i] = g_i
         snp2gene[snp_j] = g_j
-
-    # Assign remaining epistatic pairs randomly to leaf systems
-    for i in range(n_parent_child_epistasis, n_epistatic_pairs):
-        snp_i, snp_j = epistatic_pairs[i]
-        g_i = rng.choice(gene_ids)
-        g_j = g_i if rng.random() < p_shared_system else rng.choice(gene_ids)
-        snp2gene[snp_i] = g_i
-        snp2gene[snp_j] = g_j
-        # Also ensure these genes are in at least one system
-        sys_for_pair = rng.choice(system_ids)
-        gene2system[g_i].add(sys_for_pair)
-        gene2system[g_j].add(sys_for_pair)
+        
+        # Ensure the chosen genes are actually in the target systems
+        gene2system[g_i].add(sys_for_i)
+        gene2system[g_j].add(sys_for_j)
 
     # ----------------- 5. Finalize Gene -> System and add noise -----------------
     for sys in system_ids: # Noise only added to leaf systems
@@ -169,30 +180,57 @@ def build_hierarchical_ontology(sim,
         print(f"Warning: {len(unassigned_genes)} genes were not assigned any SNPs. Assigning them now to random SNPs.")
         unassigned_gene_list = list(unassigned_genes)
         
-        # If there are more unassigned genes than SNPs, we can't assign each a unique SNP.
-        # This is an edge case, but good to handle. We'll only be able to assign n_snps of them.
         if len(unassigned_gene_list) > n_snps:
             print(f"  - Warning: More unassigned genes ({len(unassigned_gene_list)}) than SNPs ({n_snps}).")
             print(f"  - Only {n_snps} genes will be assigned a unique SNP.")
             unassigned_gene_list = rng.choice(unassigned_gene_list, size=n_snps, replace=False).tolist()
 
-        # Assign each unassigned gene to a unique, randomly chosen SNP index
         snp_indices_to_reassign = rng.choice(np.arange(n_snps), size=len(unassigned_gene_list), replace=False)
         for i, gene_id in enumerate(unassigned_gene_list):
             snp2gene[snp_indices_to_reassign[i]] = gene_id
 
 
     # --------------- 6. Flatten to tables ---------------
-    snp_chromosomes = rng.integers(1, 23, size=n_snps)
-    snp_positions = rng.integers(1, 10_000_000, size=n_snps)
-    snp_blocks = rng.integers(1, 5, size=n_snps)
+    ld_blocks = sim.get('ld_blocks')
+    snp_chromosomes = np.zeros(n_snps, dtype=int)
+    snp_blocks_cosmetic = np.zeros(n_snps, dtype=int)
+    snp_positions = np.zeros(n_snps, dtype=int)
+
+    if ld_blocks is not None:
+        print("LD structure found. Assigning chromosomes, positions, and blocks based on LD.")
+        unique_ld_blocks = np.unique(ld_blocks)
+        # Assign a large genomic region to each LD block
+        block_starts = np.arange(len(unique_ld_blocks)) * 1_000_000
+        
+        for i, block_id in enumerate(unique_ld_blocks):
+            in_block = (ld_blocks == block_id)
+            n_in_block = in_block.sum()
+            
+            # Assign all SNPs in the same LD block to the same chromosome and cosmetic block
+            snp_chromosomes[in_block] = rng.integers(1, 23)
+            snp_blocks_cosmetic[in_block] = rng.integers(1, 5)
+            
+            # Stagger positions by a small random amount within the block's genomic region
+            offsets = rng.integers(1, 1001, size=n_in_block)
+            snp_positions[in_block] = block_starts[i] + np.cumsum(offsets)
+    else:
+        print("No LD structure found. Assigning chromosomes, positions, and blocks randomly.")
+        # Fallback to random assignments if no LD info is present
+        snp_chromosomes = rng.integers(1, 23, size=n_snps)
+        snp_positions = rng.integers(1, 10_000_000, size=n_snps)
+        snp_blocks_cosmetic = rng.integers(1, 5, size=n_snps)
+
+    
     snp_df = pd.DataFrame({
-        "snp": np.arange(n_snps),
         "chr": snp_chromosomes,
         "pos": snp_positions,
-        "block": snp_blocks,
+        "block": snp_blocks_cosmetic,
         "gene": snp2gene
     })
+    snp_df.index = np.arange(n_snps)
+    snp_df.index.name = 'snp'
+    # Reorder columns to the desired format, keeping the 'pos' column
+    snp_df = snp_df[['gene', 'chr', 'pos', 'block']]
 
     gene_df = pd.DataFrame([(g, s, 1.0)
                             for g, ss in gene2system.items() for s in ss],
@@ -366,12 +404,24 @@ def simulate_epistasis(
     y_var = np.var(y)
     y += rng.normal(0, np.sqrt(max(1e-8, 1 - y_var)), n_samples)
 
+    # 5. Create LD block assignments for position generation
+    ld_blocks = np.zeros(n_snps, dtype=int)
+    if ld_rho > 0 and n_ld_blocks > 0:
+        n_snps_per_block = n_snps // n_ld_blocks
+        for i in range(n_ld_blocks):
+            start_idx = i * n_snps_per_block
+            end_idx = start_idx + n_snps_per_block
+            if i == n_ld_blocks - 1:
+                end_idx = n_snps
+            ld_blocks[start_idx:end_idx] = i
+
     return dict(G=G.astype(np.int8),
                 y=y,
                 additive_idx=additive_idx.tolist(),
                 pair_idx=[tuple(p) for p in pairs],
                 beta=beta[additive_idx], # Return only the causal betas
-                gamma=gamma)
+                gamma=gamma,
+                ld_blocks=ld_blocks)
 
 # --- minimal demo -------------------------------------------------------------
 if __name__ == "__main__":

@@ -35,36 +35,46 @@ class EpistasisFinder(object):
         attention_results (pd.DataFrame): A DataFrame of attention scores for each
             sample and system.
     """
-    def __init__(self, tree_parser : SNPTreeParser, attention_results, tsv_path, cov, pheno=None, flip=False):
+    def __init__(self, tree_parser : SNPTreeParser, attention_results, bfile=None, tsv=None, cov=None, pheno=None, flip=False):
         """
         Initializes the EpistasisFinder and loads all necessary data from TSV files.
 
         Args:
             tree_parser (SNPTreeParser): An initialized SNPTreeParser object.
             attention_results (str or pd.DataFrame): Path to a CSV file or a DataFrame of attention scores.
-            tsv_path (str): Path to the directory containing genotypes.tsv and snp2gene.tsv.
+            bfile (str): Path to the PLINK binary file containing genotype data.
+            tsv (str): Path to the directory containing genotypes.tsv and snp2gene.tsv.
             cov (str): Path to a tab-separated covariate file.
             pheno (str, optional): Path to a tab-separated phenotype file. Defaults to None.
             flip (bool, optional): If True, swaps reference and alternate alleles. Defaults to False.
         """
         self.tree_parser = tree_parser
         self.flip = flip
+        if tsv is not None:
+            # Load genotype data from TSV
+            genotype_file = tsv
 
-        # Load genotype data from TSV
-        genotype_file = f"{tsv_path}/genotypes.tsv"
-        self.genotype = pd.read_csv(genotype_file, sep='	', index_col=0)
-        self.genotype.index = self.genotype.index.astype(str)
-        self.genotype.columns = self.genotype.columns.astype(str)
+            self.genotype = pd.read_csv(genotype_file, sep='	', index_col=0)
+            self.genotype.index = self.genotype.index.astype(str)
+            self.genotype.columns = self.genotype.columns.astype(str)
+            print(f"From TSV {self.genotype.shape[1]} variants with {self.genotype.shape[0]} samples are queried")
+
+        elif bfile is not None:
+            self.plink_data = plink.read_plink(path=bfile)
+            self.genotype = pd.DataFrame(self.plink_data.call_genotype.as_numpy().sum(axis=-1).T)
+            self.genotype.index = self.plink_data.sample_id.values
+            self.genotype.columns = self.plink_data.variant_id.values
+
         if flip:
             self.genotype = 2 - self.genotype
             print("Swapping Ref and Alt!")
         
         # Load SNP metadata from snp2gene file
-        snp2gene_file = f"{tsv_path}/snp2gene.tsv"
-        snp2gene_df = pd.read_csv(snp2gene_file, sep='\t')
-        self.snp2chr = dict(zip(snp2gene_df['snp'], snp2gene_df['chr']))
-        self.snp2pos = dict(zip(snp2gene_df['snp'], snp2gene_df['pos']))
-        print(f"From TSV {self.genotype.shape[1]} variants with {self.genotype.shape[0]} samples are queried")
+
+
+        self.snp2chr = self.tree_parser.snp2chr #= dict(zip(snp2gene_df['snp'], snp2gene_df['chr']))
+        self.snp2pos = self.tree_parser.snp2pos #dict(zip(snp2gene_df['snp'], snp2gene_df['pos']))
+
 
         self.cov_df = pd.read_csv(cov, sep='\t')
         self.cov_df['FID'] = self.cov_df['FID'].astype(str)
@@ -81,6 +91,7 @@ class EpistasisFinder(object):
         # Align dataframes
         self.cov_df = self.cov_df.loc[self.cov_df['IID'].isin(self.genotype.index)]
         self.genotype = self.genotype.loc[self.cov_df.IID]
+        self.population_size = self.genotype.shape[0]
 
         self.cov_ids = [c for c in self.cov_df.columns if c not in ['FID', 'IID', 'PHENOTYPE']]
         
@@ -100,8 +111,8 @@ class EpistasisFinder(object):
             'underdominant': self.code_underdominance
         }
 
-    def search_epistasis_on_system(self, system, sex=0, quantile=0.9, chi=True, fisher=True, return_significant_only=True, check_inheritance=True, verbose=0,
-                                   snp_inheritance_dict = {}, binary=False, target='PHENOTYPE'):
+    def search_epistasis_on_system(self, system, sex=0, quantile=0.9, chi=True, fisher=True, interaction_test=True, return_significant_only=True, check_inheritance=True, verbose=0,
+                                   snp_inheritance_dict = {}, binary=False, target='PHENOTYPE', use_wls=False):
         """
         Searches for epistatic interactions for a given biological system.
 
@@ -170,7 +181,7 @@ class EpistasisFinder(object):
                     genotype_for_ineritance_model = genotype_merged_with_covs[[str(target_snp), target]+self.cov_ids]
                     if sex!=2:
                         genotype_for_ineritance_model = genotype_for_ineritance_model.loc[genotype_for_ineritance_model.SEX==sex]
-                    target_snp_type = self.determine_inheritance_model(genotype_for_ineritance_model[[str(target_snp)]+self.cov_ids], genotype_for_ineritance_model['PHENOTYPE'].values, target_snp, verbose=verbose)
+                    target_snp_type = self.determine_inheritance_model(genotype_for_ineritance_model[[str(target_snp)]+self.cov_ids], genotype_for_ineritance_model[target].values, target_snp, verbose=verbose)
                     snp_inheritance_dict[target_snp] = target_snp_type
 
 
@@ -192,35 +203,72 @@ class EpistasisFinder(object):
                         print(f'\t\t{target_snp} -> {self.tree_parser.snp2gene[target_snp]} passes Chi-Square test with p-value {p_val}')
             print(f'\tFrom {n_target_snps} SNPs, {len(result_chi)} SNPs pass Chi-Square test')
 
-            # Generate all possible pairs from Chi-square results
-            all_snp_pairs = list(itertools.combinations(result_chi, 2))
+            # Generate pairs from significant SNPs
+            sig_snp_pairs = list(itertools.combinations(result_chi, 2))
+            
+            # Generate pairs from non-significant SNPs
+            non_sig_snps = list(set(target_snps) - set(result_chi))
+            non_sig_snp_pairs = list(itertools.combinations(non_sig_snps, 2))
+            print(f"\tGenerated {len(non_sig_snp_pairs)} pairs from {len(non_sig_snps)} non-significant SNPs for further testing.")
+
         else:
-            all_snp_pairs = list(itertools.combinations(target_snps, 2))
+            sig_snp_pairs = list(itertools.combinations(target_snps, 2))
+            non_sig_snp_pairs = []
 
         # 1. Filter out pairs that are too close physically
         print('Filtering Close SNPs...')
-        distant_snp_pairs = [pair for pair in all_snp_pairs if self.check_distance(pair[0], pair[1])]
-        print(f"\tFrom {len(all_snp_pairs)} pairs, {len(all_snp_pairs) - len(distant_snp_pairs)} proximal pairs were removed, leaving {len(distant_snp_pairs)} for testing.")
-
-        sig_snp_pairs = distant_snp_pairs
-        if fisher and distant_snp_pairs:
-            # 2. Perform Fisher's Exact Test on the remaining distant pairs
-            print("Running Fisher's Exact Test on distant pairs...")
-            sig_snp_pairs = self._run_fisher_on_pairs(risky_samples, distant_snp_pairs, snp_inheritance_dict, verbose=verbose)
-            print(f'\tFrom {len(distant_snp_pairs)} pairs, {len(sig_snp_pairs)} passed Fisher test with FDR correction.')
+        distant_sig_pairs = [pair for pair in sig_snp_pairs if self.check_distance(pair[0], pair[1])]
+        distant_non_sig_pairs = [pair for pair in non_sig_snp_pairs if self.check_distance(pair[0], pair[1])]
         
-        if not sig_snp_pairs:
-             return [], snp_inheritance_dict
+        print(f"\tFrom {len(sig_snp_pairs)} significant pairs, {len(sig_snp_pairs) - len(distant_sig_pairs)} proximal pairs were removed, leaving {len(distant_sig_pairs)}.")
+        print(f"\tFrom {len(non_sig_snp_pairs)} non-significant pairs, {len(non_sig_snp_pairs) - len(distant_non_sig_pairs)} proximal pairs were removed, leaving {len(distant_non_sig_pairs)}.")
 
-        print('Calculating statistical Interaction p-value ')
-        final_significant_pairs = self.get_statistical_epistatic_significance(sig_snp_pairs, attention_results.IID.map(str),
-                                                                    snp_inheritance_dict=snp_inheritance_dict,
-                                                                    verbose=verbose,
-                                                                    return_significant_only=return_significant_only,
-                                                                    target=target, binary=binary)
-        print(f'\tFrom {len(sig_snp_pairs)} pairs, {len(final_significant_pairs)} significant interactions were found after regression analysis.')
-        
-        return final_significant_pairs, snp_inheritance_dict
+        # Initialize lists for pairs that pass the Fisher test
+        fisher_sig = distant_sig_pairs
+        fisher_non_sig = []
+
+        #if fisher:
+            # 2. Perform Fisher's Exact Test on distant pairs from both groups
+        if distant_sig_pairs:
+            print("Running Fisher's Exact Test on significant pairs...")
+            fisher_sig = self._run_fisher_on_pairs(risky_samples, distant_sig_pairs, snp_inheritance_dict, verbose=verbose)
+            fisher_passed_sig = [(snp1, snp2) for snp1, snp2, p_corrected in fisher_sig if p_corrected < 0.05]
+            print(f'\tFrom {len(distant_sig_pairs)} pairs, {len(fisher_passed_sig)} passed Fisher test with FDR correction.')
+        if distant_non_sig_pairs:
+            print("Running Fisher's Exact Test on non-significant pairs...")
+            fisher_non_sig = self._run_fisher_on_pairs(risky_samples, distant_non_sig_pairs, snp_inheritance_dict, verbose=verbose)
+            fisher_passed_non_sig = [(snp1, snp2) for snp1, snp2, p_corrected in fisher_non_sig if p_corrected < 0.05]
+            print(f'\tFrom {len(distant_non_sig_pairs)} pairs, {len(fisher_passed_non_sig)} passed Fisher test with FDR correction.')
+
+        if interaction_test:
+            fisher_passed_sig = [(snp1, snp2) for snp1, snp2, p_corrected in fisher_sig if p_corrected < 0.05]
+            # Instead of combining, we process them separately
+            print(f'Calculating statistical Interaction p-value for {len(fisher_passed_sig)} pairs from Chi-Square path...')
+            chi_path_results = self.get_statistical_epistatic_significance(
+                fisher_passed_sig, attention_results.IID.map(str),
+                snp_inheritance_dict=snp_inheritance_dict, verbose=verbose,
+                return_significant_only=return_significant_only, target=target, binary=binary,
+                use_wls=use_wls, system=system
+            )
+            print(f'\tFound {len(chi_path_results)} interactions from Chi-Square path.')
+            fisher_passed_non_sig = [(snp1, snp2) for snp1, snp2, p_corrected in fisher_non_sig if p_corrected < 0.05]
+            print(f'Calculating statistical Interaction p-value for {len(fisher_passed_non_sig)} pairs from Fisher path...')
+
+            fisher_path_results = self.get_statistical_epistatic_significance(
+                fisher_passed_non_sig, attention_results.IID.map(str),
+                snp_inheritance_dict=snp_inheritance_dict, verbose=verbose,
+                return_significant_only=return_significant_only, target=target, binary=binary,
+                use_wls=use_wls, system=system
+            )
+            print(f'\tFound {len(fisher_path_results)} interactions from Fisher path.')
+
+            # Candidate pairs are the ones that went into the regression test
+            chi_candidate_pairs = fisher_passed_sig
+            fisher_candidate_pairs = fisher_passed_non_sig
+
+            return chi_path_results, fisher_path_results, chi_candidate_pairs, fisher_candidate_pairs, snp_inheritance_dict
+        else:
+            return fisher_sig, fisher_non_sig, snp_inheritance_dict
 
     def _run_fisher_on_pairs(self, risky_samples, snp_pairs, snp_inheritance_dict, verbose=0):
         """
@@ -231,11 +279,15 @@ class EpistasisFinder(object):
         cohort, and performs Fisher's exact test. It then applies a Benjamini-Hochberg
         FDR correction to the resulting p-values.
 
+        For robustness, this test ALWAYS uses a dominant encoding (presence/absence
+        of the minor allele) to ensure a 2x2 contingency table.
+
         Args:
             risky_samples (list): A list of sample IDs defining the high-risk cohort.
             snp_pairs (list): A list of tuples, where each tuple is a pair of SNP IDs.
             snp_inheritance_dict (dict): A dictionary mapping SNPs to their
-                inheritance models ('additive', 'dominant', etc.).
+                inheritance models ('additive', 'dominant', etc.). This is IGNORED
+                in favor of a consistent dominant encoding for the test.
             verbose (int, optional): Verbosity level. Defaults to 0.
 
         Returns:
@@ -246,33 +298,46 @@ class EpistasisFinder(object):
             return []
 
         target_snps = list(map(str, set(itertools.chain.from_iterable(snp_pairs))))
+        
+        # Create a temporary genotype dataframe for this test
         partial_genotype = self.genotype.loc[risky_samples, target_snps].copy()
+        
+        # Apply a dominant encoding (presence/absence) to all SNPs for a robust 2x2 table
         for snp in target_snps:
-            if snp in snp_inheritance_dict:
-                partial_genotype = self.model_encoders[snp_inheritance_dict[snp]](partial_genotype, snp)
+            partial_genotype[snp] = partial_genotype[snp].replace(2, 1)
 
         raw_pvals = []
         for snp1, snp2 in snp_pairs:
+            # The genotypes are now guaranteed to be 0 or 1
             contingency_table = pd.crosstab(partial_genotype[str(snp1)], partial_genotype[str(snp2)])
+            
+            # We still check the shape in case one of the alleles is not present in the risky cohort
             if contingency_table.shape == (2, 2):
-                _, p_value = fisher_exact(contingency_table)
+                if self.population_size > 10000:
+                    chi2, p_value, dof, expected = chi2_contingency(contingency_table, correction=True)
+                else:
+                    _, p_value = fisher_exact(contingency_table)
                 raw_pvals.append(p_value)
             else:
+                # If the table is not 2x2 (e.g., only one allele is present), there is no variation to test
                 raw_pvals.append(1.0)
 
         if not raw_pvals:
             return []
 
+        # FDR correction
         reject_flags, fdr_corrected_pvals, _, _ = multipletests(raw_pvals, alpha=0.05, method='fdr_bh')
 
-        significant_pairs = []
+        fisher_pairs = []
         for i, (snp1, snp2) in enumerate(snp_pairs):
-            if reject_flags[i]:
-                if verbose == 1:
-                    print(f"\t\tInteraction between {snp1} and {snp2} is significant after FDR (p={fdr_corrected_pvals[i]:.4g})")
-                significant_pairs.append((snp1, snp2))
-        
-        return significant_pairs
+            # Log raw p-value if verbose
+            if verbose == 1 and raw_pvals[i] < 0.05:
+                print(f"\t\t- Pair ({snp1}, {snp2}) has raw p-value: {raw_pvals[i]:.4g}")
+            #if reject_flags[i]:
+            #    if verbose == 1:
+            #        print(f"\t\t- Pair ({snp1}, {snp2}) is SIGNIFICANT after FDR (p={fdr_corrected_pvals[i]:.4g})")
+            fisher_pairs.append((snp1, snp2, fdr_corrected_pvals[i]))
+        return fisher_pairs
 
     def get_snp_chi_sqaure(self, population, risky_samples, target_snp, snp_inheritance_dict={}):
         """
@@ -322,8 +387,8 @@ class EpistasisFinder(object):
                                                snps_in_system=(),
                                                return_significant_only=True,
                                                snp_inheritance_dict={}, target='PHENOTYPE',
-                                               binary=False,
-                                               verbose=0):
+                                               binary=False, use_wls=False, system=None,
+                                               verbose=0, debug=False):
         """
         Tests for a statistical interaction effect between SNP pairs using regression.
 
@@ -344,6 +409,12 @@ class EpistasisFinder(object):
             target (str, optional): The name of the phenotype column.
             binary (bool, optional): If True, use logistic regression. If False,
                 use ordinary least squares. Defaults to False.
+            use_wls (bool, optional): If True, use Weighted Least Squares regression
+                with attention scores as weights. Requires `system` to be set.
+                Defaults to False.
+            system (str, optional): The name of the system to use for getting
+                attention scores for WLS. Required if `use_wls` is True.
+                Defaults to None.
             verbose (int, optional): Verbosity level. Defaults to 0.
 
         Returns:
@@ -353,87 +424,103 @@ class EpistasisFinder(object):
         """
 
         target_snps = list(set(element for tup in pairs for element in tup))
-        #print(pairs, target_snps)
-        #print(self.genotype.columns)
+        if not target_snps:
+            return []
+        
         if len(snps_in_system) == 0:
             partial_genotype = self.genotype.loc[cohort, [str(snp) for snp in target_snps]].copy()
         else:
             partial_genotype = self.genotype.loc[cohort, snps_in_system].copy()
+        
         for target_snp in target_snps:
             if target_snp in snp_inheritance_dict.keys():
                 partial_genotype = self.model_encoders[snp_inheritance_dict[target_snp]](partial_genotype, target_snp)
 
-
         partial_genotype.columns = map(self.rename_snp, partial_genotype.columns.tolist())
         partial_genotype_cov_merged = partial_genotype.merge(self.cov_df, left_index=True, right_on='IID')
-        print(f"\tTesting {len(target_snps)} SNPs on {partial_genotype.shape[0]} individuals, SNPs in system {snps_in_system}")
+        
+        weights = None
+        if use_wls and system is not None:
+            print(f"\tUsing Weighted Least Squares (WLS) with attention scores from system: {system}")
+            if system not in self.attention_results.columns:
+                print(f"\tWarning: System '{system}' not found in attention results. Falling back to OLS.")
+            else:
+                # Ensure attention scores are aligned with the regression dataframe
+                attention_for_system = self.attention_results.set_index('IID')[system]
+                aligned_attention = attention_for_system.reindex(partial_genotype_cov_merged['IID']).fillna(0)
+                
+                # Normalize weights
+                total_attention = aligned_attention.sum()
+                if total_attention > 0:
+                    weights = (aligned_attention / total_attention) * len(aligned_attention)
+                else:
+                    print("\tWarning: Total attention for this system is zero. Cannot use WLS. Falling back to OLS.")
+        elif use_wls and system is None:
+            print("\tWarning: `use_wls` is True but no `system` was provided. Falling back to OLS.")
+
+
+        print(f"\tTesting {len(pairs)} pairs on {partial_genotype.shape[0]} individuals...")
 
         raw_results = []
-        significant_epistasis = []
-
-
         for snp_1, snp_2 in pairs:
-            if len(snps_in_system) == 0:
-                snps_in_system = [snp_1, snp_2]
-            snps_in_system_renamed = [self.rename_snp(snp) for snp in snps_in_system]
             snp_1_renamed = self.rename_snp(snp_1)
             snp_2_renamed = self.rename_snp(snp_2)
-            formula_no_epistasis = target+' ~ ' + ' + '.join(self.cov_ids) + " + %s + %s"%(snp_1_renamed, snp_2_renamed)
-            combination_name = "%s:%s"%(snp_1_renamed, snp_2_renamed)
-            formula_epistasis = formula_no_epistasis + " + " + combination_name
-            #md_reduced = smf.ols(formula_no_epistasis, data=partial_genotype_cov_merged).fit()
+            
+            formula = f"{target} ~ {' + '.join(self.cov_ids)} + {snp_1_renamed} + {snp_2_renamed} + {snp_1_renamed}:{snp_2_renamed}"
+            
             try:
                 if binary:
-                    md_full = smf.logit(formula_epistasis, data=partial_genotype_cov_merged).fit()
+                    # Note: statsmodels Logit doesn't directly accept weights in the same way as OLS/WLS.
+                    # A common approach is to use GLM with a binomial family.
+                    if use_wls and weights is not None:
+                        model = smf.glm(formula, data=partial_genotype_cov_merged, family=sm.families.Binomial(), var_weights=weights).fit()
+                    else:
+                        model = smf.logit(formula, data=partial_genotype_cov_merged).fit()
                 else:
-                    md_full = smf.ols(formula_epistasis, data=partial_genotype_cov_merged).fit()
-                #ll_full = md_full.llf
-                #ll_reduced = md_reduced.llf
-                #lr_stat = 2 * (ll_full - ll_reduced)
-                #df_diff = md_full.df_model - md_reduced.df_model
-                #combinatory_pvalue = stats.chi2.sf(lr_stat, df_diff)
-                combinatory_pvalue = md_full.pvalues[combination_name]
-                raw_results.append((snp_1, snp_2, combinatory_pvalue))
-            except:
-                raw_results.append((snp_1, snp_2, 1))
+                    if use_wls and weights is not None:
+                        model = smf.wls(formula, data=partial_genotype_cov_merged, weights=weights).fit()
+                    else:
+                        model = smf.ols(formula, data=partial_genotype_cov_merged).fit()
+                
+                combinatory_pvalue = model.pvalues[f"{snp_1_renamed}:{snp_2_renamed}"]
+                
+                if debug:
+                    print(f"\n--- Debugging Model for Pair ({snp_1}, {snp_2}) ---")
+                    print(f"Formula: {formula}")
+                    print("Data Head (5 rows):")
+                    print(partial_genotype_cov_merged[[target] + self.cov_ids + [snp_1_renamed, snp_2_renamed]].head())
+                    print("\nModel Summary:")
+                    print(model.summary())
+                    print("---"" End Debug ---\n")
 
-        alpha = 0.05
-        if len(pairs) == 0:
+                raw_results.append((snp_1, snp_2, combinatory_pvalue))
+            except Exception as e:
+                if verbose > 0:
+                    print(f"Could not fit model for pair ({snp_1}, {snp_2}): {e}")
+                raw_results.append((snp_1, snp_2, 1.0))
+
+        if not raw_results:
             return []
+            
+        alpha = 0.05
         raw_pvals = [r[2] for r in raw_results]
         reject_flags, fdr_corrected_pvals, _, _ = multipletests(raw_pvals, alpha=alpha, method='fdr_bh')
 
-        # 3) Construct final list including the adjusted p-values
         significant_epistasis = []
         all_epistasis = []
 
         for i, (snp_1, snp_2, raw_p) in enumerate(raw_results):
             adj_p = fdr_corrected_pvals[i]
-            is_significant = reject_flags[i]
-
-            # Save the result in a unified tuple
             result_tuple = (snp_1, snp_2, raw_p, adj_p)
 
-            if is_significant:
-                # If significant, optionally print details
+            if reject_flags[i]:
                 if verbose == 1:
-                    print(f'Epistatic interaction between {snp_1} -> {self.tree_parser.snp2gene[snp_1]} '
-                          f'and {snp_2} -> {self.tree_parser.snp2gene[snp_2]} is SIGNIFICANT '
-                          f'(raw_p={raw_p:.5g}, FDR_adj_p={adj_p:.5g})')
+                    print(f'Epistatic interaction between {snp_1} and {snp_2} is SIGNIFICANT (raw_p={raw_p:.5g}, FDR_adj_p={adj_p:.5g})')
                 significant_epistasis.append(result_tuple)
-            else:
-                if verbose == 1:
-                    print(f'Epistatic interaction between {snp_1} -> {self.tree_parser.snp2gene[snp_1]} '
-                          f'and {snp_2} -> {self.tree_parser.snp2gene[snp_2]} is NOT SIGNIFICANT '
-                          f'(raw_p={raw_p:.5g}, FDR_adj_p={adj_p:.5g})')
-
-            # Keep all results, if the user wants them
+            
             all_epistasis.append(result_tuple)
 
-        if return_significant_only:
-            return significant_epistasis
-        else:
-            return all_epistasis
+        return all_epistasis if not return_significant_only else significant_epistasis
 
     def rename_snp(self, snp):
         """Formats a SNP ID to be compatible with regression formula syntax."""

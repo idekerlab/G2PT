@@ -10,7 +10,7 @@ from src.model.hierarchical_transformer import HierarchicalTransformer
 
 class Genotype2PhenotypeTransformer(nn.Module):
 
-    def __init__(self, tree_parser, hidden_dims, interaction_types=('default', ), dropout=0.2, activation='softmax',
+    def __init__(self, tree_parser, hidden_dims, n_heads=4, interaction_types=('default', ), dropout=0.2, activation='softmax',
                  input_format='indices', poincare=False):
         super(Genotype2PhenotypeTransformer, self).__init__()
         self.input_format = input_format
@@ -21,7 +21,7 @@ class Genotype2PhenotypeTransformer(nn.Module):
         self.interaction_types = interaction_types
         print("Model is initialized with %d systems and %d gene mutations" % (self.n_systems, self.n_genes))
         self.poincare = poincare
-
+        self.n_heads = n_heads
         self.system_embedding = nn.Embedding(int(np.ceil((self.tree_parser.n_systems + 1) / 8) * 8), hidden_dims, padding_idx=self.n_systems)
         self.gene_embedding = nn.Embedding(int(np.ceil((self.tree_parser.n_genes + 1) / 8) * 8), hidden_dims, padding_idx=self.n_genes)
 
@@ -39,14 +39,14 @@ class Genotype2PhenotypeTransformer(nn.Module):
 
         self.norm_channel_first = False
 
-        self.sys2env = nn.ModuleDict({interaction_type:HierarchicalTransformer(hidden_dims, 4, hidden_dims,
+        self.sys2env = nn.ModuleDict({interaction_type:HierarchicalTransformer(hidden_dims, self.n_heads, hidden_dims,
                                                               self.sys2env_update_norm_inner,
                                                               self.sys2env_update_norm_outer,
                                                               dropout, norm_channel_first=self.norm_channel_first,
                                                               conv_type='system', activation='softmax', poincare=poincare)
                                       for interaction_type in
                                       interaction_types})
-        self.env2sys = nn.ModuleDict({interaction_type:HierarchicalTransformer(hidden_dims, 4, hidden_dims,
+        self.env2sys = nn.ModuleDict({interaction_type:HierarchicalTransformer(hidden_dims, self.n_heads, hidden_dims,
                                                               self.env2sys_update_norm_inner,
                                                               self.env2sys_update_norm_outer,
                                                               dropout, norm_channel_first=self.norm_channel_first,
@@ -54,7 +54,7 @@ class Genotype2PhenotypeTransformer(nn.Module):
                                       for interaction_type in
                                       interaction_types})
 
-        self.sys2gene = HierarchicalTransformer(hidden_dims, 4, hidden_dims,
+        self.sys2gene = HierarchicalTransformer(hidden_dims, self.n_heads, hidden_dims,
                                                       self.sys2gene_update_norm_inner, self.sys2gene_update_norm_outer,
                                                       dropout, norm_channel_first=self.norm_channel_first,
                                                       conv_type='system', activation='softmax', poincare=poincare)

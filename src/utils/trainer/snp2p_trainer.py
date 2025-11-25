@@ -108,6 +108,7 @@ class SNP2PTrainer(object):
         self.fix_system = fix_system
         self.dynamic_phenotype_sampling = args.dynamic_phenotype_sampling
         self.target_phenotype = target_phenotype
+        self.mlm = args.mlm
 
         n_sys2pad = int(np.ceil(len(tree_parser.sys2ind)/8)*8) - len(tree_parser.sys2ind)
         system_temp_tensor = [np.log(1+len(tree_parser.sys2gene_full[tree_parser.ind2sys[i]])) for i in range(len(tree_parser.sys2ind))] + [10.0] * n_sys2pad
@@ -492,7 +493,20 @@ class SNP2PTrainer(object):
 
 
             #print(f"Rank {self.args.rank}, sent to model")
-            phenotype_predicted = model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
+            if self.mlm:
+                phenotype_predicted, snp_predicted = model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
+                                                       hierarchical_mask_forward,
+                                                       hierarchical_mask_backward,
+                                                       #sys_temp= self.system_temp_tensor,
+                                                       snp2gene_mask=snp2gene_mask,
+                                                       gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
+                                                       sys2gene_mask=sys2gene_mask,
+                                                       sys2env=self.args.sys2env,
+                                                       env2sys=self.args.env2sys,
+                                                       sys2gene=self.args.sys2gene, snp_only=snp_only,
+                                                       chunk=False, predict_snp=True)
+            else:
+                phenotype_predicted = model(batch['genotype'], batch['covariates'], batch['phenotype_indices'],
                                                    hierarchical_mask_forward,
                                                    hierarchical_mask_backward,
                                                    #sys_temp= self.system_temp_tensor,
@@ -531,27 +545,23 @@ class SNP2PTrainer(object):
             phenotype_loss = loss(predictions, batch['phenotype'])
             #print(f"Rank {self.args.rank}: loss calculated", phenotype_loss)
 
-            '''
-            labels = batch['genotype']['snp_label']
-            logits = F.log_softmax(snp_predicted, dim=-1)
-            snp_loss = self.loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
             
-            print(batch['genotype']['snp'])
-            print(labels)
-            print(logits)
-            print(logits.size())
-            print(loss)
-            asdf
-            '''
+            if self.mlm:
+                labels = batch['genotype']['snp_label']
+                logits = F.log_softmax(snp_predicted, dim=-1)
+                snp_loss = self.loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+            else:
+                snp_loss = torch.tensor(0.0, device=self.device)
+            
 
             #phenotype_loss += phenotype_loss #+ correlation_matching_loss(predictions, batch['phenotype'])
             mean_response_loss += float(phenotype_loss)
-            #mean_snp_loss += float(snp_loss)
+            mean_snp_loss += float(snp_loss)
             #print(pheno_inds, phenotype_loss)
             #if phenotype_loss == 0.0:
             #    phenotype_loss = move_to(torch.tensor(phenotype_loss), device=self.device)
             #if phenotype_loss!=0:
-            loss =  phenotype_loss #+ 0.01 * snp_loss
+            loss =  phenotype_loss + 0.1 * snp_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()

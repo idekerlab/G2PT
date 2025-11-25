@@ -94,9 +94,11 @@ def main():
 
     # Train bfile format
     parser.add_argument('--train-bfile', help='Training genotype dataset', type=str, default=None)
-    parser.add_argument('--train-tsv-path', help='Path to directory with training genotype, covariate, and phenotype TSV files', type=str, default=None)
+    parser.add_argument('--train-tsv', help='Path to directory with training genotype, covariate, and phenotype TSV files', type=str, default=None)
     parser.add_argument('--train-cov', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--train-pheno', help='Training covariates dataset', type=str, default=None)
+    
+    parser.add_argument('--val-tsv', help='Path to validation genotype TSV file', type=str, default=None)
     parser.add_argument('--val-bfile', help='Validation dataset', type=str, default=None)
     parser.add_argument('--val-cov', help='Validation covariates dataset', type=str, default=None)
     parser.add_argument('--val-pheno', help='Training covariates dataset', type=str, default=None)
@@ -119,15 +121,18 @@ def main():
     parser.add_argument('--gene2pheno', action='store_true', default=False)
     parser.add_argument('--snp2pheno', action='store_true', default=False)
 
-    parser.add_argument('--dynamic-phenotype-sampling', action='store_true', default=False)
+    #parser.add_argument('--dynamic-phenotype-sampling', action='store_true', default=False)
 
     parser.add_argument('--poincare', action='store_true', default=False)
 
     parser.add_argument('--dense-attention', action='store_true', default=False)
     parser.add_argument('--input-format', default='indices', choices=["indices", "binary"])
     parser.add_argument('--regression', action='store_true', default=False)
+    parser.add_argument('--mlm', action='store_true', default=False, help="Enable Masked Language Model training for SNP prediction")
     # Model parameters
     parser.add_argument('--hidden-dims', help='hidden dimension for model', default=256, type=int)
+    parser.add_argument('--n-heads', help='the number of head in genetic propagation', default=4, type=int)
+    parser.add_argument('--prediction-head', help='Number of prediction heads', type=int, default=1)
     # Training parameters
     parser.add_argument('--epochs', help='Training epochs for training', type=int, default=300)
     parser.add_argument('--lr', help='Learning rate', type=float, default=0.001)
@@ -136,13 +141,16 @@ def main():
     parser.add_argument('--dropout', help='dropout ratio', type=float, default=0.2)
     parser.add_argument('--batch-size', help='Batch size', type=int, default=128)
     parser.add_argument('--val-step', help='Validation step', type=int, default=20)
-    parser.add_argument('--patience', help='Patience for early stopping', type=int, default=5)
+    parser.add_argument('--patience', help='Patience for early stopping', type=int, default=10)
     parser.add_argument('--jobs', help="The number of threads", type=int, default=0)
+    parser.add_argument('--subsample', help='Number of individuals to subsample for training', type=int, default=None)
 
     parser.add_argument('--loss', help='loss function', type=str, default='default')
     parser.add_argument('--focal-loss-alpha', help='alpha for focal loss', type=float, default=0.25)
     parser.add_argument('--focal-loss-gamma', help='gamma for focal loss', type=float, default=2.0)
     parser.add_argument('--use_hierarchical_transformer', action='store_true', default=False)
+    parser.add_argument('--use_moe', action='store_true', default=False, help='Use Mixture-of-Experts predictor head')
+    parser.add_argument('--independent_predictors', action='store_true', default=False, help='Use independent predictor heads for each phenotype')
     parser.add_argument('--label_smoothing', help='Label smoothing for BCE loss', type=float, default=0.0)
 
     # GPU option
@@ -241,12 +249,9 @@ def main_worker(args):
         snp2p_dataset = SNP2PDataset(train_dataset, genotype, tree_parser, n_cov=args.n_cov)
     else:
     '''
-    if args.train_tsv_path:
-        print("Loading TSV data from %s" % args.train_tsv_path)
-        genotype_path = os.path.join(args.train_tsv_path, "genotypes.tsv")
-        cov_path = os.path.join(args.train_tsv_path, "simulation.cov")
-        pheno_path = os.path.join(args.train_tsv_path, "simulation.pheno")
-        snp2p_dataset = TSVDataset(tree_parser, genotype_path, cov_path, pheno_path, flip=args.flip,
+    if args.train_tsv:
+        print("Loading TSV data from %s" % args.train_tsv)
+        snp2p_dataset = TSVDataset(tree_parser, args.train_tsv, args.train_cov, args.train_pheno, flip=args.flip,
                                      input_format=args.input_format,
                                      cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
     else:
@@ -254,6 +259,8 @@ def main_worker(args):
         snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip,
                                      input_format=args.input_format,
                                      cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
+    if args.subsample:
+        snp2p_dataset.sample_population(n=args.subsample)
     args.bt_inds = snp2p_dataset.bt_inds
     args.qt_inds = snp2p_dataset.qt_inds
     args.bt = snp2p_dataset.bt
@@ -267,7 +274,7 @@ def main_worker(args):
     args.cov_std_dict = snp2p_dataset.cov_std_dict
     print("Loading done...")
 
-    snp2p_collator = SNP2PCollator(tree_parser, input_format=args.input_format)
+    snp2p_collator = SNP2PCollator(tree_parser, input_format=args.input_format, mlm=args.mlm)
     #snp2p_collator = ChunkSNP2PCollator(tree_parser, chunker=chunker, input_format=args.input_format)
 
     print("Summary of trainable parameters")
@@ -284,8 +291,13 @@ def main_worker(args):
                                          sys2pheno=args.sys2pheno, gene2pheno=args.gene2pheno, snp2pheno=args.snp2pheno,
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
-                                         n_phenotypes=snp2p_dataset.n_pheno, activation='softmax', input_format=args.input_format,
-                                         cov_effect=args.cov_effect, use_hierarchical_transformer=args.use_hierarchical_transformer)
+                                         phenotypes=snp2p_dataset.pheno_ids,
+                                         ind2pheno=snp2p_dataset.ind2pheno,
+                                         activation='softmax', input_format=args.input_format,
+                                         cov_effect=args.cov_effect, use_hierarchical_transformer=args.use_hierarchical_transformer,
+                                         n_heads=args.n_heads,
+                                         use_moe=args.use_moe, use_independent_predictors=args.independent_predictors,
+                                         prediction_head=args.prediction_head)
         print(args.model, 'initialized')
         snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
         if args.model.split('.')[-1].isdigit():
@@ -299,7 +311,12 @@ def main_worker(args):
                                          interaction_types=args.interaction_types,
                                          dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
                                          activation='softmax', input_format=args.input_format,
-                                         n_phenotypes=snp2p_dataset.n_pheno, use_hierarchical_transformer=args.use_hierarchical_transformer)
+                                         phenotypes=snp2p_dataset.pheno_ids,
+                                         ind2pheno=snp2p_dataset.ind2pheno,
+                                         n_heads=args.n_heads,
+                                         use_hierarchical_transformer=args.use_hierarchical_transformer,
+                                         use_moe=args.use_moe, use_independent_predictors=args.independent_predictors,
+                                         prediction_head=args.prediction_head)
         #snp2p_model = snp2p_model.half()
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
         #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
@@ -372,6 +389,14 @@ def main_worker(args):
     if args.val_bfile is not None:
         val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, args.val_pheno, cov_mean_dict=args.cov_mean_dict,
                                          cov_std_dict=args.cov_std_dict, flip=args.flip, input_format=args.input_format,
+                                         cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
+        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
+                                          num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True)
+    elif args.val_tsv:
+        print("Loading validation TSV data from %s" % args.val_tsv)
+        val_snp2p_dataset = TSVDataset(tree_parser, args.val_tsv, args.val_cov, args.val_pheno,
+                                         cov_mean_dict=args.cov_mean_dict, cov_std_dict=args.cov_std_dict, 
+                                         flip=args.flip, input_format=args.input_format,
                                          cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True)
