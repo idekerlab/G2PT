@@ -31,6 +31,7 @@ class AttentionCollector(object):
         self.nested_subtrees_backward = self.move_to(self.nested_subtrees_backward, device)
         self.sys2gene_mask = self.move_to(torch.tensor(self.tree_parser.sys2gene_mask, dtype=torch.bool), device)
         self.gene2sys_mask = self.sys2gene_mask.T
+        self.snp2gene_mask = self.move_to(torch.tensor(self.tree_parser.snp2gene_mask, dtype=torch.float32), device)
         self.samples = self.dataset.cov_df.IID
 
     def forward(self, target_gos, target_genes, target_snps):
@@ -51,147 +52,133 @@ class AttentionCollector(object):
         sample_ind = 0
         for i, batch in enumerate(tqdm(self.dataloader)):
             with torch.no_grad():
-                # batches.append(batch)
                 batch = self.move_to(batch, self.device)
-                batch_size, _ = batch['genotype']['embedding']['homozygous_a1']['snp'].size()
+                batch_size = batch['genotype']['snp'].size(0)
+
+                snp_embedding, _ = self.model.get_snp_embedding(batch['genotype'])
+                gene_embedding = self.model.gene_embedding(batch['genotype']['gene'])
+                system_embedding = self.model.system_embedding(batch['genotype']['sys'])
+
+                gene_norm = self.model.dropout(self.model.gene_norm(gene_embedding))
+                snp2gene_score = self.model.snp2gene.get_score(
+                    gene_norm, self.model.dropout(snp_embedding), self.snp2gene_mask)
+                snp2gene_score_np = snp2gene_score.detach().cpu().numpy()
+
+                snp_effect_on_gene = self.model.get_snp2gene(
+                    gene_embedding, snp_embedding, self.snp2gene_mask)
+                gene_embedding = gene_embedding + self.model.effect_norm(snp_effect_on_gene)
+
+                system_norm = self.model.dropout(self.model.sys_norm(system_embedding))
+                gene_norm = self.model.dropout(self.model.gene_norm(gene_embedding))
+                gene2sys_score = self.model.gene2sys.get_score(
+                    system_norm, gene_norm, self.gene2sys_mask)
+                gene2sys_score_np = gene2sys_score.detach().cpu().numpy()
+
+                gene_effect_on_system = self.model.get_gene2sys(
+                    system_embedding, gene_embedding, self.gene2sys_mask)
+                system_embedding_total = self.model.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1).clone()
+                system_embedding_total[:, batch['genotype']['sys_indices']] = (
+                    system_embedding_total[:, batch['genotype']['sys_indices']]
+                    + self.model.effect_norm(gene_effect_on_system)
+                )
+
+                system_embedding_total = self.model.get_sys2sys(
+                    system_embedding_total, self.nested_subtrees_forward, direction='forward')
+                system_embedding_total = self.model.get_sys2sys(
+                    system_embedding_total, self.nested_subtrees_backward, direction='backward')
+
+                system_embedding = system_embedding_total[:, batch['genotype']['sys_indices']]
+                sys2gene_score = self.model.sys2gene.get_score(
+                    self.model.dropout(self.model.gene_norm(gene_embedding)),
+                    self.model.dropout(self.model.sys_norm(system_embedding)),
+                    self.sys2gene_mask)
+                sys2gene_score_np = sys2gene_score.detach().cpu().numpy()
+
+                interaction_type = next(iter(self.model.sys2env.keys()))
+                system_embedding_partial = system_embedding_total[:, target_go_inds, :]
+                sys2env_score = self.model.sys2env[interaction_type].get_score(
+                    self.model.sys_norm(system_embedding_partial),
+                    self.model.sys_norm(system_embedding_partial),
+                    sys2sys_forward_partial)
+                env2sys_score = self.model.env2sys[interaction_type].get_score(
+                    self.model.sys_norm(system_embedding_partial),
+                    self.model.sys_norm(system_embedding_partial),
+                    sys2sys_backward_partial)
+
                 batch_size_int = int(batch_size)
-                # Get SNP2Gene attention
-                a, b, homozygous_snp2gene_attention = self.model.get_snp_effects(
-                    batch['genotype']['embedding']['homozygous_a1'], self.model.snp2gene_homozygous, attention=False,
-                    score=True)
-                homozygous_snp2gene_attention = homozygous_snp2gene_attention.detach().cpu().numpy()
-                c, d, heterozygous_snp2gene_attention = self.model.get_snp_effects(
-                    batch['genotype']['embedding']['heterozygous'], self.model.snp2gene_heterozygous, attention=False,
-                    score=True)
-                heterozygous_snp2gene_attention = heterozygous_snp2gene_attention.detach().cpu().numpy()
-
                 for head in range(4):
-                    attention_result_df[head] = self.assign_snp2gene_attention(attention_result_df[head], self.move_to(batch, 'cpu'),
-                                                                            heterozygous_snp2gene_attention[:, head, :, :],
-                                                                            homozygous_snp2gene_attention[:, head, :, :],
-                                                                            target_gene_inds, target_snp_inds,
-                                                                            sample_ind)
-                # Update gene embedding
-                gene_embedding, snp_effect_on_gene = self.model.get_snp2gene(genotype=batch['genotype'])
-                gene_embedding = gene_embedding[:, :-1, :] + self.model.effect_norm(snp_effect_on_gene[:, :-1, :])
-                gene_embedding = self.model.gene_norm(gene_embedding)
-                # Update system embedding
-                system_embedding = self.model.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :]
-                system_embedding_input = self.model.sys_norm(system_embedding)
-                system_embedding, gene_effect_on_system = self.model.get_gene2sys(system_embedding_input,
-                                                                                  gene_embedding,
-                                                                                  self.gene2sys_mask)
+                    attention_result_df[head] = self.assign_snp2gene_attention(
+                        attention_result_df[head],
+                        self.move_to(batch, 'cpu'),
+                        snp2gene_score_np[:, head, :, :],
+                        target_gene_inds,
+                        target_snp_inds,
+                        sample_ind)
 
-                gene2sys_score = self.model.gene2sys.get_score(system_embedding, self.model.gene_norm(gene_embedding),
-                                                               self.gene2sys_mask)
-                gene2sys_score = gene2sys_score.detach().cpu().numpy()
-                for head in range(4):
                     for j, go in zip(target_go_inds, target_gos):
                         for k, gene in zip(target_gene_inds, target_genes):
                             if gene in self.tree_parser.sys2gene[go]:
-                                col_name = ('forward', go, gene, 'gene2sys')  # "_".join([gene, go, 'gene2sys'])
-                                #print(attention_result_df[head].loc[self.samples[sample_ind : sample_ind+batch_size_int], col_name].shape)
-                                attention_result_df[head].loc[self.samples[sample_ind : sample_ind+batch_size_int], col_name] = gene2sys_score[
-                                                                      :, head, j, k]
+                                col_name = ('forward', go, gene, 'gene2sys')
+                                attention_result_df[head].loc[
+                                    self.samples[sample_ind: sample_ind + batch_size_int], col_name] = (
+                                    gene2sys_score_np[:, head, j, k])
 
-                # Update by sys2sys module
-                total_update = self.model.effect_norm(gene_effect_on_system)
-                system_embedding, system_effect_forward = self.model.get_sys2sys(system_embedding,
-                                                                                 self.nested_subtrees_forward,
-                                                                                 direction='forward',
-                                                                                 return_updates=True,
-                                                                                 input_format='indices',
-                                                                                 update_tensor=total_update)
-                total_update_sys2env = total_update + system_effect_forward
-                system_embedding, system_effect_backward = self.model.get_sys2sys(system_embedding,
-                                                                                  self.nested_subtrees_backward,
-                                                                                  direction='backward',
-                                                                                  return_updates=True,
-                                                                                  input_format='indices',
-                                                                                  update_tensor=total_update_sys2env)
-                total_update_env2sys = total_update_sys2env + system_effect_backward
-                system_embedding_sys2sys = system_embedding + total_update
-                gene_embedding, system_effect_on_gene = self.model.get_sys2gene(gene_embedding,
-                                                                                system_embedding_sys2sys,
-                                                                                self.sys2gene_mask)
-                gene_embedding = gene_embedding + self.model.effect_norm(system_effect_on_gene)
-                sys2gene_score = self.model.sys2gene.get_score(gene_embedding,
-                                                               self.model.sys_norm(system_embedding_sys2sys),
-                                                               self.sys2gene_mask)
-                sys2gene_score = sys2gene_score.detach().cpu().numpy()
-                for head in range(4):
                     for j, go in zip(target_go_inds, target_gos):
                         for k, gene in zip(target_gene_inds, target_genes):
                             if gene in self.tree_parser.sys2gene[go]:
-                                col_name = ('backward', go, gene, 'sys2gene')  # "_".join([gene, go, 'gene2sys'])
-                                attention_result_df[head].loc[self.samples[sample_ind : sample_ind+batch_size_int], col_name] = sys2gene_score[
-                                                                      :, head, k, j]
+                                col_name = ('backward', go, gene, 'sys2gene')
+                                attention_result_df[head].loc[
+                                    self.samples[sample_ind: sample_ind + batch_size_int], col_name] = (
+                                    sys2gene_score_np[:, head, k, j])
 
-                system_embedding_partial = self.model.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:,
-                                           target_go_inds, :]
-                for query, key in all_edges_forward:
-                    query_forward = self.model.sys_norm(
-                        system_embedding_partial + total_update_sys2env[:, target_go_inds, :])
-                    key_forward = self.model.sys_norm(
-                        system_embedding_partial + total_update_sys2env[:, target_go_inds, :])
-                    hitr_result_score_forward = self.model.sys2env[0].get_score(query_forward, key_forward,
-                                                                                sys2sys_forward_partial)
-                    col_name = ('forward', query, key, 'sys2env')
-                    for head in range(4):
-                        forward_score_result = hitr_result_score_forward[:, head, sys2ind_partial[query], sys2ind_partial[key]].detach().cpu().numpy()
-                        attention_result_df[head].loc[self.samples[sample_ind : sample_ind + batch_size_int], col_name] = forward_score_result
-                    query_backward = self.model.sys_norm(
-                        system_embedding_partial + total_update_sys2env[:, target_go_inds, :])
-                    key_backward = self.model.sys_norm(
-                        system_embedding_partial + total_update_env2sys[:, target_go_inds, :])
-                    hitr_result_score_backward = self.model.env2sys[0].get_score(query_backward, key_backward,
-                                                                                 sys2sys_backward_partial)
-                    col_name = ('backward', query, key, 'env2sys')
-                    for head in range(4):
-                        backward_score_result = hitr_result_score_backward[:, head, sys2ind_partial[key],sys2ind_partial[query]].detach().cpu().numpy()
-                        attention_result_df[head].loc[self.samples[sample_ind :sample_ind + batch_size_int], col_name] = backward_score_result
+                    for query, key in all_edges_forward:
+                        col_name_forward = ('forward', query, key, 'sys2env')
+                        forward_score_result = sys2env_score[:, head, sys2ind_partial[query], sys2ind_partial[key]].detach().cpu().numpy()
+                        attention_result_df[head].loc[
+                            self.samples[sample_ind: sample_ind + batch_size_int], col_name_forward] = forward_score_result
 
+                        col_name_backward = ('backward', query, key, 'env2sys')
+                        backward_score_result = env2sys_score[:, head, sys2ind_partial[key], sys2ind_partial[query]].detach().cpu().numpy()
+                        attention_result_df[head].loc[
+                            self.samples[sample_ind: sample_ind + batch_size_int], col_name_backward] = backward_score_result
 
-                del system_embedding, gene_embedding
-                del a, b, c, d
-                del homozygous_snp2gene_attention, heterozygous_snp2gene_attention
-                del gene2sys_score, sys2gene_score
+                del system_embedding, gene_embedding, system_embedding_total
+                del snp_embedding
+                del snp2gene_score_np, gene2sys_score_np, sys2gene_score_np
                 gc.collect()
                 sample_ind = sample_ind + batch_size_int
 
         return attention_result_df
 
 
-    def assign_snp2gene_attention(self, result_df, batch, heterozygous_attention, homozygous_attention, target_gene_inds, target_snp_inds, start_ind):
+    def assign_snp2gene_attention(self, result_df, batch, snp2gene_attention, target_gene_inds, target_snp_inds, start_ind):
 
         i_temp = start_ind
-        for snps, genes, mask, attn in zip(batch['genotype']['embedding']['heterozygous']['snp'],
-                                           batch['genotype']['embedding']['heterozygous']['gene'],
-                                           batch['genotype']['embedding']['heterozygous']['mask'],
-                                           heterozygous_attention):
-            for j, k in zip(*np.where(mask.numpy())):
-                if (genes[j]==self.tree_parser.n_genes) or (snps[k]==self.tree_parser.n_snps):
+        snp_padding = self.tree_parser.n_snps * 3
+        for snps, genes, attn in zip(batch['genotype']['snp'],
+                                     batch['genotype']['gene'],
+                                     snp2gene_attention):
+            snps_np = snps.numpy()
+            genes_np = genes.numpy()
+            for j, gene_idx in enumerate(genes_np):
+                if gene_idx == self.tree_parser.n_genes:
                     continue
-                gene = self.tree_parser.ind2gene[int(genes[j])]
-                snp = self.tree_parser.ind2snp[int(snps[k])]
-                col_name = ('forward', gene, snp, 'heterozygous')
-                if col_name in result_df.columns:
-                    result_df.loc[self.samples[i_temp], col_name] = attn[j, k]
-            i_temp += 1
-
-        i_temp = start_ind
-        for snps, genes, mask, attn in zip(batch['genotype']['embedding']['homozygous_a1']['snp'],
-                                           batch['genotype']['embedding']['homozygous_a1']['gene'],
-                                           batch['genotype']['embedding']['homozygous_a1']['mask'],
-                                           homozygous_attention):
-            for j, k in zip(*np.where(mask.numpy())):
-                if (genes[j]==self.tree_parser.n_genes) or (snps[k]==self.tree_parser.n_snps):
+                gene = self.tree_parser.ind2gene[int(gene_idx)]
+                if int(gene_idx) not in target_gene_inds:
                     continue
-                gene = self.tree_parser.ind2gene[int(genes[j])]
-                snp = self.tree_parser.ind2snp[int(snps[k])]
-                col_name = ('forward', gene, snp, 'homozygous')
-                if col_name in result_df.columns:
-                    result_df.loc[self.samples[i_temp], col_name] = attn[j, k]
+                for k, snp_idx in enumerate(snps_np):
+                    if snp_idx >= snp_padding:
+                        continue
+                    snp_ind = int(snp_idx % self.tree_parser.n_snps)
+                    if snp_ind not in target_snp_inds:
+                        continue
+                    snp = self.tree_parser.ind2snp[snp_ind]
+                    col_name_hom = ('forward', gene, snp, 'homozygous')
+                    col_name_het = ('forward', gene, snp, 'heterozygous')
+                    if col_name_hom in result_df.columns:
+                        result_df.loc[self.samples[i_temp], col_name_hom] = attn[j, k]
+                    if col_name_het in result_df.columns:
+                        result_df.loc[self.samples[i_temp], col_name_het] = attn[j, k]
             i_temp += 1
         return result_df
 

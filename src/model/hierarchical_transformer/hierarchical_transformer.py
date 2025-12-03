@@ -67,8 +67,8 @@ class HierarchicalTransformerUpdate(nn.Module):
 
         bias = None
         if mask is not None:
-            if type(mask)==torch.Tensor:
-                mask = mask.unsqueeze(1).repeat(1, 4, 1, 1)
+            if isinstance(mask, torch.Tensor):
+                mask = mask.unsqueeze(1).repeat(1, self.h, 1, 1)
 
         out = xops.memory_efficient_attention(
             q, k, v,
