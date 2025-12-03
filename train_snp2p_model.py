@@ -22,8 +22,7 @@ from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
 from torch.utils.data.distributed import DistributedSampler
 from src.utils.data.dataset import SNP2PCollator, PLINKDataset
-from src.utils.data.dataset import DynamicPhenotypeBatchIterableDataset, DynamicPhenotypeBatchIterableDatasetDDP, TSVDataset
-from src.utils.data.dataset import ChunkSNP2PCollator
+from src.utils.data.dataset import TSVDataset
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
 from datetime import timedelta
@@ -120,8 +119,6 @@ def main():
     parser.add_argument('--sys2pheno', action='store_true', default=True)
     parser.add_argument('--gene2pheno', action='store_true', default=False)
     parser.add_argument('--snp2pheno', action='store_true', default=False)
-
-    #parser.add_argument('--dynamic-phenotype-sampling', action='store_true', default=False)
 
     parser.add_argument('--poincare', action='store_true', default=False)
 
@@ -341,50 +338,23 @@ def main_worker(args):
         count_parameters(snp2p_model)
 
     if args.distributed:
-        if args.dynamic_phenotype_sampling:
-            print("Dynamic phenotype sampling with DDP")
-            dataset = DynamicPhenotypeBatchIterableDatasetDDP(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size,
-                                                              rank=args.rank,
-                                                              world_size=args.world_size,
-                                                              shuffle=True, n_phenotype2sample=1)
-            snp2p_dataloader = DataLoader(dataset, batch_size=None,
-                                          num_workers=args.jobs,
-                                          prefetch_factor=2,
-                                          persistent_workers = True,  # Add this
-                                          pin_memory = True)  # Add this
-        else:
-            print("No dynamic Sampling")
-            snp2p_sampler = DistributedSampler(dataset=snp2p_dataset, shuffle=True)
-            shuffle = False
-            snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
-                                          num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler,
-                                          pin_memory=True,
-                                          persistent_workers=True,  # keep workers alive across epochs
-                                          prefetch_factor=2
-                                          )
+        snp2p_sampler = DistributedSampler(dataset=snp2p_dataset, shuffle=True)
+        shuffle = False
+        snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
+                                      num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler,
+                                      pin_memory=True,
+                                      persistent_workers=True,  # keep workers alive across epochs
+                                      prefetch_factor=2
+                                      )
     else:
         snp2p_sampler = None
-        if args.dynamic_phenotype_sampling:
-            print("Dynamic phenotype sampling")
-            #snp2p_batch_sampler = DynamicPhenotypeBatchSampler(dataset=snp2p_dataset, batch_size=args.batch_size)
-            dataset = DynamicPhenotypeBatchIterableDataset(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True, n_phenotype2sample=1)
-            snp2p_dataloader = DataLoader(dataset, batch_size=None,
-                                          num_workers=args.jobs,
-                                          prefetch_factor=2,
-                                          persistent_workers = True,  # Add this
-                                          pin_memory = True)  # Add this
-        else:
-            print("No dynamic Sampling")
-            #snp2p_sampler = DistributedSampler(dataset=snp2p_dataset, shuffle=True)
-            snp2p_batch_sampler = None
-            batch_size = None
-            shuffle = True
-            snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
-                                          num_workers=args.jobs, shuffle=shuffle, sampler=None,
-                                          pin_memory=True,
-                                          persistent_workers=True,  # keep workers alive across epochs
-                                          #prefetch_factor=2
-                                          )
+        shuffle = True
+        snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
+                                      num_workers=args.jobs, shuffle=shuffle, sampler=None,
+                                      pin_memory=True,
+                                      persistent_workers=True,  # keep workers alive across epochs
+                                      #prefetch_factor=2
+                                      )
 
     if args.val_bfile is not None:
         val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, args.val_pheno, cov_mean_dict=args.cov_mean_dict,

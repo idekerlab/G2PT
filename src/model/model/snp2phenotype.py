@@ -65,7 +65,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                  interaction_types=['default'], n_covariates=13, dropout=0.2,
                  activation='softmax', input_format='indices', poincare=False, cov_effect='pre',
                  pretrained_transformer=None, freeze_pretrained=True,
-                 phenotypes=('PHENOTYPE',), ind2pheno=None, use_hierarchical_transformer=False, use_moe=True,
+                 phenotypes=('PHENOTYPE',), ind2pheno=None, use_hierarchical_transformer=False, use_moe=False,
                  use_independent_predictors=False, prediction_head=1, n_heads=4):
         super(SNP2PhenotypeModel, self).__init__(tree_parser, hidden_dims, interaction_types=interaction_types, dropout=dropout,
                                                  n_heads=4, input_format=input_format, poincare=poincare)

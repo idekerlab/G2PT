@@ -69,17 +69,28 @@ to run the training scripts:
 | GO:0045923 | IL1B       | gene             |
 | GO:0043552 | PIK3R4     | gene             |
 
-  * _--snp2gene_ : A tab-delimited file for mapping SNPs to genes. The first column indicates SNP, second column for gene, and third for chromosome
+  * _--snp2gene_ : A tab-delimited file for mapping SNPs to genes. The first column indicates SNP, second column for gene.
+    * You can give additional information such as **chr**(chromosome), **pos**(position), **block_ind** (snp block information)
+    * If you provide bfile as input, information from `.bim` will override additional information 
 
   
 * [Example of snp2gene file](samples/snp2gene.txt)
 
-| SNP_ID           | Gene       | Chromosome |
-|------------------|------------|------------|
-| 16:56995236:A:C  |	CETP	| 16 |
-|8:126482077:G:A	| TRIB1	| 8 |
-|19:45416178:T:G	| APOC1	| 19 |
-|2:27752463:A:G	| GCKR	| 2 |
+| snp              | gene   | 
+|------------------|--------|
+| 16:56995236:A:C  | 	CETP	 |
+| 8:126482077:G:A	 | TRIB1	 |
+| 19:45416178:T:G	 | APOC1	 |
+| 2:27752463:A:G	  | GCKR	  | 
+
+* Example of snp2gene file with additional information
+
+| snp              | gene   | chr | pos       |
+|------------------|--------|-----|-----------|
+| 16:56995236:A:C  | 	CETP	 | 16  | 56995236  |
+| 8:126482077:G:A	 | TRIB1	 | 8   | 126482077 |
+| 19:45416178:T:G	 | APOC1	 | 19  | 45416178  |
+| 2:27752463:A:G	  | GCKR	  | 2   | 27752463  |
 
 
 There are several optional parameters that you can provide in addition to the input files:
