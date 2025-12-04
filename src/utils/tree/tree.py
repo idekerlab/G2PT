@@ -371,29 +371,27 @@ class TreeParser(object):
             new_obj.init_ontology(ontology_df_new, inplace=True)
             return new_obj
 
-
     def compute_node_heights(self):
         """
-        Compute the heights of nodes in the ontology graph.
-
-        Returns:
-        -------
-        dict
-            Dictionary mapping nodes to their heights.
+        Height = longest distance to a root *or* leaf depending on definition.
+        Here: longest distance to a node with no parents (root)
+        in a child -> parent DAG.
         """
         if not nx.is_directed_acyclic_graph(self.sys_graph):
-            # Return empty dict if not a DAG to avoid errors, or handle as needed
-            return {}
+            raise ValueError("Graph is not a DAG; height is not well-defined with cycles.")
 
         heights = {}
-        for node in nx.topological_sort(self.sys_graph):
-            successors = list(self.sys_graph.successors(node))
-            if not successors:
+        topo = list(nx.topological_sort(self.sys_graph))
+
+        # children here = predecessors (terms below)
+        for node in topo:  # or reversed(topo), depending on what you define as root/leaf
+            children = list(self.sys_graph.predecessors(node))
+            if not children:
                 heights[node] = 0
             else:
-                heights[node] = 1 + max(heights.get(child, -1) for child in successors)
-        return heights
+                heights[node] = 1 + max(heights[child] for child in children)
 
+        return heights
 
     def get_descendants_sorted_by_height(self, node):
         """

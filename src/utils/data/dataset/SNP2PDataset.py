@@ -246,7 +246,7 @@ class PLINKDataset(GenotypeDataset):
         print('Loading PLINK data at %s' % bfile)
         # Processing Genotypes
         plink_data = plink.read_plink(path=bfile)
-        print(f'loading done with{len(plink_data.sample_id.values)} individuals and {len(plink_data.variant_id.values)} SNPs')
+        #print(f'loading done with{len(plink_data.sample_id.values)} individuals and {len(plink_data.variant_id.values)} SNPs')
 
         snp_ids = plink_data['variant_id'].values
         snp_contig_mapping = {i:int(chromosome) for i, chromosome in enumerate(plink_data['contig_id'].values)}
@@ -300,9 +300,9 @@ class PLINKDataset(GenotypeDataset):
         self.iid2ind = {str(iid): idx for idx, iid in enumerate(genotype_df.index.values)}
         self.ind2iid = {idx: str(iid) for idx, iid in enumerate(genotype_df.index.values)}
 
-        print(genotype_df.head())
-        print(self.cov_df.head())
-        print(self.pheno_df.head())
+        #print(genotype_df.head())
+        #print(self.cov_df.head())
+        #print(self.pheno_df.head())
 
         self.subtree = None
         self.subtree_phenotypes = []
@@ -435,7 +435,7 @@ class EmbeddingDataset(PLINKDataset):
         self.snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
         self.snp_indices = [self.tree_parser.snp2ind_all[snp] for snp in self.snp_sorted]
         block_idx = torch.tensor([self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)], dtype=torch.long)
-        print(block_idx)
+
         self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad,), block_pad, dtype=torch.long)))
 
         self.iid2ind = iid2ind
@@ -576,7 +576,6 @@ class BlockQueryDataset(PLINKDataset):
         self.ind2iid = {i:iid for i, iid in enumerate(self.iids)}
         block_pad = self.tree_parser.n_blocks
         block_idx = torch.tensor([self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)], dtype=torch.long)
-        print(block_idx)
         self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad,), block_pad, dtype=torch.long)))
 
     def __getitem__(self, index):

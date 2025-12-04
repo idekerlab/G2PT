@@ -75,103 +75,19 @@ class HierarchicalTransformerUpdate(nn.Module):
             attn_bias=mask,
             p=self.attention_dropout if self.training else 0.0,
         )
-        if return_attention:
-            # Re-calculate attention scores for retrieval
-            q_reshaped = q.permute(0, 2, 1, 3)  # (B, H, Lq, d)
-            k_reshaped = k.permute(0, 2, 1, 3)  # (B, H, Lk, d)
-            scale_factor = 1.0 / math.sqrt(self.d_h)
-            scores = torch.matmul(q_reshaped, k_reshaped.transpose(-2, -1)) * scale_factor
-            if mask is not None:
-                if mask.dtype == torch.bool:
-                    scores = scores.masked_fill(mask, float('-inf'))
-                else:
-                    scores = scores + mask
-            scores = F.softmax(scores, dim=-1)
-            return out.reshape(B, Lq, H, dh).reshape(B, Lq, H * dh), scores
         return out.reshape(B, Lq, H, dh).reshape(B, Lq, H * dh)
 
     # ---------------------------------------------------------------------
-    # no-softmax path  (keeps behaviour of your original helper)
-    # ---------------------------------------------------------------------
-
-    def _dotprod_no_softmax(self,
-        q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-        mask: torch.Tensor, p_drop: float,
-        return_attention=False
-    ):
-        """
-        q,k,v : (B, L, H, d)   already split into heads
-        mask  : (B, H, Lq, Lk) bool or additive-bias, or None
-        returns : (B, Lq, H*d)
-        """
-        B, Lq, H, d = q.shape
-        _, Lk, _, _ = k.shape
-        q = q.permute(0, 2, 1, 3)  # (B, H, Lq, d)
-        k = k.permute(0, 2, 1, 3)  # (B, H, Lk, d)
-        v = v.permute(0, 2, 1, 3)  # (B, H, Lk, d)
-
-        # 1. Scaled Dot-Product Scores
-        # (B, H, Lq, d) @ (B, H, d, Lk) -> (B, H, Lq, Lk)
-        scale_factor = 1.0 / math.sqrt(d)
-        # Using torch.rsqrt can sometimes be slightly more optimized if d is large
-        # scale_factor = torch.rsqrt(torch.tensor(d, dtype=q.dtype, device=q.device))
-        scores = torch.matmul(q, k.transpose(-2, -1)) * scale_factor
-
-        # 2. Apply Mask (if provided) directly to the scores
-        if mask is not None:
-            # Ensure mask shape is compatible, potentially requires broadcasting
-            # Example: mask shape (B, 1, Lq, Lk) could broadcast over H heads
-            if mask.dtype == torch.bool:
-                # If True means MASK OUT, set score to -infinity
-                # Use masked_fill_ for in-place operation if scores tensor allows
-                scores = scores.masked_fill(mask, float('-inf'))
-                # If True means KEEP (less common mask convention)
-                # scores = scores.masked_fill(~mask, float('-inf'))
-            else:
-                # Additive mask (assumes 0 where not masked, large negative where masked)
-                # Ensure mask is on the same device and dtype or handle conversion
-                scores = scores + mask  # Broadcasting might apply here
-
-        # 3. Apply the (potentially masked) scores directly to Values
-        #    NO SOFTSOFTMAX applied here.
-        # (B, H, Lq, Lk) @ (B, H, Lk, d) -> (B, H, Lq, d)
-        output = torch.matmul(scores, v)
-
-        # Handle potential -inf * 0 = NaN cases resulting from masking if needed
-        # If masked scores are -inf, and corresponding v is 0, matmul result can be NaN.
-        # If this is undesirable, you might zero out NaNs, though often NaN propagation
-        # is acceptable or indicates an issue elsewhere.
-        # output = torch.nan_to_num(output, nan=0.0) # Optional: Replace NaN with 0
-
-        # 4. Combine Heads: Reshape/Permute back to (B, Lq, H*d)
-        # (B, H, Lq, d) -> (B, Lq, H, d)
-        output = output.permute(0, 2, 1, 3)
-        # Ensure contiguous memory layout after permute for reliable view/reshape
-        output = output.contiguous()
-        # (B, Lq, H, d) -> (B, Lq, H*d)
-        output = output.view(B, Lq, H * d)
-
-        if return_attention:
-            if self.softmax:
-                scores = F.softmax(scores, dim=-1)
-            return output, scores
-        return output
-    # ---------------------------------------------------------------------
     # unified wrapper  (replaces old _flash_xattn)
     # ---------------------------------------------------------------------
-    def _xattn(self, q, k, v, mask, return_attention=False):
+    def _xattn(self, q, k, v, mask):
         B = q.size(0)
         q = self.q_proj(q).view(B, -1, self.h, self.d_h)
         k = self.k_proj(k).view(B, -1, self.h, self.d_h)
         v = self.v_proj(v).view(B, -1, self.h, self.d_h)
 
-        if self.softmax:
-            out = self._xops_softmax_attn(q, k, v, mask, return_attention=return_attention)
-        else:
-            out = self._dotprod_no_softmax(q, k, v, mask, self.drop.p if self.training else 0.0, return_attention=return_attention)
 
-        if return_attention:
-            return self.o_proj(out[0]), out[1]
+        out = self._xops_softmax_attn(q, k, v, mask)
         return self.o_proj(out)
 
     
@@ -179,11 +95,10 @@ class HierarchicalTransformerUpdate(nn.Module):
     # ---------------------------------------------------------------------
     # forward is unchanged except the private call name
     # ---------------------------------------------------------------------
-    def get_attention_scores(self, q, k, mask=None):
+    def get_attention_scores(self, q, k, mask=None, attention=True):
         B = q.size(0)
         q = self.q_proj(q).view(B, -1, self.h, self.d_h)
         k = self.k_proj(k).view(B, -1, self.h, self.d_h)
-
         q = q.permute(0, 2, 1, 3)  # (B, H, Lq, d)
         k = k.permute(0, 2, 1, 3)  # (B, H, Lk, d)
 
@@ -196,20 +111,15 @@ class HierarchicalTransformerUpdate(nn.Module):
             else:
                 scores = scores + mask
 
-        if self.softmax:
+        if attention:
             scores = F.softmax(scores, dim=-1)
 
         return scores
 
-    def forward(self, q, k, v, mask, return_attention=False):
+    def forward(self, q, k, v, mask):
         q_norm = self.norm_attn(q)
-        attn_output = self.drop(self._xattn(q_norm, k, v, mask, return_attention=return_attention))
-
-        if return_attention:
-            attn_out, attn_scores = attn_output
-        else:
-            attn_out = attn_output
-        x = q + attn_out
+        attn_output = self.drop(self._xattn(q_norm, k, v, mask))
+        x = q + attn_output
         #gate_a = torch.sigmoid(self.gate_attn)
         #x = q * (1 - gate_a) + attn_out * gate_a
 
@@ -223,9 +133,6 @@ class HierarchicalTransformerUpdate(nn.Module):
             x = x.transpose(-1, -2)
             x = self.norm_attn(x)
             x = x.transpose(-1, -2)
-
-        if return_attention:
-            return x, attn_scores
         return x
 
 
@@ -294,11 +201,11 @@ class HierarchicalTransformer(nn.Module):
     def get_attention(self, q, k, mask):
         batch_size = q.size(0)
         if (self.conv_type == 'system') & (mask is not None):
-            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
+            mask = mask.unsqueeze(0).unsqueeze(0).expand(batch_size, -1, -1, -1)
         return self.hierarchical_transformer_update.get_attention_scores(q, k, mask=mask)
     def get_score(self, q, k, mask):
         batch_size = q.size(0)
         if (self.conv_type == 'system') & (mask is not None):
-            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, )
+            mask = mask.unsqueeze(0).unsqueeze(0).expand(batch_size, -1, -1, -1)
         return self.hierarchical_transformer_update.get_attention_scores(q, k, mask=mask)
 

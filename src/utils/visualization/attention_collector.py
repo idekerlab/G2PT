@@ -23,14 +23,15 @@ class AttentionCollector(object):
         self.model = model.eval()
         self.collator = SNP2PCollator(tree_parser)
         self.dataloader = DataLoader(dataset, shuffle=False, batch_size=batch_size, num_workers=num_workers, collate_fn=self.collator)
-        self.nested_subtrees_forward = self.tree_parser.get_nested_subtree_mask(
+        self.nested_subtrees_forward = self.tree_parser.get_hierarchical_interactions(
             subtree_order, direction='forward', format='indices')
         self.nested_subtrees_forward = self.move_to(self.nested_subtrees_forward, device)
-        self.nested_subtrees_backward = self.tree_parser.get_nested_subtree_mask(
+        self.nested_subtrees_backward = self.tree_parser.get_hierarchical_interactions(
             subtree_order, direction='backward', format='indices')
         self.nested_subtrees_backward = self.move_to(self.nested_subtrees_backward, device)
-        self.sys2gene_mask = self.move_to(torch.tensor(self.tree_parser.sys2gene_mask, dtype=torch.bool), device)
+        self.sys2gene_mask = self.move_to(torch.tensor(self.tree_parser.sys2gene_mask, dtype=torch.float32), device)
         self.gene2sys_mask = self.sys2gene_mask.T
+
         self.snp2gene_mask = self.move_to(torch.tensor(self.tree_parser.snp2gene_mask, dtype=torch.float32), device)
         self.samples = self.dataset.cov_df.IID
 
@@ -59,17 +60,18 @@ class AttentionCollector(object):
                 gene_embedding = self.model.gene_embedding(batch['genotype']['gene'])
                 system_embedding = self.model.system_embedding(batch['genotype']['sys'])
 
-                gene_norm = self.model.dropout(self.model.gene_norm(gene_embedding))
+                gene_norm = self.model.gene_norm(gene_embedding)
+
                 snp2gene_score = self.model.snp2gene.get_score(
-                    gene_norm, self.model.dropout(snp_embedding), self.snp2gene_mask)
+                    gene_norm, self.model.snp_norm(snp_embedding), self.snp2gene_mask)
                 snp2gene_score_np = snp2gene_score.detach().cpu().numpy()
 
                 snp_effect_on_gene = self.model.get_snp2gene(
                     gene_embedding, snp_embedding, self.snp2gene_mask)
                 gene_embedding = gene_embedding + self.model.effect_norm(snp_effect_on_gene)
 
-                system_norm = self.model.dropout(self.model.sys_norm(system_embedding))
-                gene_norm = self.model.dropout(self.model.gene_norm(gene_embedding))
+                system_norm = self.model.sys_norm(system_embedding)
+                gene_norm = self.model.gene_norm(gene_embedding)
                 gene2sys_score = self.model.gene2sys.get_score(
                     system_norm, gene_norm, self.gene2sys_mask)
                 gene2sys_score_np = gene2sys_score.detach().cpu().numpy()
@@ -89,8 +91,8 @@ class AttentionCollector(object):
 
                 system_embedding = system_embedding_total[:, batch['genotype']['sys_indices']]
                 sys2gene_score = self.model.sys2gene.get_score(
-                    self.model.dropout(self.model.gene_norm(gene_embedding)),
-                    self.model.dropout(self.model.sys_norm(system_embedding)),
+                    self.model.gene_norm(gene_embedding),
+                    self.model.sys_norm(system_embedding),
                     self.sys2gene_mask)
                 sys2gene_score_np = sys2gene_score.detach().cpu().numpy()
 
