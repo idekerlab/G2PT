@@ -266,7 +266,11 @@ class PLINKDataset(GenotypeDataset):
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
 
         genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
-        genotype_df = genotype_df[snp_sorted]
+        #genotype_df = genotype_df[snp_sorted]
+        missing_snps = [snp for snp in snp_sorted if snp not in genotype_df.columns]
+        print("SNPs not in bfile:", missing_snps)
+        genotype_df = genotype_df.reindex(columns=snp_sorted, fill_value=0)
+
 
         # Processing Covariates
         if self.cov_df is not None:
