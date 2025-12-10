@@ -249,7 +249,10 @@ class PLINKDataset(GenotypeDataset):
         #print(f'loading done with{len(plink_data.sample_id.values)} individuals and {len(plink_data.variant_id.values)} SNPs')
 
         snp_ids = plink_data['variant_id'].values
-        snp_contig_mapping = {i:int(chromosome) for i, chromosome in enumerate(plink_data['contig_id'].values)}
+        snp_contig_mapping = {
+            i: int(str(chromosome).replace('chr', ''))
+            for i, chromosome in enumerate(plink_data['contig_id'].values)
+        }
         snp_chr = plink_data['variant_position'].values
         snp_pos = [snp_contig_mapping[contig] for contig in plink_data['variant_contig'].values]
 
