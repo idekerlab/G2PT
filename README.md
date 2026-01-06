@@ -127,7 +127,7 @@ torchrun --nproc_per_node=4 train_snp2p_model.py \
   --out outputs/run_ddp
 ```
 
-Frequently used options include `--snp2pheno` / `--gene2pheno` / `--sys2pheno` to control translation heads, `--poincare` for hyperbolic embeddings, `--mlm` for masked-SNP pretraining, and `--independent_predictors` for multi-phenotype outputs.
+ Frequently used options include `--snp2pheno` / `--gene2pheno` / `--sys2pheno` to control translation heads, `--mlm` for masked-SNP pretraining, and `--independent_predictors` for multi-phenotype outputs.
 
 ## Prediction and attention export
 
