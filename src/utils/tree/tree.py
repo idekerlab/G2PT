@@ -6,7 +6,7 @@ import copy
 import torch.nn.functional as F
 from itertools import product, combinations
 from sklearn.cluster import AgglomerativeClustering
-import obonet
+# import obonet
 import re
 
 class TreeParser(object):
@@ -28,39 +28,39 @@ class TreeParser(object):
         self.sys_rename_info = {}
         self.init_ontology(ontology_df)
 
-    @classmethod
-    def from_obo(cls, obo_path, dense_attention=False):
-        """
-        Create a TreeParser instance from an OBO file.
-        """
-        try:
-            graph = obonet.read_obo(obo_path)
-        except ImportError:
-            raise ImportError("The 'obonet' library is required. Please install it with 'pip install obonet'.")
+    # @classmethod
+    # def from_obo(cls, obo_path, dense_attention=False):
+    #     """
+    #     Create a TreeParser instance from an OBO file.
+    #     """
+    #     try:
+    #         graph = obonet.read_obo(obo_path)
+    #     except ImportError:
+    #         raise ImportError("The 'obonet' library is required. Please install it with 'pip install obonet'.")
 
-        interactions = []
-        sys_annot_dict = {}
+    #     interactions = []
+    #     sys_annot_dict = {}
 
-        for node, data in graph.nodes(data=True):
-            sys_annot_dict[node] = data.get('name', node)
-            if 'is_a' in data:
-                for parent in data['is_a']:
-                    interactions.append((parent, node, 'is_a'))
+    #     for node, data in graph.nodes(data=True):
+    #         sys_annot_dict[node] = data.get('name', node)
+    #         if 'is_a' in data:
+    #             for parent in data['is_a']:
+    #                 interactions.append((parent, node, 'is_a'))
         
-        ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
+    #     ontology_df = pd.DataFrame(interactions, columns=['parent', 'child', 'interaction'])
         
-        # Create a temporary annotation file to pass to the constructor
-        annot_df = pd.DataFrame.from_dict(sys_annot_dict, orient='index', columns=['Term_Description'])
-        annot_df.index.name = 'Term'
-        temp_annot_path = 'temp_obo_annotations.tsv'
-        annot_df.to_csv(temp_annot_path, sep='	')
+    #     # Create a temporary annotation file to pass to the constructor
+    #     annot_df = pd.DataFrame.from_dict(sys_annot_dict, orient='index', columns=['Term_Description'])
+    #     annot_df.index.name = 'Term'
+    #     temp_annot_path = 'temp_obo_annotations.tsv'
+    #     annot_df.to_csv(temp_annot_path, sep='	')
 
-        instance = cls(ontology_df, dense_attention=dense_attention, sys_annot_file=temp_annot_path)
+    #     instance = cls(ontology_df, dense_attention=dense_attention, sys_annot_file=temp_annot_path)
         
-        import os
-        os.remove(temp_annot_path)
+    #     import os
+    #     os.remove(temp_annot_path)
         
-        return instance
+    #     return instance
 
 
     def _get_annotated_name(self, term):
@@ -371,27 +371,29 @@ class TreeParser(object):
             new_obj.init_ontology(ontology_df_new, inplace=True)
             return new_obj
 
+
     def compute_node_heights(self):
         """
-        Height = longest distance to a root *or* leaf depending on definition.
-        Here: longest distance to a node with no parents (root)
-        in a child -> parent DAG.
+        Compute the heights of nodes in the ontology graph.
+
+        Returns:
+        -------
+        dict
+            Dictionary mapping nodes to their heights.
         """
         if not nx.is_directed_acyclic_graph(self.sys_graph):
-            raise ValueError("Graph is not a DAG; height is not well-defined with cycles.")
+            # Return empty dict if not a DAG to avoid errors, or handle as needed
+            return {}
 
         heights = {}
-        topo = list(nx.topological_sort(self.sys_graph))
-
-        # children here = predecessors (terms below)
-        for node in topo:  # or reversed(topo), depending on what you define as root/leaf
-            children = list(self.sys_graph.predecessors(node))
-            if not children:
+        for node in nx.topological_sort(self.sys_graph):
+            successors = list(self.sys_graph.successors(node))
+            if not successors:
                 heights[node] = 0
             else:
-                heights[node] = 1 + max(heights[child] for child in children)
-
+                heights[node] = 1 + max(heights.get(child, -1) for child in successors)
         return heights
+
 
     def get_descendants_sorted_by_height(self, node):
         """

@@ -69,9 +69,7 @@ class SNPTreeParser(TreeParser):
         print(parser.snp2gene_df.head())
         
         # Conditionally sort by position if available
-        sort_columns = []
-        if 'chr' in parser.snp2gene_df.columns:
-            sort_columns.append('chr')
+        sort_columns = ["chr"]
         if 'pos' in parser.snp2gene_df.columns:
             sort_columns.append('pos')
         if 'block' in parser.snp2gene_df.columns:
@@ -204,34 +202,30 @@ class SNPTreeParser(TreeParser):
         print("The number of SNPs:", parser.n_snps)
         parser.snp_pad_index = parser.n_snps
 
-
-        if 'chr' in parser.snp2gene_df.columns:
-            # chromosomes
-            parser.chromosomes = sorted(parser.snp2gene_df['chr'].unique())
-            parser.gene2chr = dict(zip(parser.snp2gene_df['gene'],
-                                       parser.snp2gene_df['chr']))
-            parser.snp2chr  = dict(zip(parser.snp2gene_df['snp'],
-                                       parser.snp2gene_df['chr']))
-            parser.chr2gene = {
-                c: [parser.gene2ind[g]
-                    for g in parser.snp2gene_df
-                        .loc[parser.snp2gene_df['chr'] == c, 'gene']]
-                for c in parser.chromosomes
-            }
-            parser.chr2snp = {
-                c: [parser.snp2ind[s]
-                    for s in parser.snp2gene_df
-                        .loc[parser.snp2gene_df['chr'] == c, 'snp']]
-                for c in parser.chromosomes
-            }
-
+        # chromosomes
+        parser.chromosomes = sorted(parser.snp2gene_df['chr'].unique())
+        parser.gene2chr = dict(zip(parser.snp2gene_df['gene'],
+                                   parser.snp2gene_df['chr']))
+        parser.snp2chr  = dict(zip(parser.snp2gene_df['snp'],
+                                   parser.snp2gene_df['chr']))
         if 'pos' in parser.snp2gene_df.columns:
             parser.snp2pos = dict(zip(parser.snp2gene_df['snp'],
                                       parser.snp2gene_df['pos']))
         else:
             parser.snp2pos = self.snp_pos_dict(parser.snp2gene_df['snp'].values.tolist())
 
-
+        parser.chr2gene = {
+            c: [parser.gene2ind[g]
+                for g in parser.snp2gene_df
+                              .loc[parser.snp2gene_df['chr']==c, 'gene']]
+            for c in parser.chromosomes
+        }
+        parser.chr2snp = {
+            c: [parser.snp2ind[s]
+                for s in parser.snp2gene_df
+                              .loc[parser.snp2gene_df['chr']==c, 'snp']]
+            for c in parser.chromosomes
+        }
 
         # system→SNP mapping (uses your existing get_sys2snp)
         parser.sys2snp = {
@@ -296,6 +290,12 @@ class SNPTreeParser(TreeParser):
         if not inplace:
             return parser
 
+    def set_snp2chr(self, snp2chr_dict):
+        self.snp2chr = snp2chr_dict
+
+    def set_snp2pos(self, snp2pos_dict):
+        self.snp2pos = snp2pos_dict
+
     @staticmethod
     def snp_pos_dict(ids):
         """
@@ -316,14 +316,6 @@ class SNPTreeParser(TreeParser):
             if m:
                 out[s] = int(m.group(1))
         return out
-
-    def set_snp2chr(self, snp2chr_dict):
-        self.chromosomes = sorted(list(set(snp2chr_dict.values())))
-        self.snp2chr = snp2chr_dict
-
-    def set_snp2pos(self, snp2pos_dict):
-        self.snp2pos = snp2pos_dict
-
 
     def summary(self, system=True, gene=True, snp=True):
         super(SNPTreeParser, self).summary(system=system, gene=gene)

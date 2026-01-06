@@ -2,9 +2,9 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import matplotlib
-from collections import deque
 from dash import Dash, html, dcc, Output, Input
 
+# --- Utility Functions (formerly in sankey_utils.py) ---
 
 def _softmax(x):
     """Compute softmax values for each set of scores in x."""
@@ -46,99 +46,41 @@ class SankeyVisualizer:
         self.gene_annot_dict = gene_annot_dict
         self.system_annot_dict = system_annot_dict
 
-    def _factorize_genotype_attention(self, attention_df, target_gene, gene_weight, genotypes):
-        """
-        Distribute gene_weight to SNPs of a gene *proportionally*
-        to their original attention values, per genotype.
-        """
-        row_keys = []
+    def _factorize_genotype_attention(self, attention_df, target_gene, weight, genotypes):
+        """Recursively multiplies the attention weights of SNPs connected to a gene."""
         for snp in self.tree_parser.gene2snp.get(target_gene, []):
             for genotype in genotypes:
-                idx = (target_gene, snp, genotype)
-                if idx in attention_df.index:
-                    row_keys.append(idx)
-
-        if not row_keys:
-            return attention_df
-
-        vals = attention_df.loc[row_keys].astype(float)
-        total = vals.sum()
-
-        if total <= 0:
-            # fallback: uniform distribution if everything is zero
-            probs = np.full(len(row_keys), 1.0 / len(row_keys))
-        else:
-            probs = vals / total
-
-        attention_df.loc[row_keys] = gene_weight * probs
+                try:
+                    attention_df.at[(target_gene, snp, genotype), 'Value'] *= weight
+                except KeyError:
+                    continue
         return attention_df
 
     def _factorize_attention_recursively(self, attention_df, target, weight, direction, genotypes):
         """
-        Recursively factorizes attention so that:
-        - target (root) has total weight 1
-        - each node's outgoing edges sum to that node's weight
-        - descendants get weights = product of conditional probabilities
+        Recursively traverses the ontology graph to factorize attention weights.
+
+        This method applies a multiplicative weight down the hierarchy, ensuring
+        that the attention flow is conserved from parent to child nodes.
         """
-
-
-        def _dfs_system(node, node_weight):
-            # ----- system -> child systems/env -----
-            module_sys = 'sys2env' if direction == 'forward' else 'env2sys'
-            sys_edges = []
-            for _, child in self.tree_parser.sys_graph.out_edges(node):
-                idx = (node, child, module_sys)
-                if idx in attention_df.index:
-                    sys_edges.append(idx)
-
-            if sys_edges:
-                vals = attention_df.loc[sys_edges].astype(float)
-                total = vals.sum()
-                if total <= 0:
-                    probs = np.full(len(sys_edges), 1.0 / len(sys_edges))
-                else:
-                    probs = vals / total
-
-                new_vals = node_weight * probs
-                attention_df.loc[sys_edges] = new_vals
-
-                # recurse to child systems
-                for idx, child_weight in zip(sys_edges, new_vals):
-                    _, child, _ = idx
-                    _dfs_system(child, child_weight)
-
-            # ----- system -> genes -----
-            module_gene = 'gene2sys' if direction == 'forward' else 'sys2gene'
-            gene_edges = []
-            for gene in self.tree_parser.sys2gene.get(node, []):
-                idx = (node, gene, module_gene)
-                if idx in attention_df.index:
-                    gene_edges.append(idx)
-
-            if gene_edges:
-                vals = attention_df.loc[gene_edges].astype(float)
-                total = vals.sum()
-                if total <= 0:
-                    probs = np.full(len(gene_edges), 1.0 / len(gene_edges))
-                else:
-                    probs = vals / total
-
-                new_vals = node_weight * probs
-                attention_df.loc[gene_edges] = new_vals
-
-                # Only push further down to SNPs in forward direction
+        for gene in self.tree_parser.sys2gene.get(target, []):
+            module = 'gene2sys' if direction == 'forward' else 'sys2gene'
+            try:
+                attention_df.at[(target, gene, module), 'Value'] *= weight
                 if direction == 'forward':
-                    for idx, gene_weight in zip(gene_edges, new_vals):
-                        _, gene, _ = idx
-                        self._factorize_genotype_attention(
-                            attention_df,
-                            gene,
-                            gene_weight,
-                            genotypes
-                        )
+                    snp_weight = attention_df.loc[(target, gene, module)]['Value']
+                    attention_df = self._factorize_genotype_attention(attention_df, gene, snp_weight, genotypes)
+            except KeyError:
+                continue
 
-        # Start recursion from target with weight 1.0
-        _dfs_system(target, 1.0)
+        for _, child in self.tree_parser.sys_graph.out_edges(target):
+            module = 'sys2env' if direction == 'forward' else 'env2sys'
+            try:
+                attention_df.at[(target, child, module), 'Value'] *= weight
+                sys2env_value = attention_df.loc[(target, child, module)]['Value']
+                attention_df = self._factorize_attention_recursively(attention_df, child, sys2env_value, direction, genotypes)
+            except KeyError:
+                continue
         return attention_df
 
     def _prepare_sankey_data(self, attention_df, target_go, direction, genotypes, factorize=True, sort_by_chr=True):
@@ -164,11 +106,10 @@ class SankeyVisualizer:
         
         # Filter by direction
         attention_df = attention_df.loc[direction]
-        attention_df = attention_df.mean(axis=1).copy()
 
         if factorize:
             attention_df = self._factorize_attention_recursively(
-                attention_df.copy(), target_go, 1, direction, genotypes
+                self.tree_parser, attention_df.copy(), target_go, 1, direction, genotypes
             )
 
         # Get sorted lists of components
@@ -180,7 +121,7 @@ class SankeyVisualizer:
         total_inds = self._get_sankey_component_inds(target_gos, gene_sorted, snp_sorted)
         
         # Get node positions
-        nested_gos = self._get_nested_systems_by_heights(target_gos, target_go)
+        nested_gos = self._get_nested_systems_by_heights(target_gos)
         node_x, node_y = self._calculate_node_positions(nested_gos, gene_sorted, snp_sorted)
 
         # Get link values
@@ -239,39 +180,14 @@ class SankeyVisualizer:
         sys_ind = {sys: i + len(snp_sorted) + len(gene_sorted) for i, sys in enumerate(go_sorted)}
         return {**snp_ind, **gene_ind, **sys_ind}
 
-
-    def _get_nested_systems_by_heights(self, systems, root):
-        """
-        Groups systems by their distance from `root` in the ontology graph.
-
-        After reversal:
-        - First level (index 0) = farthest descendants (closest to genes)
-        - Last level = root itself (plotted at the largest x).
-        """
-        # BFS from root to get depth
-        dist = {root: 0}
-        q = deque([root])
-        while q:
-            node = q.popleft()
-            for _, child in self.tree_parser.sys_graph.out_edges(node):
-                if child not in dist and child in systems:
-                    dist[child] = dist[node] + 1
-                    q.append(child)
-
-        # Group by depth
-        levels = {}
-        for s in systems:
-            d = dist.get(s, 0)  # unknowns default to 0
-            levels.setdefault(d, []).append(s)
-
-        # Stable ordering inside each level
-        for d in levels:
-            levels[d].sort()
-
-        depth_keys = sorted(levels.keys())          # 0(root), 1(children), ...
-        ordered_depths = list(reversed(depth_keys)) # root becomes last
-
-        return [levels[d] for d in ordered_depths]
+    def _get_nested_systems_by_heights(self, systems):
+        """Groups systems by their height in the ontology graph."""
+        levels_dict = {}
+        for node in systems:
+            level = self.tree_parser.node_height_dict.get(node, 0)
+            levels_dict.setdefault(level, []).append(node)
+        sorted_levels = sorted(levels_dict.keys())
+        return [levels_dict[level] for level in sorted_levels]
 
     def _calculate_node_positions(self, system_nested, gene_sorted, snp_sorted):
         """Calculates the X and Y coordinates for each node in the Sankey diagram."""
@@ -304,17 +220,16 @@ class SankeyVisualizer:
         sources, targets, values, colors, types = [], [], [], [], []
         genotype_colors = {genotype: c for genotype, c in zip(genotypes, ['red', 'yellow', 'orange'])}
         module_colors = {'gene2sys': 'orange', 'sys2gene': 'blue', 'sys2env': 'brown', 'env2sys': 'magenta'}
-        #module_colors.update(genotype_colors)
-        #print(module_colors)
-        for key, value in attention_df.items():
-            source_node, target_node, module = key
 
+        for key, value in attention_df.iterrows():
+            source_node, target_node, module = key
+            
             if source_node not in total_ind or target_node not in total_ind:
                 continue
 
             sources.append(total_ind[source_node])
             targets.append(total_ind[target_node])
-            values.append(value + 1e-9) # Add small value to ensure visibility
+            values.append(value['Value'] + 1e-9) # Add small value to ensure visibility
             types.append(module)
 
             color_name = genotype_colors.get(module, module_colors.get(module, 'grey'))
@@ -324,7 +239,7 @@ class SankeyVisualizer:
             
         return sources, targets, values, colors, types
 
-    def plot(self, attention_df, target_go, direction, genotypes, title="Sankey Diagram", height=None, width=None):
+    def plot(self, attention_df, target_go, direction, genotypes, title="Sankey Diagram"):
         """
         Generates a Plotly Sankey Figure.
 
@@ -339,10 +254,6 @@ class SankeyVisualizer:
             go.Figure: A Plotly Figure object.
         """
         sankey_data = self._prepare_sankey_data(attention_df, target_go, direction, genotypes)
-        if height is None:
-            height = sankey_data["layout"]["height"]
-        if width is None:
-            width = 1000
         
         total_order_rev = {i: label for i, label in enumerate(sankey_data["nodes"]["labels"])}
         
@@ -376,8 +287,7 @@ class SankeyVisualizer:
         fig.update_layout(
             title_text=title,
             font_size=10,
-            height=height,
-            width=width,
+            height=sankey_data["layout"]["height"]
         )
         return fig
 

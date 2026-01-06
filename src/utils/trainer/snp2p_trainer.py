@@ -106,7 +106,7 @@ class SNP2PTrainer(object):
         self.gene2sys_mask = self.sys2gene_mask.T
         #self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=100, eta_min=1e-6)
         self.fix_system = fix_system
-
+        #self.dynamic_phenotype_sampling = args.dynamic_phenotype_sampling
         self.target_phenotype = target_phenotype
         self.mlm = args.mlm
 
@@ -458,6 +458,7 @@ class SNP2PTrainer(object):
         mean_score_loss = 0.
         mean_snp_loss = 0.
         worker = get_worker_info()
+
         dataloader_with_tqdm = tqdm(dataloader)
         for i, batch in enumerate(dataloader_with_tqdm):
 
