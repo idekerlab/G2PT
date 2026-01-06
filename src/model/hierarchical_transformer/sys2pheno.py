@@ -8,14 +8,14 @@ from src.model.hierarchical_transformer import PositionWiseFeedForward, Multihea
 class System2Phenotype(nn.Module):
 
     def __init__(self, hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout=0.2,
-                 transform=True, activation='softmax', poincare=False, use_hierarchical_transformer=False):
+                 transform=True, activation='softmax', use_hierarchical_transformer=False):
         super().__init__()
         self.attn_heads = attn_heads
         self.use_hierarchical_transformer = use_hierarchical_transformer
         if use_hierarchical_transformer:
             self.attention = HierarchicalTransformer(hidden, attn_heads, feed_forward_hidden, inner_norm, outer_norm, dropout,
                                                      conv_type='system', norm_channel_first=False, transform=transform,
-                                                     n_type=1, activation=activation, poincare=poincare)
+                                                     n_type=1, activation=activation)
         else:
             self.attention = MultiheadDiffAttn(h=attn_heads, d_model=hidden, depth=1)
         self.feed_forward = PositionWiseFeedForward(d_model=hidden, d_ff=feed_forward_hidden, dropout=dropout)

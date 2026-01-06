@@ -2,7 +2,7 @@ import torch.nn.functional as F
 import torch
 import math
 from torch import nn
-from src.model.utils import RMSNorm, euclidian_to_poincare, feature_clipping
+from src.model.utils import RMSNorm
 
 ## Differential Transformer
 def init_method(tensor, **kwargs):
