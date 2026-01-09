@@ -153,6 +153,10 @@ Outputs include:
 
 TSV inputs are supported via `--tsv` in place of `--bfile`.
 
+## Documentation and API reference
+
+The full documentation (including the API reference) is available at: https://g2pt.readthedocs.io/en/latest/index.html
+
 ## G2PT pipeline in overall
 
 1. **Collapse Gene Ontology with your GWAS results**
