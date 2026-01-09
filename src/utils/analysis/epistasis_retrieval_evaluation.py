@@ -47,6 +47,12 @@ def _process_system(
     print(f"--- Searching in System: {system} with quantile {quantile}---")
 
     system_snps = set(finder_instance.tree_parser.sys2snp.get(system, []))
+    if snp_threshold is not None and len(system_snps) > snp_threshold:
+        print(
+            f"--- Skipping System: {system} with {len(system_snps)} SNPs "
+            f"(threshold {snp_threshold}) ---"
+        )
+        return {}, {}
 
     true_additive_snps = set(map(int, causal_info.get("additive_snps", [])))
     true_epistatic_pairs_raw = causal_info.get("epistatic_pairs", [])
