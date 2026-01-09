@@ -12,7 +12,7 @@ python train_snp2p_model.py \
     --hidden-dims 64 \
     --lr 0.0001 \
     --wd 0.0001 \
-    --subtree-order default \
+    --interaction-types default \
     --dropout 0.2 \
     --batch-size 128 \
     --val-step 5 \

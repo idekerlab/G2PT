@@ -227,7 +227,7 @@ class TSVDataset(GenotypeDataset):
 
 class PLINKDataset(GenotypeDataset):
     def __init__(self, tree_parser : SNPTreeParser, bfile=None, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None, flip=False,
-                 input_format='indices', cov_ids=(), pheno_ids=(), bt=(), qt=()):
+                 block=False, input_format='indices', cov_ids=(), pheno_ids=(), bt=(), qt=()):
         """
         tree_parser: SNP tree parser object
         bfile: PLINK bfile prefix
@@ -246,7 +246,19 @@ class PLINKDataset(GenotypeDataset):
         print('Loading PLINK data at %s' % bfile)
         # Processing Genotypes
         plink_data = plink.read_plink(path=bfile)
-        print(f'loading done with{len(plink_data.sample_id.values)} individuals and {len(plink_data.variant_id.values)} SNPs')
+        #print(f'loading done with{len(plink_data.sample_id.values)} individuals and {len(plink_data.variant_id.values)} SNPs')
+
+        snp_ids = plink_data['variant_id'].values
+        snp_contig_mapping = {i:int(chromosome) for i, chromosome in enumerate(plink_data['contig_id'].values)}
+        snp_chr = plink_data['variant_position'].values
+        snp_pos = [snp_contig_mapping[contig] for contig in plink_data['variant_contig'].values]
+
+
+        snp_id2chr = {snp: chromosome for snp, chromosome in zip(snp_ids, snp_chr)}
+        snp_id2pos = {snp: pos for snp, pos in zip(snp_ids, snp_pos)}
+
+        self.tree_parser.set_snp2chr(snp_id2chr)
+        self.tree_parser.set_snp2pos(snp_id2pos)
 
         self.input_format = input_format
         genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
@@ -288,9 +300,9 @@ class PLINKDataset(GenotypeDataset):
         self.iid2ind = {str(iid): idx for idx, iid in enumerate(genotype_df.index.values)}
         self.ind2iid = {idx: str(iid) for idx, iid in enumerate(genotype_df.index.values)}
 
-        print(genotype_df.head())
-        print(self.cov_df.head())
-        print(self.pheno_df.head())
+        #print(genotype_df.head())
+        #print(self.cov_df.head())
+        #print(self.pheno_df.head())
 
         self.subtree = None
         self.subtree_phenotypes = []
@@ -319,10 +331,11 @@ class PLINKDataset(GenotypeDataset):
         snp_idx = torch.cat((snp_idx, pad), dim=1)  # (N × (1 200 + pad))
 
         self.snp_idx = snp_idx.contiguous()  # final (N × L_snp)
-        block_pad = self.tree_parser.n_blocks
-        block_idx = torch.tensor([self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)], dtype=torch.long)
-
-        self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad+1,), block_pad, dtype=torch.long)))
+        self.block = block
+        if block:
+            block_pad = self.tree_parser.n_blocks
+            block_idx = torch.tensor([self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)], dtype=torch.long)
+            self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad+1,), block_pad, dtype=torch.long)))
 
         self.flip = flip
         print("From PLINK %d variants with %d samples are queried" % (genotype.shape[1], genotype.shape[0]))
@@ -398,7 +411,8 @@ class PLINKDataset(GenotypeDataset):
     def __getitem__(self, index):
         result_dict = super().__getitem__(index)
         sample2snp_dict = {}
-        sample2snp_dict['block_ind'] = self.block_idx[self.block_range]
+        if self.block:
+            sample2snp_dict['block_ind'] = self.block_idx[self.block_range]
         sample2snp_dict['snp'] = self.snp_idx[index, self.snp_range]
         sample2snp_dict['gene'] = self.gene_idx[self.gene_range]
         sample2snp_dict['sys'] = self.sys_idx[self.sys_range]
@@ -421,7 +435,7 @@ class EmbeddingDataset(PLINKDataset):
         self.snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
         self.snp_indices = [self.tree_parser.snp2ind_all[snp] for snp in self.snp_sorted]
         block_idx = torch.tensor([self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)], dtype=torch.long)
-        print(block_idx)
+
         self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad,), block_pad, dtype=torch.long)))
 
         self.iid2ind = iid2ind
@@ -562,7 +576,6 @@ class BlockQueryDataset(PLINKDataset):
         self.ind2iid = {i:iid for i, iid in enumerate(self.iids)}
         block_pad = self.tree_parser.n_blocks
         block_idx = torch.tensor([self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)], dtype=torch.long)
-        print(block_idx)
         self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad,), block_pad, dtype=torch.long)))
 
     def __getitem__(self, index):
@@ -594,9 +607,14 @@ class SNP2PCollator(object):
         self.n_snp2pad = int(np.ceil(self.tree_parser.n_snps/8)) * 8 - self.tree_parser.n_snps
         self.input_format = input_format
         self.padding_index = {"snp": self.tree_parser.n_snps * 3,
-                              "block": self.tree_parser.n_blocks,
                               "gene": self.tree_parser.n_genes,
                               'system': self.tree_parser.n_systems}
+        if hasattr(self.tree_parser, "n_blocks"):
+            self.padding_index["block"] = self.tree_parser.n_blocks
+            self.block = True
+        else:
+            self.block = False
+
         self.pheno_ids = pheno_ids
         self.mlm = mlm
         self.mlm_collator_dict = mlm_collator_dict
@@ -617,7 +635,8 @@ class SNP2PCollator(object):
         if self.input_format == 'embedding':
             result_dict['genotype']['snp'] = torch.stack([d['genotype']['snp'] for d in data])  # .long()#genotype_dict
             result_dict['genotype']['embedding'] = torch.stack([d['genotype']['embedding'] for d in data])
-            result_dict['genotype']['block_ind'] = torch.stack([d['genotype']['block_ind'] for d in data])
+            if self.block:
+                result_dict['genotype']['block_ind'] = torch.stack([d['genotype']['block_ind'] for d in data])
         if self.input_format == 'block':
             block_dict = OrderedDict()
             #print(result_dict['genotype'])
@@ -639,7 +658,8 @@ class SNP2PCollator(object):
             result_dict['genotype']['block_ind'] = torch.stack([d['genotype']['block_ind'] for d in data])
         else:
             result_dict['genotype']['snp'] = torch.stack([d['genotype']['snp'] for d in data])  # .long()#genotype_dict
-            result_dict['genotype']['block_ind'] = torch.stack([d['genotype']['block_ind'] for d in data])
+            if self.block:
+                result_dict['genotype']['block_ind'] = torch.stack([d['genotype']['block_ind'] for d in data])
 
         if self.mlm:
             masked_snp = result_dict['genotype']['snp'].clone()

@@ -106,7 +106,7 @@ class SNP2PTrainer(object):
         self.gene2sys_mask = self.sys2gene_mask.T
         #self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=100, eta_min=1e-6)
         self.fix_system = fix_system
-        self.dynamic_phenotype_sampling = args.dynamic_phenotype_sampling
+
         self.target_phenotype = target_phenotype
         self.mlm = args.mlm
 
@@ -458,11 +458,7 @@ class SNP2PTrainer(object):
         mean_score_loss = 0.
         mean_snp_loss = 0.
         worker = get_worker_info()
-        if self.dynamic_phenotype_sampling:
-            num_batches = np.ceil(len(dataloader.dataset))
-            dataloader_with_tqdm = tqdm(dataloader, total=num_batches)
-        else:
-            dataloader_with_tqdm = tqdm(dataloader)
+        dataloader_with_tqdm = tqdm(dataloader)
         for i, batch in enumerate(dataloader_with_tqdm):
 
             #print(f"Rank {self.args.rank} Getting batch")
@@ -523,22 +519,8 @@ class SNP2PTrainer(object):
             else:
                 predictions = phenotype_predicted
 
-            if self.dynamic_phenotype_sampling:
-                pheno_inds = batch['phenotype_indices'][0].detach().cpu().tolist()
-                phenos = [self.args.ind2pheno[ind] for ind in pheno_inds]
-                dynamic_qt_inds = []
-                dynamic_bt_inds = []
 
-                for ind, pheno in enumerate(phenos):
-                    if self.args.pheno2type[pheno]=='qt':
-                        dynamic_qt_inds.append(ind)
-                    elif self.args.pheno2type[pheno]=='bt':
-                        dynamic_bt_inds.append(ind)
-                #print(dynamic_bt_inds, dynamic_qt_inds)
-                loss = MultiplePhenotypeLoss(dynamic_bt_inds, dynamic_qt_inds)
-
-            else:
-                loss = self.loss
+            loss = self.loss
             #print(predictions.size(), batch['phenotype'].size())
             #phenotype_loss = 0
             #print((batch['phenotype']==-9).sum(), batch['phenotype'].size())
