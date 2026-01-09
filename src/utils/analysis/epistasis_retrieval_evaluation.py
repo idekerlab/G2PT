@@ -13,7 +13,6 @@ import pandas as pd
 from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score, roc_curve
 from statsmodels.stats.multitest import multipletests
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.utils.analysis.epistasis import EpistasisFinder
 from src.utils.tree import SNPTreeParser
 
@@ -35,6 +34,7 @@ class EvaluationConfig:
     num_workers: int
     executor_type: str
     quantiles: Sequence[float]
+    snp_threshold: int
 
 
 def _process_system(
@@ -42,6 +42,7 @@ def _process_system(
     system: str,
     causal_info: Dict[str, List],
     quantile: float = 0.9,
+    snp_threshold: int = 50,
 ) -> Tuple[Dict[Pair, float], Dict[Pair, float]]:
     """Process a single system to collect p-values."""
     print(f"--- Searching in System: {system} with quantile {quantile}---")
@@ -112,7 +113,7 @@ def _parallel_worker(
         cov=config.cov,
         pheno=config.pheno,
     )
-    return _process_system(finder_instance, system, causal_info, quantile=quantile)
+    return _process_system(finder_instance, system, causal_info, quantile=quantile, snp_threshold=config.snp_threshold)
 
 
 def _plot_curves(
@@ -235,7 +236,7 @@ class EpistasisRetrievalEvaluator:
                 pheno=self.config.pheno,
             )
             return [
-                _process_system(finder_instance, system, causal_info, quantile)
+                _process_system(finder_instance, system, causal_info, quantile, self.config.snp_threshold)
                 for system, quantile in tasks
             ]
 

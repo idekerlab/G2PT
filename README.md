@@ -168,7 +168,11 @@ TSV inputs are supported via `--tsv` in place of `--bfile`.
 4. **Analyze attention and epistasis**
    - Visualize high-importance systems: [Draw_ontology_with_highlighted_systems.ipynb](Draw_ontology_with_highlighted_systems.ipynb).
    - Plot attention flow: [Draw_Sankey.ipynb](Draw_Sankey.ipynb).
-   - Search and visualize epistasis: [Epistasis_pipeline.ipynb](Epistasis_pipeline.ipynb).
+   - Search and visualize epistasis: [Epistasis_discovery_pipeline.ipynb](Epistasis_discovery_pipeline.ipynb).
+
+## Epistasis Simulation
+
+Read [Epistasis_simulation.ipynb](Epistasis_simulation.ipynb)
 
 ## Future work
 
