@@ -249,7 +249,10 @@ class PLINKDataset(GenotypeDataset):
         #print(f'loading done with{len(plink_data.sample_id.values)} individuals and {len(plink_data.variant_id.values)} SNPs')
 
         snp_ids = plink_data['variant_id'].values
-        snp_contig_mapping = {i:int(chromosome) for i, chromosome in enumerate(plink_data['contig_id'].values)}
+        snp_contig_mapping = {
+            i: int(str(chromosome).replace('chr', ''))
+            for i, chromosome in enumerate(plink_data['contig_id'].values)
+        }
         snp_chr = plink_data['variant_position'].values
         snp_pos = [snp_contig_mapping[contig] for contig in plink_data['variant_contig'].values]
 
@@ -266,7 +269,11 @@ class PLINKDataset(GenotypeDataset):
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
 
         genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
-        genotype_df = genotype_df[snp_sorted]
+        #genotype_df = genotype_df[snp_sorted]
+        missing_snps = [snp for snp in snp_sorted if snp not in genotype_df.columns]
+        print("SNPs not in bfile:", missing_snps)
+        genotype_df = genotype_df.reindex(columns=snp_sorted, fill_value=0)
+
 
         # Processing Covariates
         if self.cov_df is not None:

@@ -154,7 +154,7 @@ class HierarchicalTransformer(nn.Module):
     def __init__(self, hidden: object, attn_heads: object, feed_forward_hidden: object, inner_norm: object, outer_norm: object, dropout: object = 0.2,
                  attention_dropout: float = 0.1,
                  conv_type: object = 'system',
-                 norm_channel_first: object = False, transform: object = True, n_type: object = 1, activation: object = 'softmax', poincare: object = False) -> object:
+                 norm_channel_first: object = False, transform: object = True, n_type: object = 1, activation: object = 'softmax') -> object:
         """
         :param hidden: hidden size of transformer
         :param attn_heads: head sizes of multi-head attention
@@ -208,4 +208,3 @@ class HierarchicalTransformer(nn.Module):
         if (self.conv_type == 'system') & (mask is not None):
             mask = mask.unsqueeze(0).unsqueeze(0).expand(batch_size, -1, -1, -1)
         return self.hierarchical_transformer_update.get_attention_scores(q, k, mask=mask)
-

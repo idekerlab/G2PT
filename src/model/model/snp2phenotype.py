@@ -44,7 +44,6 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             Defaults to 'softmax'.
         input_format (str, optional): The format of the genotype input ('indices' or 'block').
             Defaults to 'indices'.
-        poincare (bool, optional): Unused parameter for future extension. Defaults to False.
         cov_effect (str, optional): Specifies how covariates affect the model ('pre', 'post',
             'direct', or 'both'). Defaults to 'pre'.
         pretrained_transformer (dict, optional): A dictionary of pretrained transformer models
@@ -63,12 +62,12 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
     # --- Initialization ---
     def __init__(self, tree_parser, hidden_dims, snp2pheno=False, gene2pheno=True, sys2pheno=True,
                  interaction_types=['default'], n_covariates=13, dropout=0.2,
-                 activation='softmax', input_format='indices', poincare=False, cov_effect='pre',
+                 activation='softmax', input_format='indices', cov_effect='pre',
                  pretrained_transformer=None, freeze_pretrained=True,
                  phenotypes=('PHENOTYPE',), ind2pheno=None, use_hierarchical_transformer=False, use_moe=False,
                  use_independent_predictors=False, prediction_head=1, n_heads=4):
         super(SNP2PhenotypeModel, self).__init__(tree_parser, hidden_dims, interaction_types=interaction_types, dropout=dropout,
-                                                 n_heads=4, input_format=input_format, poincare=poincare)
+                                                 n_heads=4, input_format=input_format)
         self.use_gene2pheno = gene2pheno
         self.use_sys2pheno = sys2pheno
         self.n_snps = self.tree_parser.n_snps
@@ -109,31 +108,18 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
 
         self.snp_norm = nn.LayerNorm(hidden_dims)
-        '''
-        snp2gene_dict = {}
-        for pheno in phenotypes:
-            snp2gene_update_norm_inner = nn.LayerNorm(hidden_dims)
-            snp2gene_update_norm_outer = nn.LayerNorm(hidden_dims)
-            higt = HierarchicalTransformer(hidden_dims, 4, hidden_dims,
-                                                snp2gene_update_norm_inner,
-                                                snp2gene_update_norm_outer,
-                                               dropout, norm_channel_first=self.norm_channel_first, conv_type='genotype',
-                                                             activation=activation, n_type=1, poincare=poincare)
-            snp2gene_dict[pheno] = higt
-        self.snp2gene = nn.ModuleDict(snp2gene_dict)
-        '''
         self.snp2gene_update_norm_inner = nn.LayerNorm(hidden_dims)
         self.snp2gene_update_norm_outer = nn.LayerNorm(hidden_dims)
         self.snp2gene = HierarchicalTransformer(hidden_dims, n_heads, hidden_dims,
                                                 self.snp2gene_update_norm_inner,
                                                 self.snp2gene_update_norm_outer,
                                                dropout, norm_channel_first=self.norm_channel_first, conv_type='system',
-                                                             activation=activation, n_type=1, poincare=poincare)
+                                                             activation=activation, n_type=1)
         self.gene2snp = HierarchicalTransformer(hidden_dims, n_heads, hidden_dims,
                                                 self.snp2gene_update_norm_inner,
                                                 self.snp2gene_update_norm_outer,
                                                 dropout, norm_channel_first=self.norm_channel_first, conv_type='system',
-                                                activation=activation, n_type=1, poincare=poincare)
+                                                activation=activation, n_type=1)
 
         self.gene2sys_update_norm_inner = nn.LayerNorm(hidden_dims)
         self.gene2sys_update_norm_outer = nn.LayerNorm(hidden_dims)
@@ -142,7 +128,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                                                 self.gene2sys_update_norm_outer,
                                                 dropout, norm_channel_first=self.norm_channel_first,
                                                 conv_type='system',
-                                                activation='softmax', poincare=poincare)
+                                                activation='softmax')
         self.cov_update_norm_inner = nn.LayerNorm(hidden_dims, eps=0.1)
         self.cov_update_norm_outer = nn.LayerNorm(hidden_dims, eps=0.1)
 
@@ -150,18 +136,6 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.cov2sys = FiLM(n_covariates, hidden_dims)
         self.cov2snp = FiLM(n_covariates, hidden_dims)
         self.cov2pheno = FiLM(n_covariates, hidden_dims)
-        '''
-        self.cov2gene = HierarchicalTransformer(hidden_dims, 4, hidden_dims,
-                                                self.cov_update_norm_inner,
-                                                self.cov_update_norm_outer,
-                                               dropout, norm_channel_first=self.norm_channel_first, conv_type='genotype',
-                                                             activation=None, n_type=1, poincare=poincare)
-        self.cov2sys = HierarchicalTransformer(hidden_dims, 4, hidden_dims,
-                                                self.cov_update_norm_inner,
-                                                self.cov_update_norm_outer,
-                                               dropout, norm_channel_first=self.norm_channel_first, conv_type='genotype',
-                                                             activation=None, n_type=1, poincare=poincare)
-        '''
 
         self.n_covariates = n_covariates
 
@@ -183,7 +157,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                                              inner_norm=self.gene2pheno_update_norm_inner,
                                              outer_norm=self.gene2pheno_update_norm_outer, dropout=dropout,
                                              attention_dropout=0.0,
-                                             transform=True, activation='softmax', poincare=poincare,
+                                             transform=True, activation='softmax',
                                              use_hierarchical_transformer=use_hierarchical_transformer)
 
         self.sys2pheno_norm = nn.LayerNorm(hidden_dims)
@@ -193,7 +167,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                                             inner_norm=self.sys2pheno_update_norm_inner,
                                             outer_norm=self.sys2pheno_update_norm_outer, dropout=dropout,
                                             attention_dropout=0.0,
-                                            transform=True, activation='softmax', poincare=poincare,
+                                            transform=True, activation='softmax',
                                             use_hierarchical_transformer=use_hierarchical_transformer)
 
 

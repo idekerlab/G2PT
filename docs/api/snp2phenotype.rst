@@ -39,8 +39,6 @@ SNP2Phenotype
    :type activation: str, optional
    :param input_format: The format of the genotype input ('indices' or 'block').
    :type input_format: str, optional
-   :param poincare: Unused parameter for future extension.
-   :type poincare: bool, optional
    :param cov_effect: Specifies how covariates affect the model ('pre', 'post', 'direct', or 'both').
    :type cov_effect: str, optional
    :param pretrained_transformer: A dictionary of pretrained transformer models for block-based input.

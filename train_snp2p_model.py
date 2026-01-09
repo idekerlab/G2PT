@@ -120,8 +120,6 @@ def main():
     parser.add_argument('--gene2pheno', action='store_true', default=False)
     parser.add_argument('--snp2pheno', action='store_true', default=False)
 
-    parser.add_argument('--poincare', action='store_true', default=False)
-
     parser.add_argument('--dense-attention', action='store_true', default=False)
     parser.add_argument('--input-format', default='indices', choices=["indices", "binary"])
     parser.add_argument('--regression', action='store_true', default=False)
