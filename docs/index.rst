@@ -23,7 +23,8 @@ API Documentation
    :maxdepth: 2
 
    api/snp2phenotype
-   api/epistasis
+   api/epistasis_discovery
+   api/epistasis_retrieval_evaluation
    api/tree
 
 
