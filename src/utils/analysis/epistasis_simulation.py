@@ -7,7 +7,7 @@ from scipy.stats import t as t_dist
 def build_hierarchical_ontology(sim,
                                 n_genes=800,
                                 n_systems=60, # This is the number of leaf systems
-                                epistatic_distinctness=0.5,
+                                ontology_coherence=0.5,
                                 overlap_prob=0.25,
                                 n_causal_systems=20,
                                 causal_system_enrichment=5.0,
@@ -113,14 +113,14 @@ def build_hierarchical_ontology(sim,
     snp2gene = rng.choice(gene_ids, size=n_snps)
     epistatic_pairs = sim["pair_idx"]
 
-    print(f"Assigning {len(epistatic_pairs)} epistatic pairs with distinctness = {epistatic_distinctness}...")
+    print(f"Assigning {len(epistatic_pairs)} epistatic pairs with ontology_coherence = {ontology_coherence}...")
     for snp_i, snp_j in epistatic_pairs:
-        # Determine which pool to use based on epistatic_distinctness
-        if epistatic_distinctness < 0.5:
-            prob_same = 1 - (epistatic_distinctness / 0.5)
+        # Determine which pool to use based on ontology_coherence
+        if ontology_coherence > 0.5:
+            prob_same = 1 - ( 1 - ontology_coherence / 0.5)
             pool = same_system_pairs if rng.random() < prob_same else related_system_pairs
         else:
-            prob_related = 1 - ((epistatic_distinctness - 0.5) / 0.5)
+            prob_related = 1 - (ontology_coherence / 0.5)
             pool = related_system_pairs if rng.random() < prob_related else distant_system_pairs
 
         # Failsafe logic if the chosen pool is empty
