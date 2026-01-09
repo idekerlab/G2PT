@@ -227,7 +227,7 @@ class TSVDataset(GenotypeDataset):
 
 class PLINKDataset(GenotypeDataset):
     def __init__(self, tree_parser : SNPTreeParser, bfile=None, cov=None, pheno=None, cov_mean_dict=None, cov_std_dict=None, flip=False,
-                 input_format='indices', cov_ids=(), pheno_ids=(), bt=(), qt=()):
+                 block=False, input_format='indices', cov_ids=(), pheno_ids=(), bt=(), qt=()):
         """
         tree_parser: SNP tree parser object
         bfile: PLINK bfile prefix
@@ -249,7 +249,10 @@ class PLINKDataset(GenotypeDataset):
         #print(f'loading done with{len(plink_data.sample_id.values)} individuals and {len(plink_data.variant_id.values)} SNPs')
 
         snp_ids = plink_data['variant_id'].values
-        snp_contig_mapping = {i:int(chromosome) for i, chromosome in enumerate(plink_data['contig_id'].values)}
+        snp_contig_mapping = {
+            i: int(str(chromosome).replace('chr', ''))
+            for i, chromosome in enumerate(plink_data['contig_id'].values)
+        }
         snp_chr = plink_data['variant_position'].values
         snp_pos = [snp_contig_mapping[contig] for contig in plink_data['variant_contig'].values]
 
@@ -335,12 +338,8 @@ class PLINKDataset(GenotypeDataset):
         snp_idx = torch.cat((snp_idx, pad), dim=1)  # (N × (1 200 + pad))
 
         self.snp_idx = snp_idx.contiguous()  # final (N × L_snp)
-        if hasattr(self.tree_parser, "n_blocks"):
-            #self.padding_index["block"] = self.tree_parser.n_blocks
-            self.block = True
-        else:
-            self.block = False
-        if self.block:
+        self.block = block
+        if block:
             block_pad = self.tree_parser.n_blocks
             block_idx = torch.tensor([self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)], dtype=torch.long)
             self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad+1,), block_pad, dtype=torch.long)))

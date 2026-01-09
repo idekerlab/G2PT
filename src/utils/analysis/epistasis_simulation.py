@@ -268,12 +268,6 @@ def simulate_epistasis(
       'beta'         np.ndarray                 – additive effect sizes
       'gamma'        np.ndarray                 – pairwise effect sizes
     """
-    # Defensive coding: Ensure n_samples and n_snps are integers
-    if isinstance(n_samples, tuple):
-        n_samples = n_samples[0]
-    if isinstance(n_snps, tuple):
-        n_snps = n_snps[0]
-        
     rng = np.random.default_rng(seed)
 
     # 1. simulate genotypes with real-like MAF spectrum and LD structure
