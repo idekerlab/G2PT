@@ -4,7 +4,8 @@ import json
 import os
 import sys
 from collections import defaultdict
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,14 +20,32 @@ from src.utils.tree import SNPTreeParser
 Pair = Tuple[int, int]
 
 
+@dataclass(frozen=True)
+class EvaluationConfig:
+    causal_info: str
+    system_importance: str
+    attention_results: str
+    tsv: str
+    pheno: str
+    cov: str
+    onto: str
+    snp2gene: str
+    top_n_systems: int
+    output_prefix: str
+    num_workers: int
+    executor_type: str
+    quantiles: Sequence[float]
+
+
 def _process_system(
     finder_instance: EpistasisFinder,
     system: str,
     causal_info: Dict[str, List],
     quantile: float = 0.9,
-    snp_threshold: Optional[int] = None,
 ) -> Tuple[Dict[Pair, float], Dict[Pair, float]]:
     """Process a single system to collect p-values."""
+    print(f"--- Searching in System: {system} with quantile {quantile}---")
+
     system_snps = set(finder_instance.tree_parser.sys2snp.get(system, []))
     if snp_threshold is not None and len(system_snps) > snp_threshold:
         print(
@@ -34,8 +53,6 @@ def _process_system(
             f"(threshold {snp_threshold}) ---"
         )
         return {}, {}
-
-    print(f"--- Searching in System: {system} with quantile {quantile}---")
 
     true_additive_snps = set(map(int, causal_info.get("additive_snps", [])))
     true_epistatic_pairs_raw = causal_info.get("epistatic_pairs", [])
@@ -84,25 +101,18 @@ def _parallel_worker(
     system: str,
     quantile: float,
     causal_info: Dict[str, List],
-    payload: Dict[str, object],
-    snp_threshold: Optional[int],
+    config: EvaluationConfig,
 ) -> Tuple[Dict[Pair, float], Dict[Pair, float]]:
     """Initialize EpistasisFinder per worker for safe concurrency."""
-    tree_parser = SNPTreeParser(ontology=payload["onto"], snp2gene=payload["snp2gene"])
+    tree_parser = SNPTreeParser(ontology=config.onto, snp2gene=config.snp2gene)
     finder_instance = EpistasisFinder(
         tree_parser=tree_parser,
-        tsv=payload["tsv"],
-        attention_results=payload["attention_results"],
-        cov=payload["cov"],
-        pheno=payload["pheno"],
+        tsv=config.tsv,
+        attention_results=config.attention_results,
+        cov=config.cov,
+        pheno=config.pheno,
     )
-    return _process_system(
-        finder_instance,
-        system,
-        causal_info,
-        quantile=quantile,
-        snp_threshold=snp_threshold,
-    )
+    return _process_system(finder_instance, system, causal_info, quantile=quantile)
 
 
 def _plot_curves(
@@ -139,49 +149,12 @@ def _plot_curves(
 
 
 class EpistasisRetrievalEvaluator:
-    def __init__(
-        self,
-        causal_info: str,
-        system_importance: str,
-        attention_results: str,
-        tsv: str,
-        pheno: str,
-        cov: str,
-        onto: str,
-        snp2gene: str,
-        output_prefix: str,
-        num_workers: int = 4,
-        executor_type: str = "process",
-        quantiles: Sequence[float] = (0.1, 0.9),
-        snp_threshold: Optional[int] = None,
-    ) -> None:
-        self.causal_info = causal_info
-        self.system_importance = system_importance
-        self.attention_results = attention_results
-        self.tsv = tsv
-        self.pheno = pheno
-        self.cov = cov
-        self.onto = onto
-        self.snp2gene = snp2gene
-        self.output_prefix = output_prefix
-        self.num_workers = num_workers
-        self.executor_type = executor_type
-        self.quantiles = quantiles
-        self.snp_threshold = snp_threshold
-
-    def _worker_payload(self) -> Dict[str, object]:
-        return {
-            "tsv": self.tsv,
-            "attention_results": self.attention_results,
-            "cov": self.cov,
-            "pheno": self.pheno,
-            "onto": self.onto,
-            "snp2gene": self.snp2gene,
-        }
+    def __init__(self, config: EvaluationConfig) -> None:
+        self.config = config
 
     def _load_causal_info(self) -> Tuple[Dict[str, List], set, set]:
-        print(f"--- Loading causal info from {self.causal_info} ---")
-        with open(self.causal_info, "r") as f:
+        print(f"--- Loading causal info from {self.config.causal_info} ---")
+        with open(self.config.causal_info, "r") as f:
             causal_info = json.load(f)
         true_epistatic_pairs = {tuple(sorted(map(int, pair))) for pair in causal_info["epistatic_pairs"]}
         true_additive_snps = set(map(int, causal_info.get("additive_snps", [])))
@@ -193,22 +166,19 @@ class EpistasisRetrievalEvaluator:
         )
         return causal_info, true_epistatic_pairs, all_causal_snps
 
-    def _load_systems(self, top_n_systems: Optional[int]) -> List[str]:
-        print(f"--- Loading system importance from {self.system_importance} ---")
-        system_importance_df = pd.read_csv(self.system_importance)
+    def _load_systems(self) -> List[str]:
+        print(f"--- Loading system importance from {self.config.system_importance} ---")
+        system_importance_df = pd.read_csv(self.config.system_importance)
         print(f"--- System importance loaded. Shape: {system_importance_df.shape} ---")
         ranked_systems = system_importance_df.sort_values(by="corr_mean_abs", ascending=False)
-        if top_n_systems is None:
-            top_systems = ranked_systems["System"].tolist()
-        else:
-            top_systems = ranked_systems.head(top_n_systems)["System"].tolist()
+        top_systems = ranked_systems.head(self.config.top_n_systems)["System"].tolist()
         print(f"--- Identified top {len(top_systems)} systems ---")
         return top_systems
 
     def _run_diagnostics(self, top_systems: Iterable[str], all_causal_snps: set) -> None:
         print("\n--- Running Pre-flight Diagnostic Check ---")
         print("Initializing a temporary parser to check data mapping...")
-        temp_parser = SNPTreeParser(ontology=self.onto, snp2gene=self.snp2gene)
+        temp_parser = SNPTreeParser(ontology=self.config.onto, snp2gene=self.config.snp2gene)
         print("Parser initialized successfully.")
 
         parser_snps = set(temp_parser.snp2ind.keys())
@@ -254,62 +224,48 @@ class EpistasisRetrievalEvaluator:
         tasks: List[Tuple[str, float]],
         causal_info: Dict[str, List],
     ) -> List[Tuple[Dict[Pair, float], Dict[Pair, float]]]:
-        if self.num_workers <= 1:
+        if self.config.num_workers <= 1:
             print("--- Running in single-worker mode ---")
-            tree_parser = SNPTreeParser(ontology=self.onto, snp2gene=self.snp2gene)
+            tree_parser = SNPTreeParser(ontology=self.config.onto, snp2gene=self.config.snp2gene)
             finder_instance = EpistasisFinder(
                 tree_parser=tree_parser,
-                tsv=self.tsv,
-                attention_results=self.attention_results,
-                cov=self.cov,
-                pheno=self.pheno,
+                tsv=self.config.tsv,
+                attention_results=self.config.attention_results,
+                cov=self.config.cov,
+                pheno=self.config.pheno,
             )
             return [
-                _process_system(
-                    finder_instance,
-                    system,
-                    causal_info,
-                    quantile,
-                    snp_threshold=self.snp_threshold,
-                )
+                _process_system(finder_instance, system, causal_info, quantile)
                 for system, quantile in tasks
             ]
 
-        if self.executor_type == "thread":
+        if self.config.executor_type == "thread":
             from concurrent.futures import ThreadPoolExecutor as Executor
         else:
             from concurrent.futures import ProcessPoolExecutor as Executor
 
         print(
-            f"--- Starting {self.executor_type} executor with "
-            f"{self.num_workers} workers ---"
+            f"--- Starting {self.config.executor_type} executor with "
+            f"{self.config.num_workers} workers ---"
         )
         results: List[Tuple[Dict[Pair, float], Dict[Pair, float]]] = []
-        payload = self._worker_payload()
-        with Executor(max_workers=self.num_workers) as executor:
+        with Executor(max_workers=self.config.num_workers) as executor:
             futures = [
-                executor.submit(
-                    _parallel_worker,
-                    system,
-                    quantile,
-                    causal_info,
-                    payload,
-                    self.snp_threshold,
-                )
+                executor.submit(_parallel_worker, system, quantile, causal_info, self.config)
                 for system, quantile in tasks
             ]
             for future in futures:
                 results.append(future.result())
         return results
 
-    def evaluate(self, top_n_systems: Optional[int] = None) -> None:
+    def evaluate(self) -> None:
         print("--- [1/5] Loading inputs ---")
         causal_info, true_epistatic_pairs, all_causal_snps = self._load_causal_info()
-        top_systems = self._load_systems(top_n_systems)
+        top_systems = self._load_systems()
         self._run_diagnostics(top_systems, all_causal_snps)
 
         print("--- [2/5] Building tasks ---")
-        tasks = [(system, quantile) for system in top_systems for quantile in self.quantiles]
+        tasks = [(system, quantile) for system in top_systems for quantile in self.config.quantiles]
 
         print("--- [3/5] Processing systems ---")
         results = self._collect_results(tasks, causal_info)
@@ -335,7 +291,7 @@ class EpistasisRetrievalEvaluator:
                 global_pvalues_union[pair] = p_val
 
         print("--- Preparing final ranked lists for evaluation ---")
-        all_snps = pd.read_csv(self.snp2gene, sep="\t")["snp"].astype(str).tolist()
+        all_snps = pd.read_csv(self.config.snp2gene, sep="\t")["snp"].astype(str).tolist()
         all_possible_pairs = list(itertools.combinations(all_snps, 2))
         all_possible_pairs = [tuple(sorted((int(snp1), int(snp2)))) for snp1, snp2 in all_possible_pairs]
 
@@ -410,7 +366,7 @@ class EpistasisRetrievalEvaluator:
         }
         summary_df = pd.DataFrame(summary_data)
         print(summary_df)
-        summary_df.to_csv(f"{self.output_prefix}_summary_aupr.csv", index=False)
+        summary_df.to_csv(f"{self.config.output_prefix}_summary_aupr.csv", index=False)
         raw_result = pd.DataFrame(
             {
                 "snp1": [pair[0] for pair in all_possible_pairs],
@@ -418,11 +374,11 @@ class EpistasisRetrievalEvaluator:
                 "score": y_scores_union,
             }
         )
-        raw_result.to_csv(f"{self.output_prefix}_p_values.csv", index=False)
+        raw_result.to_csv(f"{self.config.output_prefix}_p_values.csv", index=False)
 
-        _plot_curves(y_true, y_scores_union, auc_union, aupr_union, f"{self.output_prefix}_union")
+        _plot_curves(y_true, y_scores_union, auc_union, aupr_union, f"{self.config.output_prefix}_union")
 
-        print(f"\nEvaluation complete. Summary saved to {self.output_prefix}_summary_aupr.csv")
+        print(f"\nEvaluation complete. Summary saved to {self.config.output_prefix}_summary_aupr.csv")
         print("--- [5/5] Done ---")
 
 
@@ -436,12 +392,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cov", required=True, help="Path to the covariate file.")
     parser.add_argument("--onto", required=True, help="Path to the ontology file.")
     parser.add_argument("--snp2gene", required=True, help="Path to the snp2gene mapping file.")
-    parser.add_argument(
-        "--top-n-systems",
-        type=int,
-        default=None,
-        help="Number of top systems to search within (default: all systems).",
-    )
+    parser.add_argument("--top-n-systems", type=int, default=20, help="Number of top systems to search within.")
     parser.add_argument("--output-prefix", required=True, help="Prefix for output files.")
     parser.add_argument("--num-workers", type=int, default=4, help="Number of workers to use.")
     parser.add_argument(
@@ -455,18 +406,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="0.1,0.9",
         help="Comma-separated quantiles to evaluate (default: 0.1,0.9).",
     )
-    parser.add_argument(
-        "--snp-threshold",
-        type=int,
-        default=None,
-        help="Skip systems with more than this many SNPs (default: no limit).",
-    )
     return parser
 
 
-def build_evaluator_from_args(args: argparse.Namespace) -> EpistasisRetrievalEvaluator:
+def build_config_from_args(args: argparse.Namespace) -> EvaluationConfig:
     quantiles = tuple(float(value) for value in args.quantiles.split(",") if value)
-    return EpistasisRetrievalEvaluator(
+    return EvaluationConfig(
         causal_info=args.causal_info,
         system_importance=args.system_importance,
         attention_results=args.attention_results,
@@ -475,19 +420,20 @@ def build_evaluator_from_args(args: argparse.Namespace) -> EpistasisRetrievalEva
         cov=args.cov,
         onto=args.onto,
         snp2gene=args.snp2gene,
+        top_n_systems=args.top_n_systems,
         output_prefix=args.output_prefix,
         num_workers=args.num_workers,
         executor_type=args.executor_type,
         quantiles=quantiles,
-        snp_threshold=args.snp_threshold,
     )
 
 
 def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
-    evaluator = build_evaluator_from_args(args)
-    evaluator.evaluate(top_n_systems=args.top_n_systems)
+    config = build_config_from_args(args)
+    evaluator = EpistasisRetrievalEvaluator(config)
+    evaluator.evaluate()
 
 
 if __name__ == "__main__":
