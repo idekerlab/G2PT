@@ -1,5 +1,5 @@
-Epistasis
-=========
+Epistasis Discovery
+===================
 
 .. class:: EpistasisFinder
 
