@@ -27,15 +27,6 @@ Example: initialize and run training
    )
    trainer.train(epochs=10, output_path="checkpoints/snp2p")
 
-Utilities
----------
-
-.. toctree::
-   :maxdepth: 1
-
-   snp2p_trainer_utils
-   snp2p_model_utils
-
 .. function:: correlation_matching_loss(pred, target, lam=0.05)
 
    Computes a correlation-structure matching loss between predictions and labels.
