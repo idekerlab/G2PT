@@ -22,6 +22,7 @@ API Documentation
 .. toctree::
    :maxdepth: 2
    :caption: API Documentation
+
    api/tree
    api/snp2phenotype
    api/snp2p_dataset
