@@ -32,6 +32,7 @@ API Documentation
 
 
 
+   api/index
 
 Indices and tables
 ==================
