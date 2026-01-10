@@ -31,7 +31,6 @@ API Documentation
    api/snp2p_trainer_utils
    api/epistasis_discovery
    api/epistasis_retrieval_evaluation
-   api/index
 
 Indices and tables
 ==================
