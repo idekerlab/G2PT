@@ -1,6 +1,65 @@
 Tree
 ====
 
+Overview
+--------
+
+The Tree utilities parse hierarchical ontologies of systems (terms) and genes,
+and optionally link SNPs to genes. They are used throughout the project to
+build attention masks and define structured inputs for epistasis analysis and
+SNP2P datasets.
+
+Usage and examples
+------------------
+
+TreeParser
+~~~~~~~~~~
+
+The ontology input should provide parent/child relationships between systems
+(terms) and genes. It can be supplied as a pandas DataFrame or as a path to a
+tabular file with ``parent``, ``child``, and ``interaction`` columns (for
+example ``is_a`` or ``gene``). Once loaded, you can inspect the structure or
+collapse small terms.
+
+.. code-block:: python
+
+   import pandas as pd
+   from g2pt.tree import TreeParser
+
+   # Minimal parent/child ontology with interaction types.
+   ontology_df = pd.DataFrame(
+       {
+           "parent": ["immune_system", "immune_system", "adaptive_immunity"],
+           "child": ["innate_immunity", "adaptive_immunity", "IL7R"],
+           "interaction": ["is_a", "is_a", "gene"],
+       }
+   )
+
+   tree = TreeParser(ontology_df)
+   tree.summary()
+   collapsed_tree = tree.collapse(min_term_size=2)
+
+SNPTreeParser
+~~~~~~~~~~~~~
+
+The SNP mapping file is expected to include at least ``snp`` and ``gene``
+columns (optionally ``chr`` if you plan to use ``by_chr=True``). You can pass
+either file paths or pandas DataFrames.
+
+.. code-block:: python
+
+   from g2pt.tree import SNPTreeParser
+
+   tree_parser = SNPTreeParser(
+       ontology="ontology.tsv",
+       snp2gene="snp2gene.tsv",
+       by_chr=True,
+   )
+   tree_parser.summary()
+
+API documentation
+-----------------
+
 .. class:: TreeParser
 
    Parses and represents a hierarchical ontology of systems and genes.

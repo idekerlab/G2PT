@@ -1,12 +1,18 @@
 SNP2P Trainer
 =============
 
+Overview
+--------
+
 This page documents the SNP2P training utilities, including helper losses and
 the main trainer class. The trainer orchestrates optimization, evaluation, and
 metric reporting for mixed phenotype types (quantitative and binary).
 
+Usage and examples
+------------------
+
 Example: initialize and run training
-------------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
@@ -26,6 +32,9 @@ Example: initialize and run training
        target_phenotype="BMI",
    )
    trainer.train(epochs=10, output_path="checkpoints/snp2p")
+
+API documentation
+-----------------
 
 .. function:: correlation_matching_loss(pred, target, lam=0.05)
 

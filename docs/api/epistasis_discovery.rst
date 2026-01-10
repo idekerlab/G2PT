@@ -1,6 +1,44 @@
 Epistasis Discovery
 ===================
 
+Overview
+--------
+
+The epistasis discovery utilities combine model attention scores with genotype
+data to find significant SNP-SNP interactions within biological systems. The
+workflow filters candidate SNPs, tests pairwise interactions, and validates
+effects with regression models.
+
+Usage and examples
+------------------
+
+Example: run discovery for a system
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   import pandas as pd
+   from g2pt.tree import SNPTreeParser
+   from src.utils.analysis.epistasis import EpistasisFinder
+
+   tree_parser = SNPTreeParser(
+       ontology="ontology.tsv",
+       snp2gene="snp2gene.tsv",
+   )
+   attention_results = pd.read_csv("outputs/attention_scores.csv")
+
+   finder = EpistasisFinder(
+       tree_parser=tree_parser,
+       attention_results=attention_results,
+       tsv="data/genotypes.tsv",
+       cov="data/covariates.tsv",
+       pheno="data/phenotypes.tsv",
+   )
+   pairs, _ = finder.search_epistasis_on_system("immune_system")
+
+API documentation
+-----------------
+
 .. class:: EpistasisFinder
 
    Finds and analyzes epistatic interactions between SNPs within biological systems.
