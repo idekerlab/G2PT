@@ -9,7 +9,7 @@ The class uses `pandas` for data manipulation and `networkx` to represent the on
 The `TreeParser` is initialized with a path to an ontology file and an optional system annotation file.
 
 ```python
-from tree import TreeParser
+from src.utils.tree import TreeParser
 
 # Path to the ontology file (tab-separated: parent, child, interaction_type)
 ontology_file = 'path/to/ontology.tsv'
@@ -19,6 +19,18 @@ annotation_file = 'path/to/annotations.tsv'
 # Initialize the parser
 tree = TreeParser(ontology_file, sys_annot_file=annotation_file)
 ```
+
+### Ontology file format
+
+The ontology file is a tab-separated table with three columns:
+
+1. `parent`: parent system/term ID.
+2. `child`: child system/term ID or gene ID.
+3. `interaction_type`: relationship type (e.g., `is_a`, `part_of`, `gene`).
+
+Use `interaction_type="gene"` for system → gene edges; all other interaction
+types are treated as system → system relationships. This distinction drives
+mask construction and hierarchy traversal.
 
 During initialization (`init_ontology`), the class performs several key setup steps:
 1.  **Loads Data**: Reads the ontology and annotations into pandas DataFrames.
@@ -112,16 +124,52 @@ The `SNPTreeParser` class, located in `src/utils/tree/snp_tree.py`, extends `Tre
 In addition to the `ontology` and `sys_annot_file` arguments from `TreeParser`, `SNPTreeParser` requires a `snp2gene` file.
 
 ```python
-from snp_tree import SNPTreeParser
+from src.utils.tree import SNPTreeParser
 
 # Path to the ontology file
 ontology_file = 'path/to/ontology.tsv'
-# Path to the SNP-to-gene mapping file (tab-separated: snp, gene, chr)
+# Path to the SNP-to-gene mapping file (tab-separated: snp, gene, chr, pos)
 snp2gene_file = 'path/to/snp2gene.tsv'
-
-# Initialize the parser
-snp_tree = SNPTreeParser(ontology_file, snp2gene_file)
 ```
+
+### SNP-to-gene mapping format
+
+The SNP mapping file should be a tab-separated table with at least:
+
+1. `snp`: SNP identifier (string or integer).
+2. `gene`: gene identifier.
+
+Optional columns:
+
+- `chr`: chromosome identifier (required for chromosome filtering and block
+  construction).
+- `pos`: base-pair position used for distance-based filtering in epistasis
+  analysis.
+
+These mappings populate `snp2ind`, `snp2gene`, and `snp2chr`/`snp2pos` lookups,
+and enable system-level SNP aggregation (`sys2snp`).
+
+### Usage example
+
+```python
+from src.utils.tree import SNPTreeParser
+
+tree_parser = SNPTreeParser(
+    ontology=ontology_file,
+    snp2gene=snp2gene_file,
+    by_chr=True,
+)
+
+print(tree_parser.n_systems, tree_parser.n_genes, tree_parser.n_snps)
+tree_parser.summary()
+```
+
+### Downstream usage
+
+The SNP-aware parser is used by datasets and analysis utilities. For example,
+`PLINKDataset` expects a `SNPTreeParser` so it can align SNP indices with
+hierarchical masks, and epistasis discovery uses `sys2snp` to restrict testing
+to biologically relevant subsets.
 
 The `init_ontology_with_snp` method orchestrates the initialization:
 1.  **Initializes Parent**: It first calls the parent `TreeParser.init_ontology` method to build the gene-system hierarchy.
@@ -162,4 +210,3 @@ snp_tree.retain_snps(snps_to_keep, inplace=True)
 
 print(f"Ontology now contains {snp_tree.n_snps} SNPs and {snp_tree.n_genes} genes.")
 ```
-
