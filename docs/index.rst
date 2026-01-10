@@ -17,6 +17,7 @@ G2PT Documentation
    Sankey Visualization <source/sankey_visualization.md>
 
 API Documentation
+==================
 
 .. toctree::
    :maxdepth: 2
@@ -29,9 +30,6 @@ API Documentation
    api/snp2p_trainer_utils
    api/epistasis_discovery
    api/epistasis_retrieval_evaluation
-
-
-
    api/index
 
 Indices and tables
