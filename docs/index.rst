@@ -23,9 +23,11 @@ API Documentation
    :maxdepth: 2
 
    api/snp2phenotype
+   api/snp2p_dataset
+   api/snp2p_trainer
+   api/tree
    api/epistasis_discovery
    api/epistasis_retrieval_evaluation
-   api/tree
 
 
 Indices and tables
