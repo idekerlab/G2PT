@@ -1,8 +1,30 @@
 SNP2P Model Utilities
 =====================
 
+Overview
+--------
+
 This page documents model helper layers that are shared across SNP2P
 architectures.
+
+Usage and examples
+------------------
+
+Example: apply a FiLM layer
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   import torch
+   from src.model.utils import FiLM
+
+   film = FiLM(in_cov=4, hid=16)
+   covariates = torch.randn(8, 4)
+   features = torch.randn(8, 10, 16)
+   modulated = film(features, covariates)
+
+API documentation
+-----------------
 
 .. class:: FiLM
 

@@ -1,8 +1,30 @@
 SNP2P Trainer Utilities
 =======================
 
+Overview
+--------
+
 This page documents loss functions and utility helpers used by the SNP2P
 training loop.
+
+Usage and examples
+------------------
+
+Example: compute focal loss
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   import torch
+   from src.utils.trainer.loss import FocalLoss
+
+   loss_fn = FocalLoss(alpha=0.25, gamma=2.0)
+   logits = torch.randn(8, 1)
+   targets = torch.randint(0, 2, (8, 1)).float()
+   loss = loss_fn(logits, targets)
+
+API documentation
+-----------------
 
 .. class:: CCCLoss
 
