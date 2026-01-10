@@ -12,23 +12,10 @@ G2PT Documentation
 
    Home <self>
    Overview <source/readthedocs_overview.md>
+   Tree Parser <source/tree_parser.md>
    Epistasis Analysis <source/epistasis_analysis.md>
    Sankey Visualization <source/sankey_visualization.md>
-
-API Documentation
-=================
-
-.. toctree::
-   :maxdepth: 2
-   api/tree
-   api/snp2phenotype
-   api/snp2p_dataset
-   api/snp2p_trainer
-   api/epistasis_discovery
-   api/epistasis_retrieval_evaluation
-
-
-
+   API Documentation <api/index>
 
 Indices and tables
 ==================

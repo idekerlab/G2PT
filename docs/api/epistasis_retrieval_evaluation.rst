@@ -1,6 +1,50 @@
 Epistasis Retrieval Evaluation
 ==============================
 
+Overview
+--------
+
+These utilities evaluate epistasis retrieval by comparing discovered SNP pairs
+against known causal interactions. They coordinate loading attention scores,
+genotypes, and ontology mappings, then compute retrieval metrics for top-ranked
+systems.
+
+Usage and examples
+------------------
+
+Example: configure and run evaluation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   from src.utils.analysis.epistasis_retrieval_evaluation import (
+       EvaluationConfig,
+       EpistasisRetrievalEvaluator,
+   )
+
+   config = EvaluationConfig(
+       causal_info="data/causal.json",
+       system_importance="outputs/system_importance.csv",
+       attention_results="outputs/attention_scores.csv",
+       tsv="data/genotypes.tsv",
+       pheno="data/phenotypes.tsv",
+       cov="data/covariates.tsv",
+       onto="ontology.tsv",
+       snp2gene="snp2gene.tsv",
+       top_n_systems=50,
+       output_prefix="outputs/epistasis_eval",
+       num_workers=4,
+       executor_type="process",
+       quantiles=(0.9, 0.95),
+       snp_threshold=50,
+   )
+
+   evaluator = EpistasisRetrievalEvaluator(config)
+   evaluator.evaluate()
+
+API documentation
+-----------------
+
 .. class:: EvaluationConfig
 
    Configuration container for epistasis retrieval evaluation inputs and settings.

@@ -1,14 +1,20 @@
 SNP2P Dataset
 =============
 
+Overview
+--------
+
 This page summarizes the dataset and data-collation utilities used by SNP2P
 training. The datasets build genotype indices that align with the
 ``SNPTreeParser`` catalogs and emit dictionaries that the model consumes via
 the collators. Use these classes to load genotype sources (TSV or PLINK),
 attach covariates/phenotypes, and optionally enable block/chunk processing.
 
+Usage and examples
+------------------
+
 Example: load a PLINK dataset
------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
@@ -26,7 +32,7 @@ Example: load a PLINK dataset
    )
 
 Example: create a collated batch
---------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
@@ -37,6 +43,9 @@ Example: create a collated batch
    loader = DataLoader(dataset, batch_size=8, shuffle=True, collate_fn=collator)
    batch = next(iter(loader))
    # batch["genotype"]["snp"], batch["covariates"], batch["phenotype"]
+
+API documentation
+-----------------
 
 .. class:: GenotypeDataset
 
