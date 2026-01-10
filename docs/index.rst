@@ -17,7 +17,6 @@ G2PT Documentation
    Sankey Visualization <source/sankey_visualization.md>
 
 API Documentation
-=================
 
 .. toctree::
    :maxdepth: 2
