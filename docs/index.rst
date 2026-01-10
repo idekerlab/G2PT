@@ -25,6 +25,8 @@ API Documentation
    api/snp2phenotype
    api/epistasis_discovery
    api/epistasis_retrieval_evaluation
+   api/snp2p_dataset
+   api/snp2p_trainer
    api/tree
 
 
