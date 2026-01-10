@@ -27,6 +27,9 @@ API Documentation
    api/tree
    api/epistasis_discovery
    api/epistasis_retrieval_evaluation
+   api/snp2p_dataset
+   api/snp2p_trainer
+   api/tree
 
 
 Indices and tables
