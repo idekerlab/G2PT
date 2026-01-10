@@ -20,16 +20,14 @@ API Documentation
 
 .. toctree::
    :maxdepth: 2
-
+   api/tree
    api/snp2phenotype
    api/snp2p_dataset
    api/snp2p_trainer
-   api/tree
    api/epistasis_discovery
    api/epistasis_retrieval_evaluation
-   api/snp2p_dataset
-   api/snp2p_trainer
-   api/tree
+
+
 
 
 Indices and tables
