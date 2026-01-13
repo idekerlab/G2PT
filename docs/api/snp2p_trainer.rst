@@ -17,7 +17,7 @@ Example: initialize and run training
 .. code-block:: python
 
    from torch.utils.data import DataLoader
-   from src.utils.data.dataset.SNP2PDataset import SNP2PCollator, PLINKDataset
+   from src.utils.data.dataset import SNP2PCollator, PLINKDataset
    from src.utils.trainer.snp2p_trainer import SNP2PTrainer
 
    dataset = PLINKDataset(tree_parser, bfile="data/geno/plink_prefix", cov="cov.tsv", pheno="pheno.tsv")

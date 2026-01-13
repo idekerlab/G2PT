@@ -19,7 +19,7 @@ Example: load a PLINK dataset
 .. code-block:: python
 
    from src.utils.tree import SNPTreeParser
-   from src.utils.data.dataset.SNP2PDataset import PLINKDataset
+   from src.utils.data.dataset import PLINKDataset
 
    tree_parser = SNPTreeParser(ontology="ontology.tsv", snp2gene="snp2gene.tsv")
    dataset = PLINKDataset(
@@ -37,7 +37,7 @@ Example: create a collated batch
 .. code-block:: python
 
    from torch.utils.data import DataLoader
-   from src.utils.data.dataset.SNP2PDataset import SNP2PCollator
+   from src.utils.data.dataset import SNP2PCollator
 
    collator = SNP2PCollator(tree_parser=tree_parser, input_format="indices")
    loader = DataLoader(dataset, batch_size=8, shuffle=True, collate_fn=collator)
