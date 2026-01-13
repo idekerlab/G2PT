@@ -12,3 +12,4 @@ API Documentation
    snp2p_trainer_utils
    epistasis_discovery
    epistasis_retrieval_evaluation
+   epistasis_simulation
