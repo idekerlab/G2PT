@@ -11,6 +11,24 @@ is aligned with the simulated causal structure.
 
 For a full walkthrough, see the notebook: [`Epistasis_simulation.ipynb`](../../Epistasis_simulation.ipynb).
 
+## Key features
+
+- **Additive + epistatic signal control**: Allocate separate heritability budgets
+  for additive and pairwise interaction effects.
+- **LD-aware genotypes**: Optionally simulate LD blocks and correlated SNPs.
+- **Ontology-aligned mappings**: Generate SNP→Gene and Gene→System mappings that
+  align with the simulated causal pairs, with tunable system coherence.
+- **Export-ready artifacts**: Write out `genotypes.tsv`, `simulation.pheno`,
+  `simulation.cov`, `ontology.tsv`, and `snp2gene.tsv` for downstream pipelines.
+
+## Workflow overview
+
+1. Configure simulation hyperparameters.
+2. Simulate genotypes (`G`) and phenotype (`y`).
+3. Build an ontology and mapping files aligned to the simulation.
+4. Export data, ontology, and causal metadata to disk.
+5. Train a model, predict attention, and evaluate epistasis retrieval.
+
 ## Usage
 
 ### Configure the simulation
@@ -26,6 +44,9 @@ n_additive = 100
 ```
 
 ### Simulate genotypes and phenotypes
+
+The main simulation returns a dictionary with genotype matrix `G`, phenotype `y`,
+and causal SNP indices and pairs.
 
 ```python
 from src.utils.analysis.epistasis_simulation import simulate_epistasis
@@ -47,6 +68,11 @@ print(len(sim["pair_idx"]))
 
 ### Build a hierarchical ontology aligned to the simulation
 
+`build_hierarchical_ontology` maps simulated SNPs to genes and systems and
+builds a multi-level system hierarchy. The `ontology_coherence` parameter
+controls whether epistatic pairs are placed in the same, related, or distant
+systems.
+
 ```python
 from src.utils.analysis.epistasis_simulation import build_hierarchical_ontology
 
@@ -65,6 +91,10 @@ system_df.to_csv("system_hierarchy.tsv", sep="\t", index=False)
 ```
 
 ### Export genotypes, phenotypes, and covariates
+
+The model training and evaluation utilities expect TSV files for genotypes,
+phenotypes, and covariates. The notebook uses IID/FID pairs to keep identifiers
+consistent across files.
 
 ```python
 import pandas as pd
@@ -93,6 +123,10 @@ cov_df.to_csv(f"{output_dir}/simulation.cov", index=False, sep="\t")
 
 ### Export ontology and causal metadata
 
+The ontology file combines gene-to-system and system-to-supersystem edges into
+a single `parent`, `child`, `interaction` format expected by the training and
+analysis pipelines. The causal metadata file is used later for evaluation.
+
 ```python
 import json
 
@@ -119,6 +153,9 @@ with open(f"{output_dir}/causal_info.json", "w") as f:
 ```
 
 ### Train, predict attention, and evaluate retrieval
+
+Once the artifacts are saved, you can train a model, compute attention scores,
+and run epistasis retrieval evaluation as in the notebook.
 
 ```bash
 python train_snp2p_model.py \
@@ -178,6 +215,24 @@ evaluator = EpistasisRetrievalEvaluator(config)
 evaluator.evaluate()
 ```
 
+### Optional: statistical sanity checks
+
+The notebook includes quick checks to verify that additive and interaction
+effects are detectable in the synthetic dataset. For example, you can fit a
+linear model per SNP for additive signals and evaluate interaction terms for
+known epistatic pairs.
+
+```python
+import statsmodels.api as sm
+
+results = []
+for snp in genotypes.columns:
+    df_snp = df_full[["phenotype", "SEX", "AGE", snp]].dropna()
+    X = sm.add_constant(df_snp[["SEX", "AGE", snp]])
+    model = sm.OLS(df_snp["phenotype"], X).fit()
+    results.append((snp, model.pvalues[snp]))
+```
+
 ## Outputs
 
 - `simulate_epistasis` returns a dictionary with the genotype matrix, phenotype,
@@ -185,3 +240,10 @@ evaluator.evaluate()
 - `build_hierarchical_ontology` returns three DataFrames suitable for use with
   tree utilities and downstream analyses: SNP-to-gene, gene-to-system, and the
   system hierarchy.
+- Exported artifacts on disk typically include:
+  - `genotypes.tsv`: Genotype dosages with IID index.
+  - `simulation.pheno`: Phenotype values with FID/IID.
+  - `simulation.cov`: Covariates (e.g., SEX, AGE) with FID/IID.
+  - `ontology.tsv`: Combined system and gene edges for the parser.
+  - `snp2gene.tsv`: SNP-to-gene mapping.
+  - `causal_info.json`: Ground-truth additive SNPs and epistatic pairs.
