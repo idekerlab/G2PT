@@ -183,3 +183,6 @@ Read [Epistasis_simulation.ipynb](Epistasis_simulation.ipynb)
 - [x] Build data loader for `plink` binary file using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/).
 - [x] Adding `.cov` and `.pheno` for input.
 - [x] Change model for multiple phenotypes.
+- [ ] Refactor to use config for the consistency and 
+- [ ] Implementing new importance methods
+- [ ] Implementing causalty model like MR
