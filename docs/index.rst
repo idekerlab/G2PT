@@ -14,6 +14,7 @@ G2PT Documentation
    Overview <source/readthedocs_overview.md>
    Tree Parser <source/tree_parser.md>
    Epistasis Analysis <source/epistasis_analysis.md>
+   Epistasis Simulation <source/epistasis_simulation.md>
    Sankey Visualization <source/sankey_visualization.md>
 
 API Documentation
@@ -31,6 +32,7 @@ API Documentation
    api/snp2p_trainer_utils
    api/epistasis_discovery
    api/epistasis_retrieval_evaluation
+   api/epistasis_simulation
 
 Indices and tables
 ==================
