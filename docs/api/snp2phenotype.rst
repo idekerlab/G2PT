@@ -1,6 +1,40 @@
 SNP2Phenotype
 =============
 
+Overview
+--------
+
+A hierarchical transformer model to predict phenotypes from genotypes, guided by
+a biological ontology. This model translates SNP-level genetic information up
+through a biological hierarchy (SNPs -> Genes -> Biological Systems) to predict
+one or more phenotypes.
+
+Usage and examples
+------------------
+
+Example: initialize the model
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   from g2pt.tree import SNPTreeParser
+   from src.model.model.snp2phenotype import SNP2PhenotypeModel
+
+   tree_parser = SNPTreeParser(
+       ontology="ontology.tsv",
+       snp2gene="snp2gene.tsv",
+   )
+
+   model = SNP2PhenotypeModel(
+       tree_parser=tree_parser,
+       hidden_dims=128,
+       n_covariates=4,
+       n_phenotypes=1,
+   )
+
+API documentation
+-----------------
+
 .. class:: SNP2PhenotypeModel
 
    A hierarchical transformer model to predict phenotypes from genotypes, guided by a biological ontology.

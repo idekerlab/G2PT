@@ -2,8 +2,7 @@
 
 ## Overview
 
-Genome-wide association studies have linked millions of genetic variants to human phenotypes, but translating this information clinically has been challenged by limited biological interpretability and widespread genetic interactions. G2PT is a hierarchical Genotype-to-Phenotype Transformer that models bidirectional information flow among polymorphisms, genes, molecular systems, and phenotypes. It has been used to predict metabolic traits in the UK Biobank (e.g., diabetes risk and TG/HDL ratio) and to surface pathway-level explanations through attention weights.
-
+Genome-wide association studies have linked millions of genetic variants to human phenotypes, yet translating those findings into clinical insight is limited by interpretability and genetic interactions. G2PT is a hierarchical Genotype-to-Phenotype Transformer that models bidirectional information flow among polymorphisms, genes, molecular systems, and phenotypes. It has been applied to predict metabolic traits in the UK Biobank (e.g., diabetes risk and TG/HDL ratio) and to surface pathway-level explanations through attention weights.
 
 ![Figure_1](./Figures/Figure_1.jpg)
 
@@ -127,7 +126,7 @@ torchrun --nproc_per_node=4 train_snp2p_model.py \
   --out outputs/run_ddp
 ```
 
- Frequently used options include `--snp2pheno` / `--gene2pheno` / `--sys2pheno` to control translation heads, `--mlm` for masked-SNP pretraining, and `--independent_predictors` for multi-phenotype outputs.
+Frequently used options include `--snp2pheno` / `--gene2pheno` / `--sys2pheno` to control translation heads, `--mlm` for masked-SNP pretraining, and `--independent_predictors` for multi-phenotype outputs.
 
 ## Prediction and attention export
 
@@ -153,6 +152,10 @@ Outputs include:
 
 TSV inputs are supported via `--tsv` in place of `--bfile`.
 
+## Documentation and API reference
+
+The full documentation (including the API reference) is available at: https://g2pt.readthedocs.io/en/latest/index.html
+
 ## G2PT pipeline in overall
 
 1. **Collapse Gene Ontology with your GWAS results**
@@ -168,7 +171,11 @@ TSV inputs are supported via `--tsv` in place of `--bfile`.
 4. **Analyze attention and epistasis**
    - Visualize high-importance systems: [Draw_ontology_with_highlighted_systems.ipynb](Draw_ontology_with_highlighted_systems.ipynb).
    - Plot attention flow: [Draw_Sankey.ipynb](Draw_Sankey.ipynb).
-   - Search and visualize epistasis: [Epistasis_pipeline.ipynb](Epistasis_pipeline.ipynb).
+   - Search and visualize epistasis: [Epistasis_discovery_pipeline.ipynb](Epistasis_discovery_pipeline.ipynb).
+
+## Epistasis Simulation
+
+Read [Epistasis_simulation.ipynb](Epistasis_simulation.ipynb)
 
 ## Future work
 
@@ -176,3 +183,6 @@ TSV inputs are supported via `--tsv` in place of `--bfile`.
 - [x] Build data loader for `plink` binary file using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/).
 - [x] Adding `.cov` and `.pheno` for input.
 - [x] Change model for multiple phenotypes.
+- [ ] Refactor to use config for the consistency and 
+- [ ] Implementing new importance methods
+- [ ] Implementing causalty model like MR
