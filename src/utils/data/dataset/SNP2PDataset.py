@@ -6,7 +6,6 @@ from .samplers import (
     CohortSampler,
     DistributedBinaryCohortSampler,
     DistributedCohortSampler,
-    DynamicPhenotypeBatchSampler,
 )
 from .tokenizers import SNPTokenizer
 
@@ -18,7 +17,6 @@ __all__ = [
     "CohortSampler",
     "DistributedBinaryCohortSampler",
     "DistributedCohortSampler",
-    "DynamicPhenotypeBatchSampler",
     "EmbeddingDataset",
     "GenotypeDataset",
     "PLINKDataset",

@@ -9,9 +9,12 @@ from sklearn.cluster import AgglomerativeClustering
 import obonet
 import re
 
+from src.utils.config import TreeConfig
+
 class TreeParser(object):
 
     def __init__(self, ontology, dense_attention=False, sys_annot_file=None):
+        self.onto = ontology
         if isinstance(ontology, pd.DataFrame):
             ontology_df = ontology
         else:
@@ -136,7 +139,6 @@ class TreeParser(object):
         if obj.dense_attention:
             obj.gene2sys_mask = torch.ones_like(torch.tensor(obj.gene2sys_mask))
         obj.sys2gene_mask = obj.gene2sys_mask.T
-        obj.subtree_types = obj.sys_df['interaction'].unique()
 
         obj.node_height_dict = obj.compute_node_heights()
 
@@ -182,7 +184,7 @@ class TreeParser(object):
             print("%d Genes are queried" % obj.n_genes)
             #print("Total %d Gene-System interactions are queried" % obj.gene2sys_mask.sum())
             print("Building descendant dict")
-            print("Subtree types: ", obj.subtree_types)
+            print("Subtree types: ", obj.interaction_types)
         if not inplace:
             return obj
 
@@ -1130,3 +1132,11 @@ class TreeParser(object):
 
         if not inplace:
             return obj
+
+
+    def build_config(self):
+
+        return TreeConfig(n_systems=self.n_systems, sys2ind=self.sys2ind, ind2sys=self.ind2sys,
+                          n_genes=self.n_genes, gene2ind=self.gene2ind, ind2gene=self.ind2gene,
+                          interaction_types=self.interaction_types,
+                          onto=self.onto)

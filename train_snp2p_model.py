@@ -91,7 +91,7 @@ def main():
     parser.add_argument('--snp2gene', help='SNP to gene mapping file', type=str)
     parser.add_argument('--interaction-types', help='Subtree cascading order', nargs='+', default=['default'])
 
-    # Train bfile format
+    # data
     parser.add_argument('--train-bfile', help='Training genotype dataset', type=str, default=None)
     parser.add_argument('--train-tsv', help='Path to directory with training genotype, covariate, and phenotype TSV files', type=str, default=None)
     parser.add_argument('--train-cov', help='Training covariates dataset', type=str, default=None)
@@ -104,6 +104,9 @@ def main():
     parser.add_argument('--test-bfile', help='Test dataset', type=str, default=None)
     parser.add_argument('--test-cov', help='Validation covariates dataset', type=str, default=None)
     parser.add_argument('--test-pheno', help='Validation covariates dataset', type=str, default=None)
+    parser.add_argument('--input-format', help='input format', type=str, default='plink')
+
+    # data
     parser.add_argument('--cov-ids', nargs='*', default=[])
     parser.add_argument('--flip', action='store_true', default=False)
     parser.add_argument('--pheno-ids', nargs='*', default=[])
@@ -231,8 +234,11 @@ def main_worker(args):
     else:
         multiple_phenotypes = False
 
-    tree_parser = SNPTreeParser(args.onto, args.snp2gene, dense_attention=args.dense_attention, multiple_phenotypes=multiple_phenotypes,
+    tree_parser = SNPTreeParser(args.onto, args.snp2gene,
+                                dense_attention=args.dense_attention,
+                                multiple_phenotypes=multiple_phenotypes,
                                 block_bias=args.block_bias)
+    args.block = hasattr(tree_parser, 'blocks')
     #chunker = MaskBasedChunker(snp2gene_mask=tree_parser.snp2gene_mask, gene2sys_mask=tree_parser.gene2sys_mask, target_chunk_size=20000)
     fix_system = False
     '''
@@ -273,12 +279,6 @@ def main_worker(args):
     #snp2p_collator = ChunkSNP2PCollator(tree_parser, chunker=chunker, input_format=args.input_format)
 
     print("Summary of trainable parameters")
-    if args.sys2env:
-        print("Model will use Sys2Env")
-    if args.env2sys:
-        print("Model will use Env2Sys")
-    if args.sys2gene:
-        print("Model will use Sys2Gene")
     if args.model is not None:
         snp2p_model_dict = torch.load(args.model, map_location=device)
         print(args.model, 'loaded')
@@ -312,9 +312,7 @@ def main_worker(args):
                                          use_hierarchical_transformer=args.use_hierarchical_transformer,
                                          use_moe=args.use_moe, use_independent_predictors=args.independent_predictors,
                                          prediction_head=args.prediction_head)
-        #snp2p_model = snp2p_model.half()
-        #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
-        #snp2p_model = torch.compile(snp2p_model, fullgraph=True)
+
         args.start_epoch = 0
 
     if args.distributed:
@@ -322,9 +320,10 @@ def main_worker(args):
         # should always set the single device scope, otherwise,
         # DistributedDataParallel will use all available devices.
         print("Distributed trainings are set up")
-        args.jobs = int((args.jobs) / args.world_size)
+        args.jobs = int(args.jobs / args.world_size)
         snp2p_model = snp2p_model.to(device)
-        snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[gpu], output_device=gpu, find_unused_parameters=True)
+        snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[gpu], output_device=gpu,
+                                                                find_unused_parameters=True)
     elif args.cuda is not None:
         snp2p_model = snp2p_model.to(device)
         print("Model is loaded at GPU(%d)" % args.cuda)

@@ -8,25 +8,6 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler, RandomSampler, Sampler
 
 
-class DynamicPhenotypeBatchSampler(BatchSampler):
-    def __init__(self, dataset, batch_size, drop_last=False):
-        super().__init__(RandomSampler(dataset), batch_size=batch_size, drop_last=drop_last)
-        self.dataset = dataset
-
-    def __iter__(self):
-        # super().__iter__() yields lists of indices, one per batch
-        for batch_indices in super().__iter__():
-            # print(batch_indices)
-            # sample once per batch
-            # print("Yiedling..")
-            n = random.randint(1, self.dataset.n_pheno)
-            pheno_list, subtree = self.dataset.sample_phenotypes(n=n, build_subtree=True)
-            # stash into dataset so __getitem__ will see it
-            self.dataset.subtree = subtree
-            self.dataset.subtree_phenotypes = pheno_list
-
-            yield batch_indices
-
 
 class CohortSampler(Sampler):
     def __init__(self, dataset, n_samples=None, phenotype_col="phenotype", z_weight=1, sex_col=2):

@@ -14,12 +14,42 @@ class DatasetConfig:
     test_cov: Optional[str] = None
     test_pheno: Optional[str] = None
     cov_ids: Sequence[str] = field(default_factory=list)
-    pheno_ids: Sequence[str] = field(default_factory=list)
+
     bt: Sequence[str] = field(default_factory=list)
     qt: Sequence[str] = field(default_factory=list)
     flip: bool = False
+    block: bool = False
     input_format: str = "indices"
     subsample: Optional[int] = None
+
+    @property
+    def pheno_ids(self) -> tuple:
+        return tuple(list(self.qt) + list(self.bt))
+
+    @property
+    def pheno2ind(self) -> dict[str, int]:
+        return {p: i for i, p in enumerate(self.pheno_ids)}
+
+    @property
+    def ind2pheno(self) -> dict[int, str]:
+        return {i: p for i, p in enumerate(self.pheno_ids)}
+
+    @property
+    def qt_ind(self) -> dict[str, int]:
+        return {q: i for i, q in enumerate(self.qt)}
+
+    @property
+    def bt_ind(self) -> dict[str, int]:
+        return {b: i for i, b in enumerate(self.bt)}
+
+    @property
+    def pheno2type(self) -> dict[str, str]:
+        pheno2type = {}
+        for pheno in self.qt:
+            pheno2type[pheno] = "qt"
+        for pheno in self.bt:
+            pheno2type[pheno] = "bt"
+        return pheno2type
 
     @classmethod
     def from_namespace(cls, args: SimpleNamespace):

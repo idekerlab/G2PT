@@ -25,7 +25,6 @@ class GenotypeDataset(Dataset):
         pheno_ids=(),
         bt=(),
         qt=(),
-        dynamic_phenotype_sampling=False,
     ):
         self.tree_parser = tree_parser
         self.n_snp2pad = int(np.ceil((self.tree_parser.n_snps + 1) / 8)) * 8 - self.tree_parser.n_snps
@@ -41,7 +40,6 @@ class GenotypeDataset(Dataset):
         sys_idx = torch.arange(self.tree_parser.n_systems + 1, dtype=torch.long)
         sys_idx = torch.cat((sys_idx, torch.full((self.n_sys2pad,), self.sys_pad, dtype=torch.long)))
         self.sys_idx = sys_idx  # (L_sys,)
-        self.dynamic_phenotype_sampling = dynamic_phenotype_sampling
 
         self.snp_range = list(range(self.tree_parser.n_snps + self.n_snp2pad))
         self.block_range = list(range(self.tree_parser.n_snps + self.n_snp2pad))
@@ -91,6 +89,9 @@ class GenotypeDataset(Dataset):
         else:
             self.pheno_df = None  # will be initialized in child class = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
             self.pheno_df = self.pheno_df.fillna(-9)
+
+
+        '''
         self.pheno2ind = {pheno: i for i, pheno in enumerate(self.pheno_ids)}
         self.ind2pheno = {i: pheno for i, pheno in enumerate(self.pheno_ids)}
         self.pheno2type = {}
@@ -116,9 +117,11 @@ class GenotypeDataset(Dataset):
         self.has_phenotype = False
         if ("PHENOTYPE" in self.cov_df.columns) or (pheno is not None):
             self.has_phenotype = True
+        '''
         print("Phenotypes: ", self.pheno_ids)
         print("Phenotype index: ", self.pheno2ind)
         print("Phenotype data type: ", self.pheno2type)
+
 
     def is_binary(self, array):
         return np.isin(array, [0, 1]).all()
