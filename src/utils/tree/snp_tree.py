@@ -5,6 +5,7 @@ import math
 from . import TreeParser
 import re
 from collections import deque
+from src.utils.config import SNPTreeConfig
 
 
 
@@ -22,6 +23,7 @@ class SNPTreeParser(TreeParser):
         #super().__init__(ontology,
         #                 dense_attention=dense_attention,
         #                 sys_annot_file=sys_annot_file)
+        self.snp2gene = snp2gene
         ontology = pd.read_csv(ontology, sep='\t', names=['parent', 'child', 'interaction'])
         self.dense_attention = dense_attention
         if sys_annot_file:
@@ -40,9 +42,6 @@ class SNPTreeParser(TreeParser):
                            snp2gene,
                            inplace=True,
                            multiple_phenotypes=multiple_phenotypes)
-
-
-
 
 
     def init_ontology_with_snp(self,
@@ -66,7 +65,7 @@ class SNPTreeParser(TreeParser):
             parser.snp2gene_df = pd.read_csv(snp2gene, sep='\t')
         else:
             parser.snp2gene_df = snp2gene.copy()
-        print(parser.snp2gene_df.head())
+        
         
         # Conditionally sort by position if available
         sort_columns = []
@@ -81,6 +80,7 @@ class SNPTreeParser(TreeParser):
             parser.snp2gene_df = parser.snp2gene_df.sort_values(by=sort_columns).reset_index(drop=True)
 
         if 'block' in parser.snp2gene_df.columns:
+            parser.block = True
             parser.blocks = sorted(list(
                 parser.snp2gene_df[["chr", "block"]].drop_duplicates().sort_values(["chr", "block"]).itertuples(
                     index=False, name=None)))
@@ -110,6 +110,12 @@ class SNPTreeParser(TreeParser):
             for i, row in parser.snp2gene_df.drop_duplicates(subset=['gene']).iterrows():
                 parser.gene2block[row.gene] = (row.chr, row.block)
                 parser.block2gene[(row.chr, row.block)].append(row.gene)
+        else:
+            parser.block = False
+            parser.n_blocks = None
+            parser.block2ind = None
+            parser.ind2block = None
+
             #parser.block2sig_ind = {block: sorted(list(set(sig_inds))) for block, sig_inds in parser.block2sig_ind.items()}
         #else:
         #    parser.snp2gene_df = parser.snp2gene_df.sort_values(by=["chr", "snp"]).reset_index(drop=True)
@@ -928,4 +934,12 @@ class SNPTreeParser(TreeParser):
         if not union:
             return None
         return len(ancestors_a & ancestors_b) / len(union)
+
+    def build_config(self):
+        return SNPTreeConfig(n_systems=self.n_systems, sys2ind=self.sys2ind, ind2sys=self.ind2sys,
+                             n_genes=self.n_genes, gene2ind=self.gene2ind, ind2gene=self.ind2gene,
+                             interaction_types=self.interaction_types, onto=self.onto,
+                             n_snps=self.n_snps, snp2ind=self.snp2ind, ind2snp=self.ind2snp,
+                             block=self.block, n_blocks=self.n_blocks, block2ind=self.block2ind, ind2block=self.ind2block,
+                             snp2gene=self.snp2gene)
 
