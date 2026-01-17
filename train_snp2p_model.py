@@ -25,9 +25,46 @@ from src.utils.data.dataset import SNP2PCollator, PLINKDataset
 from src.utils.data.dataset import TSVDataset
 from src.utils.tree import SNPTreeParser
 from src.utils.trainer import SNP2PTrainer
+from src.utils.config.data_config import create_dataset_config
+from src.utils.config.model_config import ModelConfig
 from datetime import timedelta
 
 from torch.utils.data.dataloader import DataLoader
+
+class SNP2PDatasetFactory:
+    @staticmethod
+    def create_dataset(
+        tree_parser,
+        dataset_path,
+        dataset_kind,
+        dataset_config,
+        cov_path=None,
+        pheno_path=None,
+        cov_mean_dict=None,
+        cov_std_dict=None,
+    ):
+        if not dataset_path:
+            return None
+
+        if dataset_kind == "tsv":
+            dataset_cls = TSVDataset
+        else:
+            dataset_cls = PLINKDataset
+
+        return dataset_cls(
+            tree_parser,
+            dataset_path,
+            cov_path,
+            pheno_path,
+            cov_mean_dict=cov_mean_dict,
+            cov_std_dict=cov_std_dict,
+            flip=dataset_config.flip,
+            input_format=dataset_config.input_format,
+            cov_ids=dataset_config.cov_ids,
+            pheno_ids=dataset_config.pheno_ids,
+            bt=dataset_config.bt,
+            qt=dataset_config.qt,
+        )
 
 def count_parameters(model):
     table = PrettyTable(["Modules", "Parameters", "Trainable"])
@@ -234,10 +271,13 @@ def main_worker(args):
     else:
         multiple_phenotypes = False
 
-    tree_parser = SNPTreeParser(args.onto, args.snp2gene,
-                                dense_attention=args.dense_attention,
+    model_config = ModelConfig.from_namespace(args)
+    dataset_config = create_dataset_config(args)
+
+    tree_parser = SNPTreeParser(model_config.onto, model_config.snp2gene,
+                                dense_attention=model_config.dense_attention,
                                 multiple_phenotypes=multiple_phenotypes,
-                                block_bias=args.block_bias)
+                                block_bias=model_config.block_bias)
     args.block = hasattr(tree_parser, 'blocks')
     #chunker = MaskBasedChunker(snp2gene_mask=tree_parser.snp2gene_mask, gene2sys_mask=tree_parser.gene2sys_mask, target_chunk_size=20000)
     fix_system = False
@@ -252,16 +292,21 @@ def main_worker(args):
     '''
     if args.train_tsv:
         print("Loading TSV data from %s" % args.train_tsv)
-        snp2p_dataset = TSVDataset(tree_parser, args.train_tsv, args.train_cov, args.train_pheno, flip=args.flip,
-                                     input_format=args.input_format,
-                                     cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
     else:
         print("Loading PLINK bfile... at %s" % args.train_bfile)
-        snp2p_dataset = PLINKDataset(tree_parser, args.train_bfile, args.train_cov, args.train_pheno, flip=args.flip,
-                                     input_format=args.input_format,
-                                     cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
-    if args.subsample:
-        snp2p_dataset.sample_population(n=args.subsample)
+
+    train_dataset_path = args.train_tsv or args.train_bfile
+    train_dataset_kind = "tsv" if args.train_tsv else "plink"
+    snp2p_dataset = SNP2PDatasetFactory.create_dataset(
+        tree_parser,
+        train_dataset_path,
+        train_dataset_kind,
+        dataset_config,
+        cov_path=dataset_config.train_cov,
+        pheno_path=dataset_config.train_pheno,
+    )
+    if dataset_config.subsample:
+        snp2p_dataset.sample_population(n=dataset_config.subsample)
     args.bt_inds = snp2p_dataset.bt_inds
     args.qt_inds = snp2p_dataset.qt_inds
     args.bt = snp2p_dataset.bt
@@ -275,24 +320,24 @@ def main_worker(args):
     args.cov_std_dict = snp2p_dataset.cov_std_dict
     print("Loading done...")
 
-    snp2p_collator = SNP2PCollator(tree_parser, input_format=args.input_format, mlm=args.mlm)
+    snp2p_collator = SNP2PCollator(tree_parser, input_format=dataset_config.input_format, mlm=args.mlm)
     #snp2p_collator = ChunkSNP2PCollator(tree_parser, chunker=chunker, input_format=args.input_format)
 
     print("Summary of trainable parameters")
     if args.model is not None:
         snp2p_model_dict = torch.load(args.model, map_location=device)
         print(args.model, 'loaded')
-        snp2p_model = SNP2PhenotypeModel(tree_parser, args.hidden_dims,
-                                         sys2pheno=args.sys2pheno, gene2pheno=args.gene2pheno, snp2pheno=args.snp2pheno,
-                                         interaction_types=args.interaction_types,
-                                         dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
+        snp2p_model = SNP2PhenotypeModel(tree_parser, model_config.hidden_dims,
+                                         sys2pheno=model_config.sys2pheno, gene2pheno=model_config.gene2pheno, snp2pheno=model_config.snp2pheno,
+                                         interaction_types=model_config.interaction_types,
+                                         dropout=model_config.dropout, n_covariates=snp2p_dataset.n_cov,
                                          phenotypes=snp2p_dataset.pheno_ids,
                                          ind2pheno=snp2p_dataset.ind2pheno,
-                                         activation='softmax', input_format=args.input_format,
-                                         cov_effect=args.cov_effect, use_hierarchical_transformer=args.use_hierarchical_transformer,
-                                         n_heads=args.n_heads,
-                                         use_moe=args.use_moe, use_independent_predictors=args.independent_predictors,
-                                         prediction_head=args.prediction_head)
+                                         activation='softmax', input_format=dataset_config.input_format,
+                                         cov_effect=model_config.cov_effect, use_hierarchical_transformer=model_config.use_hierarchical_transformer,
+                                         n_heads=model_config.n_heads,
+                                         use_moe=model_config.use_moe, use_independent_predictors=model_config.independent_predictors,
+                                         prediction_head=model_config.prediction_head)
         print(args.model, 'initialized')
         snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
         if args.model.split('.')[-1].isdigit():
@@ -301,17 +346,17 @@ def main_worker(args):
             args.start_epoch = 0
 
     else:
-        snp2p_model = SNP2PhenotypeModel(tree_parser, args.hidden_dims,
-                                         sys2pheno=args.sys2pheno, gene2pheno=args.gene2pheno, snp2pheno=args.snp2pheno,
-                                         interaction_types=args.interaction_types,
-                                         dropout=args.dropout, n_covariates=snp2p_dataset.n_cov,
-                                         activation='softmax', input_format=args.input_format,
+        snp2p_model = SNP2PhenotypeModel(tree_parser, model_config.hidden_dims,
+                                         sys2pheno=model_config.sys2pheno, gene2pheno=model_config.gene2pheno, snp2pheno=model_config.snp2pheno,
+                                         interaction_types=model_config.interaction_types,
+                                         dropout=model_config.dropout, n_covariates=snp2p_dataset.n_cov,
+                                         activation='softmax', input_format=dataset_config.input_format,
                                          phenotypes=snp2p_dataset.pheno_ids,
                                          ind2pheno=snp2p_dataset.ind2pheno,
-                                         n_heads=args.n_heads,
-                                         use_hierarchical_transformer=args.use_hierarchical_transformer,
-                                         use_moe=args.use_moe, use_independent_predictors=args.independent_predictors,
-                                         prediction_head=args.prediction_head)
+                                         n_heads=model_config.n_heads,
+                                         use_hierarchical_transformer=model_config.use_hierarchical_transformer,
+                                         use_moe=model_config.use_moe, use_independent_predictors=model_config.independent_predictors,
+                                         prediction_head=model_config.prediction_head)
 
         args.start_epoch = 0
 
@@ -353,22 +398,28 @@ def main_worker(args):
                                       #prefetch_factor=2
                                       )
 
-    if args.val_bfile is not None:
-        val_snp2p_dataset = PLINKDataset(tree_parser, args.val_bfile, args.val_cov, args.val_pheno, cov_mean_dict=args.cov_mean_dict,
-                                         cov_std_dict=args.cov_std_dict, flip=args.flip, input_format=args.input_format,
-                                         cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
-        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
-                                          num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True)
-    elif args.val_tsv:
+    if args.val_tsv:
         print("Loading validation TSV data from %s" % args.val_tsv)
-        val_snp2p_dataset = TSVDataset(tree_parser, args.val_tsv, args.val_cov, args.val_pheno,
-                                         cov_mean_dict=args.cov_mean_dict, cov_std_dict=args.cov_std_dict, 
-                                         flip=args.flip, input_format=args.input_format,
-                                         cov_ids=args.cov_ids, pheno_ids=args.pheno_ids, bt=args.bt, qt=args.qt)
+    elif args.val_bfile is not None:
+        print("Loading validation PLINK bfile... at %s" % args.val_bfile)
+
+    val_dataset_path = args.val_tsv or args.val_bfile
+    val_dataset_kind = "tsv" if args.val_tsv else "plink"
+    val_snp2p_dataset = SNP2PDatasetFactory.create_dataset(
+        tree_parser,
+        val_dataset_path,
+        val_dataset_kind,
+        dataset_config,
+        cov_path=dataset_config.val_cov,
+        pheno_path=dataset_config.val_pheno,
+        cov_mean_dict=args.cov_mean_dict,
+        cov_std_dict=args.cov_std_dict,
+    )
+    if val_snp2p_dataset is None:
+        val_snp2p_dataloader = None
+    else:
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True)
-    else:
-        val_snp2p_dataloader = None
 
 
     snp2p_trainer = SNP2PTrainer(snp2p_model, tree_parser, snp2p_dataloader, device, args, args.target_phenotype,
