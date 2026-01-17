@@ -6,7 +6,6 @@ from .SNP2PDataset import (
     CohortSampler,
     DistributedBinaryCohortSampler,
     DistributedCohortSampler,
-    DynamicPhenotypeBatchSampler,
     EmbeddingDataset,
     GenotypeDataset,
     PLINKDataset,

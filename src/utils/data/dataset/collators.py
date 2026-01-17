@@ -15,11 +15,9 @@ class SNP2PCollator(object):
         self.n_snp2pad = int(np.ceil(self.tree_parser.n_snps / 8)) * 8 - self.tree_parser.n_snps
         self.input_format = input_format
         self.padding_index = {"snp": self.tree_parser.n_snps * 3, "gene": self.tree_parser.n_genes, "system": self.tree_parser.n_systems}
-        if hasattr(self.tree_parser, "n_blocks"):
+        self.block = self.tree_parser.block
+        if self.block:
             self.padding_index["block"] = self.tree_parser.n_blocks
-            self.block = True
-        else:
-            self.block = False
 
         self.pheno_ids = pheno_ids
         self.mlm = mlm

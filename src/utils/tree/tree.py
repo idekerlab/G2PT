@@ -9,7 +9,6 @@ from sklearn.cluster import AgglomerativeClustering
 import obonet
 import re
 
-from src.utils.config import TreeConfig
 
 class TreeParser(object):
 
@@ -1133,10 +1132,3 @@ class TreeParser(object):
         if not inplace:
             return obj
 
-
-    def build_config(self):
-
-        return TreeConfig(n_systems=self.n_systems, sys2ind=self.sys2ind, ind2sys=self.ind2sys,
-                          n_genes=self.n_genes, gene2ind=self.gene2ind, ind2gene=self.ind2gene,
-                          interaction_types=self.interaction_types,
-                          onto=self.onto)

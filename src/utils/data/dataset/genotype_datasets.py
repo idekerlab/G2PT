@@ -91,7 +91,7 @@ class GenotypeDataset(Dataset):
             self.pheno_df = self.pheno_df.fillna(-9)
 
 
-        '''
+
         self.pheno2ind = {pheno: i for i, pheno in enumerate(self.pheno_ids)}
         self.ind2pheno = {i: pheno for i, pheno in enumerate(self.pheno_ids)}
         self.pheno2type = {}
@@ -117,7 +117,7 @@ class GenotypeDataset(Dataset):
         self.has_phenotype = False
         if ("PHENOTYPE" in self.cov_df.columns) or (pheno is not None):
             self.has_phenotype = True
-        '''
+
         print("Phenotypes: ", self.pheno_ids)
         print("Phenotype index: ", self.pheno2ind)
         print("Phenotype data type: ", self.pheno2type)
@@ -175,6 +175,7 @@ class TSVDataset(GenotypeDataset):
         cov_mean_dict=None,
         cov_std_dict=None,
         flip=False,
+        block=False,
         input_format="indices",
         cov_ids=(),
         pheno_ids=(),
@@ -227,13 +228,15 @@ class TSVDataset(GenotypeDataset):
         snp_idx = torch.cat((snp_idx, pad), dim=1)
 
         self.snp_idx = snp_idx.contiguous()
-        block_pad = self.tree_parser.n_blocks
-        block_idx = torch.tensor(
-            [self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)],
-            dtype=torch.long,
-        )
+        self.block = block
+        if self.block:
+            block_pad = self.tree_parser.n_blocks
+            block_idx = torch.tensor(
+                [self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)],
+                dtype=torch.long,
+            )
 
-        self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad + 1,), block_pad, dtype=torch.long)))
+            self.block_idx = torch.cat((block_idx, torch.full((self.n_snp2pad + 1,), block_pad, dtype=torch.long)))
 
         self.flip = flip
         print("From TSV %d variants with %d samples are queried" % (genotype.shape[1], genotype.shape[0]))
@@ -252,7 +255,8 @@ class TSVDataset(GenotypeDataset):
     def __getitem__(self, index):
         result_dict = super().__getitem__(index)
         sample2snp_dict = {}
-        sample2snp_dict["block_ind"] = self.block_idx[self.block_range]
+        if self.block:
+            sample2snp_dict["block_ind"] = self.block_idx[self.block_range]
         sample2snp_dict["snp"] = self.snp_idx[index, self.snp_range]
         sample2snp_dict["gene"] = self.gene_idx[self.gene_range]
         sample2snp_dict["sys"] = self.sys_idx[self.sys_range]

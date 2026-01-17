@@ -64,6 +64,7 @@ class SNP2PDatasetFactory:
             pheno_ids=dataset_config.pheno_ids,
             bt=dataset_config.bt,
             qt=dataset_config.qt,
+            block=tree_parser.block
         )
 
 def count_parameters(model):
@@ -161,7 +162,6 @@ def main():
     parser.add_argument('--snp2pheno', action='store_true', default=False)
 
     parser.add_argument('--dense-attention', action='store_true', default=False)
-    parser.add_argument('--input-format', default='indices', choices=["indices", "binary"])
     parser.add_argument('--regression', action='store_true', default=False)
     parser.add_argument('--mlm', action='store_true', default=False, help="Enable Masked Language Model training for SNP prediction")
     # Model parameters

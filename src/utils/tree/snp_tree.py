@@ -5,8 +5,6 @@ import math
 from . import TreeParser
 import re
 from collections import deque
-from src.utils.config import SNPTreeConfig
-
 
 
 class SNPTreeParser(TreeParser):
@@ -934,12 +932,4 @@ class SNPTreeParser(TreeParser):
         if not union:
             return None
         return len(ancestors_a & ancestors_b) / len(union)
-
-    def build_config(self):
-        return SNPTreeConfig(n_systems=self.n_systems, sys2ind=self.sys2ind, ind2sys=self.ind2sys,
-                             n_genes=self.n_genes, gene2ind=self.gene2ind, ind2gene=self.ind2gene,
-                             interaction_types=self.interaction_types, onto=self.onto,
-                             n_snps=self.n_snps, snp2ind=self.snp2ind, ind2snp=self.ind2snp,
-                             block=self.block, n_blocks=self.n_blocks, block2ind=self.block2ind, ind2block=self.ind2block,
-                             snp2gene=self.snp2gene)
 
