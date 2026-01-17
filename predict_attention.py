@@ -1,10 +1,13 @@
 import argparse
+import json
 import os
 import random
 import shutil
 import time
 import warnings
+from collections import OrderedDict
 from enum import Enum
+from pathlib import Path
 import pandas as pd
 
 import argparse
@@ -26,6 +29,8 @@ from src.utils.data.dataset.SNP2PDataset import SNP2PCollator, PLINKDataset, Emb
 from src.utils.tree import SNPTreeParser
 from src.model.LD_infuser.LDRoBERTa import RoBERTa, RoBERTaConfig
 from src.utils.trainer import SNP2PTrainer
+from src.utils.config import SNP2PConfig
+from src.utils.config.config import resolve_checkpoint_args
 
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
@@ -33,6 +38,65 @@ from tqdm import tqdm
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from scipy.stats import pearsonr
+
+
+def load_config_file(path: str) -> dict:
+    config_path = Path(path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    if config_path.suffix in {".yaml", ".yml"}:
+        try:
+            import yaml
+        except ImportError as exc:
+            raise ImportError("PyYAML is required to read YAML config files.") from exc
+        with config_path.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle)
+    else:
+        with config_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("Config file must parse to a mapping/object.")
+    return data
+
+
+def flatten_config(data: dict) -> dict:
+    config = SNP2PConfig.from_mapping(data).to_flat_namespace()
+    flat_config = vars(config)
+    for key, value in data.items():
+        if key not in flat_config and not isinstance(value, dict):
+            flat_config[key] = value
+    return flat_config
+
+
+def apply_defaults(args: argparse.Namespace, defaults: dict) -> None:
+    for key, value in defaults.items():
+        if getattr(args, key, None) is None and value is not None:
+            setattr(args, key, value)
+
+
+def apply_dataset_overrides(args: argparse.Namespace, config_data: dict) -> None:
+    dataset_config = config_data.get("dataset", {})
+    if not isinstance(dataset_config, dict):
+        dataset_config = {}
+
+    def pick_value(keys):
+        for key in keys:
+            if key in dataset_config and dataset_config[key]:
+                return dataset_config[key]
+            if key in config_data and config_data[key]:
+                return config_data[key]
+        return None
+
+    if args.bfile is None:
+        args.bfile = pick_value(["bfile", "test_bfile", "val_bfile", "train_bfile"])
+    if args.tsv is None:
+        args.tsv = pick_value(["tsv", "test_tsv", "val_tsv", "train_tsv"])
+    if args.cov is None:
+        args.cov = pick_value(["cov", "test_cov", "val_cov", "train_cov"])
+    if args.pheno is None:
+        args.pheno = pick_value(["pheno", "test_pheno", "val_pheno", "train_pheno"])
+    if args.out is None:
+        args.out = pick_value(["out", "output", "output_path"])
 
 
 def move_to(obj, device):
@@ -54,35 +118,68 @@ def move_to(obj, device):
 
 def main():
     parser = argparse.ArgumentParser(description='Some beautiful description')
-    parser.add_argument('--onto', help='Ontology file used to guide the neural network', type=str)
+    parser.add_argument('--config', help='Config file path (json/yaml).', type=str)
+    parser.add_argument('--onto', help='Ontology file used to guide the neural network', type=str, default=None)
     parser.add_argument('--subtree_order', help='Subtree cascading order', nargs='+', default=['default'])
     parser.add_argument('--bfile', help='Training genotype dataset', type=str, default=None)
     parser.add_argument('--tsv', help='Training genotype dataset in tsv format', type=str, default=None)
     parser.add_argument('--cov', help='Training covariates dataset', type=str, default=None)
     parser.add_argument('--pheno', help='Training covariates dataset', type=str, default=None)
-    parser.add_argument('--input-format', default='indices', choices=["indices", "embedding", "block"])
+    parser.add_argument('--input-format', default=None, choices=["indices", "embedding", "block"])
     parser.add_argument('--snp', help='Mutation information for cell lines', type=str)
-    parser.add_argument('--batch-size', type=int)
-    parser.add_argument('--snp2gene', help='Gene to ID mapping file', type=str)
+    parser.add_argument('--batch-size', type=int, default=None)
+    parser.add_argument('--snp2gene', help='Gene to ID mapping file', type=str, default=None)
     parser.add_argument('--snp2id', help='Gene to ID mapping file', type=str)
-    parser.add_argument('--cuda', type=int)
-    parser.add_argument('--model', help='trained model')
-    parser.add_argument('--cpu', type=int, default=4)
+    parser.add_argument('--cuda', type=int, default=None)
+    parser.add_argument('--model', help='trained model', default=None)
+    parser.add_argument('--cpu', type=int, default=None)
     parser.add_argument('--prediction-only', action='store_true')
-    parser.add_argument('--out', help='output csv')
+    parser.add_argument('--out', help='output csv', default=None)
     parser.add_argument('--system_annot', type=str, default=None)
 
-    parser.add_argument('--cov-effect', default='pre')
+    parser.add_argument('--cov-effect', default=None)
 
 
     args = parser.parse_args()
 
-    tree_parser = SNPTreeParser(args.onto, args.snp2gene, by_chr=False, sys_annot_file=args.system_annot, multiple_phenotypes=False)
+    config_data = {}
+    if args.config:
+        config_data = load_config_file(args.config)
+        config_defaults = flatten_config(config_data)
+        apply_defaults(args, config_defaults)
+        apply_dataset_overrides(args, config_data)
 
+    if args.model is None:
+        raise ValueError("Model checkpoint path is required. Use --model or set it in the config.")
 
     g2p_model_dict = torch.load(args.model, map_location='cuda:0')
-    print(g2p_model_dict['arguments'])
+    model_args = resolve_checkpoint_args(g2p_model_dict)
+    apply_defaults(args, vars(model_args))
+
+    if args.onto is None or args.snp2gene is None:
+        raise ValueError("Both --onto and --snp2gene are required (via config, checkpoint, or CLI).")
+    if args.cov is None or args.pheno is None:
+        raise ValueError("Both --cov and --pheno are required (via config or CLI).")
+    if args.out is None:
+        raise ValueError("--out is required (via config or CLI).")
+    if args.cuda is None:
+        args.cuda = 0
+    if args.cpu is None:
+        args.cpu = 4
+    if args.batch_size is None:
+        raise ValueError("--batch-size is required (via config or CLI).")
+
+    input_format = args.input_format or getattr(model_args, "input_format", "indices")
+    if args.cov_effect is None:
+        args.cov_effect = getattr(model_args, "cov_effect", "pre")
+
+    print(model_args)
     #g2p_model = g2p_model_dict
+
+    if not args.tsv and not args.bfile:
+        raise ValueError("Provide --tsv or --bfile (via config or CLI) for genotype inputs.")
+
+    tree_parser = SNPTreeParser(args.onto, args.snp2gene, by_chr=False, sys_annot_file=args.system_annot, multiple_phenotypes=False)
     
     #train_df = pd.read_csv(args.train, sep='\t', header=None)
     #val_df = pd.read_csv(args.val, sep='\t', header=None)
@@ -93,21 +190,21 @@ def main():
 
     #genotypes = pd.read_csv(args.snp, index_col=0, sep='\t')
     if args.tsv:
-        dataset = TSVDataset(tree_parser, args.tsv, args.cov, args.pheno, cov_ids=g2p_model_dict['arguments'].cov_ids,
-                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=g2p_model_dict['arguments'].pheno_ids,
-                               qt=g2p_model_dict['arguments'].qt, bt=g2p_model_dict['arguments'].bt,
-                               cov_std_dict=g2p_model_dict['arguments'].cov_std_dict, input_format=g2p_model_dict['arguments'].input_format)
-    elif args.input_format == 'indices':
-        dataset = PLINKDataset(tree_parser, args.bfile, args.cov, args.pheno, cov_ids=g2p_model_dict['arguments'].cov_ids,
-                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=g2p_model_dict['arguments'].pheno_ids,
-                               cov_std_dict=g2p_model_dict['arguments'].cov_std_dict, input_format=g2p_model_dict['arguments'].input_format,
-                               qt=g2p_model_dict['arguments'].qt, bt=g2p_model_dict['arguments'].bt)
-    elif args.input_format == 'embedding':
-        dataset = EmbeddingDataset(tree_parser, args.bfile, embedding=g2p_model_dict['arguments'].embedding, cov=args.cov, pheno=args.pheno,
-                               cov_ids=g2p_model_dict['arguments'].cov_ids,
-                               cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[],
-                               cov_std_dict=g2p_model_dict['arguments'].cov_std_dict,)
-    elif args.input_format == 'block':
+        dataset = TSVDataset(tree_parser, args.tsv, args.cov, args.pheno, cov_ids=model_args.cov_ids,
+                               cov_mean_dict=model_args.cov_mean_dict, pheno_ids=model_args.pheno_ids,
+                               qt=model_args.qt, bt=model_args.bt,
+                               cov_std_dict=model_args.cov_std_dict, input_format=input_format)
+    elif input_format == 'indices':
+        dataset = PLINKDataset(tree_parser, args.bfile, args.cov, args.pheno, cov_ids=model_args.cov_ids,
+                               cov_mean_dict=model_args.cov_mean_dict, pheno_ids=model_args.pheno_ids,
+                               cov_std_dict=model_args.cov_std_dict, input_format=input_format,
+                               qt=model_args.qt, bt=model_args.bt)
+    elif input_format == 'embedding':
+        dataset = EmbeddingDataset(tree_parser, args.bfile, embedding=model_args.embedding, cov=args.cov, pheno=args.pheno,
+                               cov_ids=model_args.cov_ids,
+                               cov_mean_dict=model_args.cov_mean_dict, pheno_ids=[],
+                               cov_std_dict=model_args.cov_std_dict,)
+    elif input_format == 'block':
         blocks = tree_parser.blocks
         block_bfile_dict = OrderedDict()
         block_model_dict = OrderedDict()
@@ -137,10 +234,10 @@ def main():
             block_bfile_dict[(chromosome, block)] = block_bfile
         dataset = BlockQueryDataset(tree_parser, args.train_bfile, block_bfile_dict, args.train_cov,
                                           args.train_pheno,
-                                    cov_ids=g2p_model_dict['arguments'].cov_ids,
-                                    cov_mean_dict=g2p_model_dict['arguments'].cov_mean_dict, pheno_ids=[], bt=args.bt,
+                                    cov_ids=model_args.cov_ids,
+                                    cov_mean_dict=model_args.cov_mean_dict, pheno_ids=[], bt=args.bt,
                                     qt=args.qt,
-                                    cov_std_dict=g2p_model_dict['arguments'].cov_std_dict)
+                                    cov_std_dict=model_args.cov_std_dict)
 
 
     args.bt_inds = dataset.bt_inds
@@ -154,7 +251,7 @@ def main():
 
     #dataset = SNP2PDataset(whole_df, genotypes, tree_parser, n_cov=args.n_cov, age_mean=age_mean, age_std=age_std)
     device = torch.device("cuda:%d"%args.cuda)
-    whole_collator = SNP2PCollator(tree_parser, input_format=g2p_model_dict['arguments'].input_format)
+    whole_collator = SNP2PCollator(tree_parser, input_format=input_format)
     whole_dataloader = DataLoader(dataset, shuffle=False, batch_size=args.batch_size,
                                           num_workers=args.cpu, collate_fn=whole_collator)
 
@@ -168,17 +265,17 @@ def main():
     gene2sys_mask = sys2gene_mask.T
     snp2gene_mask = move_to(torch.tensor(tree_parser.snp2gene_mask, dtype=torch.float32), device)
 
-    g2p_model = SNP2PhenotypeModel(tree_parser, hidden_dims=g2p_model_dict['arguments'].hidden_dims,
+    g2p_model = SNP2PhenotypeModel(tree_parser, hidden_dims=model_args.hidden_dims,
                                          dropout=0.0, n_covariates=dataset.n_cov,
                                          activation='softmax',  phenotypes=dataset.pheno_ids,
                                          ind2pheno=dataset.ind2pheno,
-                                   snp2pheno=g2p_model_dict['arguments'].snp2pheno,
-                                   gene2pheno=g2p_model_dict['arguments'].gene2pheno,
-                                   sys2pheno=g2p_model_dict['arguments'].sys2pheno,
-                                   input_format=g2p_model_dict['arguments'].input_format,
+                                   snp2pheno=model_args.snp2pheno,
+                                   gene2pheno=model_args.gene2pheno,
+                                   sys2pheno=model_args.sys2pheno,
+                                   input_format=input_format,
                                    cov_effect=args.cov_effect,
-                                   use_moe=g2p_model_dict['arguments'].use_moe,
-                                   use_hierarchical_transformer=g2p_model_dict['arguments'].use_hierarchical_transformer)
+                                   use_moe=model_args.use_moe,
+                                   use_hierarchical_transformer=model_args.use_hierarchical_transformer)
 
     g2p_model.load_state_dict(g2p_model_dict['state_dict'], strict=False)
     g2p_model = g2p_model.to(device)
@@ -199,13 +296,13 @@ def main():
                                                 snp2gene_mask=snp2gene_mask,
                                                 gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
                                                 sys2gene_mask=sys2gene_mask,
-                                                sys2env=g2p_model_dict['arguments'].sys2env,
-                                                env2sys=g2p_model_dict['arguments'].env2sys,
-                                                sys2gene=g2p_model_dict['arguments'].sys2gene,
+                                                sys2env=model_args.sys2env,
+                                                env2sys=model_args.env2sys,
+                                                sys2gene=model_args.sys2gene,
                                                 attention=False)
                 phenotypes.append(phenotype_predicted.detach().cpu().numpy())
             else:
-                if g2p_model_dict['arguments'].use_hierarchical_transformer:
+                if model_args.use_hierarchical_transformer:
                     phenotype_predicted, sys_attention, gene_attention = g2p_model(batch['genotype'], batch['covariates'],
                                                                                    batch['phenotype_indices'],
                                                     nested_subtrees_forward,
@@ -213,9 +310,9 @@ def main():
                                                     snp2gene_mask=snp2gene_mask,
                                                     gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
                                                     sys2gene_mask=sys2gene_mask,
-                                                    sys2env=g2p_model_dict['arguments'].sys2env,
-                                                    env2sys=g2p_model_dict['arguments'].env2sys,
-                                                    sys2gene=g2p_model_dict['arguments'].sys2gene,
+                                                    sys2env=model_args.sys2env,
+                                                    env2sys=model_args.env2sys,
+                                                    sys2gene=model_args.sys2gene,
                                                     score=True)
                     phenotypes.append(phenotype_predicted.detach().cpu().numpy())
                     sys_attentions.append(sys_attention.detach().cpu().numpy())
@@ -228,9 +325,9 @@ def main():
                                                     snp2gene_mask=snp2gene_mask,
                                                     gene2sys_mask=gene2sys_mask,#batch['gene2sys_mask'],
                                                     sys2gene_mask=sys2gene_mask,
-                                                    sys2env=g2p_model_dict['arguments'].sys2env,
-                                                    env2sys=g2p_model_dict['arguments'].env2sys,
-                                                    sys2gene=g2p_model_dict['arguments'].sys2gene,
+                                                    sys2env=model_args.sys2env,
+                                                    env2sys=model_args.env2sys,
+                                                    sys2gene=model_args.sys2gene,
                                                     attention=True)
                     phenotypes.append(phenotype_predicted.detach().cpu().numpy())
                     sys_attentions.append(sys_attention[0].detach().cpu().numpy())
@@ -259,7 +356,7 @@ def main():
             current_sys_attention = sys_attentions[:, head_idx, pheno_ind, :len(sys_score_cols)]
             sys_attention_df = pd.DataFrame(current_sys_attention, columns=sys_score_cols)
 
-            if g2p_model_dict['arguments'].gene2pheno: # Check if gene2pheno is enabled
+            if model_args.gene2pheno: # Check if gene2pheno is enabled
                 current_gene_attention = gene_attentions[:, head_idx, pheno_ind, :]
                 gene_attention_df = pd.DataFrame(current_gene_attention, columns=gene_score_cols)
                 combined_attention_df = pd.concat([cov_df, sys_attention_df, gene_attention_df], axis=1)
@@ -315,7 +412,7 @@ def main():
             sys_importance_df.to_csv(f"{args.out}.{pheno}.head_{head_idx}.sys_importance.csv", index=False)
             print(f"Saved system importance for phenotype {pheno}, head {head_idx} to {args.out}.{pheno}.head_{head_idx}.sys_importance.csv")
 
-            if g2p_model_dict['arguments'].gene2pheno:
+            if model_args.gene2pheno:
                 gene_importance_df = pd.DataFrame({'Gene': gene_score_cols})
                 # Calculate correlations for gene attention
                 gene_corr_dict = {}
@@ -359,7 +456,7 @@ def main():
         sum_sys_attention = sys_attentions[:, :, pheno_ind, :len(sys_score_cols)].sum(axis=1) # Sum across heads
         sys_attention_df_sum = pd.DataFrame(sum_sys_attention, columns=sys_score_cols)
 
-        if g2p_model_dict['arguments'].gene2pheno:
+        if model_args.gene2pheno:
             sum_gene_attention = gene_attentions[:, :, pheno_ind, :].sum(axis=1) # Sum across heads
             gene_attention_df_sum = pd.DataFrame(sum_gene_attention, columns=gene_score_cols)
             combined_attention_df_sum = pd.concat([cov_df, sys_attention_df_sum, gene_attention_df_sum], axis=1)
@@ -415,7 +512,7 @@ def main():
         sys_importance_df_sum.to_csv(f"{args.out}.{pheno}.head_sum.sys_importance.csv", index=False)
         print(f"Saved system importance for phenotype {pheno}, sum of heads to {args.out}.{pheno}.head_sum.sys_importance.csv")
 
-        if g2p_model_dict['arguments'].gene2pheno:
+        if model_args.gene2pheno:
             gene_importance_df_sum = pd.DataFrame({'Gene': gene_score_cols})
             # Calculate correlations for gene attention (sum of heads)
             gene_corr_dict_sum = {}
