@@ -63,8 +63,7 @@ class SNP2PDatasetFactory:
             cov_ids=dataset_config.cov_ids,
             pheno_ids=dataset_config.pheno_ids,
             bt=dataset_config.bt,
-            qt=dataset_config.qt,
-            block=tree_parser.block
+            qt=dataset_config.qt
         )
 
 def count_parameters(model):
@@ -79,6 +78,11 @@ def count_parameters(model):
     print(table)
     print(f"Total Trainable Params: {total_params}")
     return total_params
+
+def rank0_print(*args, rank=0, **kwargs):
+    """Print only on rank 0 to avoid cluttered logs in distributed training."""
+    if rank == 0:
+        print(*args, **kwargs)
 
 def ddp_setup():
     """
@@ -162,6 +166,7 @@ def main():
     parser.add_argument('--snp2pheno', action='store_true', default=False)
 
     parser.add_argument('--dense-attention', action='store_true', default=False)
+    parser.add_argument('--use-sparse-attention', action='store_true', default=True, help='Use sparse edge-based attention (100-1000× memory savings)')
     parser.add_argument('--regression', action='store_true', default=False)
     parser.add_argument('--mlm', action='store_true', default=False, help="Enable Masked Language Model training for SNP prediction")
     # Model parameters
@@ -247,7 +252,7 @@ def main_worker(args):
     gpu = args.local_rank
     node_name = socket.gethostname()
 
-    print(f"[{args.rank}/{args.world_size}] running on {node_name} GPU {gpu}, rank: {args.rank}, local_rank: {args.local_rank}", flush=True)
+    rank0_print(f"[{args.rank}/{args.world_size}] running on {node_name} GPU {gpu}, rank: {args.rank}, local_rank: {args.local_rank}", rank=args.rank, flush=True)
     if args.distributed and not dist.is_initialized():
         dist.init_process_group(
             backend="nccl",
@@ -256,7 +261,7 @@ def main_worker(args):
             rank=args.rank,
             timeout=timedelta(hours=3),
         )
-    print("Finish setup main worker", args.rank)
+    rank0_print("Finish setup main worker", args.rank, rank=args.rank)
 
     if args.distributed:
         device = torch.device("cuda:%d" % gpu)
@@ -277,7 +282,8 @@ def main_worker(args):
     tree_parser = SNPTreeParser(model_config.onto, model_config.snp2gene,
                                 dense_attention=model_config.dense_attention,
                                 multiple_phenotypes=multiple_phenotypes,
-                                block_bias=model_config.block_bias)
+                                block_bias=model_config.block_bias,
+                                precompute_edges=model_config.use_sparse_attention)
     args.block = hasattr(tree_parser, 'blocks')
     #chunker = MaskBasedChunker(snp2gene_mask=tree_parser.snp2gene_mask, gene2sys_mask=tree_parser.gene2sys_mask, target_chunk_size=20000)
     fix_system = False
@@ -291,9 +297,9 @@ def main_worker(args):
     else:
     '''
     if args.train_tsv:
-        print("Loading TSV data from %s" % args.train_tsv)
+        rank0_print("Loading TSV data from %s" % args.train_tsv, rank=args.rank)
     else:
-        print("Loading PLINK bfile... at %s" % args.train_bfile)
+        rank0_print("Loading PLINK bfile... at %s" % args.train_bfile, rank=args.rank)
 
     train_dataset_path = args.train_tsv or args.train_bfile
     train_dataset_kind = "tsv" if args.train_tsv else "plink"
@@ -318,15 +324,15 @@ def main_worker(args):
 
     args.cov_mean_dict = snp2p_dataset.cov_mean_dict
     args.cov_std_dict = snp2p_dataset.cov_std_dict
-    print("Loading done...")
+    rank0_print("Loading done...", rank=args.rank)
 
     snp2p_collator = SNP2PCollator(tree_parser, input_format=dataset_config.input_format, mlm=args.mlm)
     #snp2p_collator = ChunkSNP2PCollator(tree_parser, chunker=chunker, input_format=args.input_format)
 
-    print("Summary of trainable parameters")
+    rank0_print("Summary of trainable parameters", rank=args.rank)
     if args.model is not None:
         snp2p_model_dict = torch.load(args.model, map_location=device)
-        print(args.model, 'loaded')
+        rank0_print(args.model, 'loaded', rank=args.rank)
         snp2p_model = SNP2PhenotypeModel(tree_parser, model_config.hidden_dims,
                                          sys2pheno=model_config.sys2pheno, gene2pheno=model_config.gene2pheno, snp2pheno=model_config.snp2pheno,
                                          interaction_types=model_config.interaction_types,
@@ -337,8 +343,9 @@ def main_worker(args):
                                          cov_effect=model_config.cov_effect, use_hierarchical_transformer=model_config.use_hierarchical_transformer,
                                          n_heads=model_config.n_heads,
                                          use_moe=model_config.use_moe, use_independent_predictors=model_config.independent_predictors,
-                                         prediction_head=model_config.prediction_head)
-        print(args.model, 'initialized')
+                                         prediction_head=model_config.prediction_head,
+                                         use_sparse_attention=model_config.use_sparse_attention)
+        rank0_print(args.model, 'initialized', rank=args.rank)
         snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
         if args.model.split('.')[-1].isdigit():
             args.start_epoch = int(args.model.split('.')[-1])
@@ -356,7 +363,8 @@ def main_worker(args):
                                          n_heads=model_config.n_heads,
                                          use_hierarchical_transformer=model_config.use_hierarchical_transformer,
                                          use_moe=model_config.use_moe, use_independent_predictors=model_config.independent_predictors,
-                                         prediction_head=model_config.prediction_head)
+                                         prediction_head=model_config.prediction_head,
+                                         use_sparse_attention=model_config.use_sparse_attention)
 
         args.start_epoch = 0
 
@@ -364,19 +372,19 @@ def main_worker(args):
         # For multiprocessing distributed, DistributedDataParallel constructor
         # should always set the single device scope, otherwise,
         # DistributedDataParallel will use all available devices.
-        print("Distributed trainings are set up")
+        rank0_print("Distributed trainings are set up", rank=args.rank)
         args.jobs = int(args.jobs / args.world_size)
         snp2p_model = snp2p_model.to(device)
         snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[gpu], output_device=gpu,
                                                                 find_unused_parameters=True)
     elif args.cuda is not None:
         snp2p_model = snp2p_model.to(device)
-        print("Model is loaded at GPU(%d)" % args.cuda)
+        rank0_print("Model is loaded at GPU(%d)" % args.cuda, rank=args.rank)
     else:
-        print("Model is on cpu (not recommended)")
+        rank0_print("Model is on cpu (not recommended)", rank=args.rank)
 
     if not args.distributed or (args.distributed and args.rank  == 0):
-        print("Summary of trainable parameters")
+        rank0_print("Summary of trainable parameters", rank=args.rank)
         count_parameters(snp2p_model)
 
     if args.distributed:
@@ -399,9 +407,9 @@ def main_worker(args):
                                       )
 
     if args.val_tsv:
-        print("Loading validation TSV data from %s" % args.val_tsv)
+        rank0_print("Loading validation TSV data from %s" % args.val_tsv, rank=args.rank)
     elif args.val_bfile is not None:
-        print("Loading validation PLINK bfile... at %s" % args.val_bfile)
+        rank0_print("Loading validation PLINK bfile... at %s" % args.val_bfile, rank=args.rank)
 
     val_dataset_path = args.val_tsv or args.val_bfile
     val_dataset_kind = "tsv" if args.val_tsv else "plink"

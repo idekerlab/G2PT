@@ -17,6 +17,7 @@ class ModelConfig:
     env2sys: bool = False
     sys2gene: bool = False
     dense_attention: bool = False
+    use_sparse_attention: bool = True
     block_bias: bool = False
     hidden_dims: int = 256
     n_heads: int = 4
@@ -40,6 +41,7 @@ class ModelConfig:
             env2sys=bool(getattr(args, "env2sys", False)),
             sys2gene=bool(getattr(args, "sys2gene", False)),
             dense_attention=bool(getattr(args, "dense_attention", False)),
+            use_sparse_attention=bool(getattr(args, "use_sparse_attention", True)),
             block_bias=bool(getattr(args, "block_bias", False)),
             hidden_dims=int(getattr(args, "hidden_dims", 256)),
             n_heads=int(getattr(args, "n_heads", 4)),

@@ -34,12 +34,14 @@ class HierarchicalTransformerUpdate(nn.Module):
         attention_dropout: float = 0.1,
         norm_channel_first: bool = False,
         softmax=True,
+        use_sparse: bool = False,  # NEW: enable sparse attention
     ) -> None:
         super().__init__()
         assert hidden % attn_heads == 0, "hidden must divide heads"
         self.h = attn_heads
         self.d_h = hidden // attn_heads
         self.norm_channel_first = norm_channel_first
+        self.use_sparse = use_sparse  # NEW: store sparse flag
 
         # Independent projections for true cross‑attention
         self.q_proj = nn.Linear(hidden, hidden, bias=False)
@@ -64,11 +66,18 @@ class HierarchicalTransformerUpdate(nn.Module):
         return_attention=False
     ):
         B, Lq, H, dh = q.shape
+        _, Lk, _, _ = k.shape
 
         bias = None
         if mask is not None:
             if isinstance(mask, torch.Tensor):
-                mask = mask.unsqueeze(1).repeat(1, self.h, 1, 1)
+                # Expand mask to (B, H, Lq, Lk)
+                if mask.dim() == 2:  # (Lq, Lk)
+                    mask = mask.unsqueeze(0).unsqueeze(0)  # (1, 1, Lq, Lk)
+                elif mask.dim() == 3:  # (B, Lq, Lk)
+                    mask = mask.unsqueeze(1)  # (B, 1, Lq, Lk)
+                # Expand to batch and heads
+                mask = mask.expand(B, self.h, Lq, Lk)
 
         out = xops.memory_efficient_attention(
             q, k, v,
@@ -78,19 +87,208 @@ class HierarchicalTransformerUpdate(nn.Module):
         return out.reshape(B, Lq, H, dh).reshape(B, Lq, H * dh)
 
     # ---------------------------------------------------------------------
-    # unified wrapper  (replaces old _flash_xattn)
+    # NEW: Sparse attention implementation
     # ---------------------------------------------------------------------
-    def _xattn(self, q, k, v, mask):
-        B = q.size(0)
-        q = self.q_proj(q).view(B, -1, self.h, self.d_h)
-        k = self.k_proj(k).view(B, -1, self.h, self.d_h)
-        v = self.v_proj(v).view(B, -1, self.h, self.d_h)
+    def _sparse_xattn(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor = None,
+        num_queries: int = None,
+        num_keys: int = None
+    ) -> torch.Tensor:
+        """
+        Sparse cross-attention using edge indices.
 
+        Args:
+            q: (B, n_q, H) query embeddings
+            k: (B, n_k, H) key embeddings
+            v: (B, n_k, H) value embeddings
+            edge_index: (2, n_edges) - [query_idx, key_idx]
+            edge_attr: (n_edges,) - optional attention bias
+            num_queries: Total number of queries (defaults to n_q)
+            num_keys: Total number of keys (defaults to n_k)
 
-        out = self._xops_softmax_attn(q, k, v, mask)
+        Returns:
+            out: (B, n_q, H) attention output
+        """
+        B, n_q, H = q.shape
+        _, n_k, _ = k.shape
+
+        # Use provided sizes or infer from tensors
+        num_queries = num_queries or n_q
+        num_keys = num_keys or n_k
+
+        # Project Q, K, V
+        q_proj = self.q_proj(q).view(B, n_q, self.h, self.d_h)
+        k_proj = self.k_proj(k).view(B, n_k, self.h, self.d_h)
+        v_proj = self.v_proj(v).view(B, n_k, self.h, self.d_h)
+
+        # Extract edge indices
+        q_idx = edge_index[0]  # (n_edges,)
+        k_idx = edge_index[1]  # (n_edges,)
+        n_edges = q_idx.shape[0]
+
+        if n_edges == 0:
+            # No edges, return zeros
+            return torch.zeros(B, n_q, H, device=q.device, dtype=q.dtype)
+
+        # Gather Q, K, V for each edge
+        q_edges = q_proj[:, q_idx, :, :]  # (B, n_edges, heads, d_h)
+        k_edges = k_proj[:, k_idx, :, :]
+        v_edges = v_proj[:, k_idx, :, :]
+
+        # Compute attention scores for edges only
+        scale = 1.0 / math.sqrt(self.d_h)
+        scores = (q_edges * k_edges).sum(dim=-1) * scale  # (B, n_edges, heads)
+
+        # Add edge attributes (bias) if provided
+        if edge_attr is not None:
+            scores = scores + edge_attr.view(1, n_edges, 1)
+
+        # Softmax per query node
+        attn_weights = self._sparse_softmax(scores, q_idx, num_queries)
+
+        # Apply dropout
+        if self.training and self.attention_dropout > 0:
+            attn_weights = F.dropout(
+                attn_weights,
+                p=self.attention_dropout,
+                training=True
+            )
+
+        # Weighted sum of values
+        weighted_v = attn_weights.unsqueeze(-1) * v_edges  # (B, n_edges, heads, d_h)
+
+        # Scatter to output
+        out = self._scatter_add_edges(weighted_v, q_idx, num_queries)
+
+        # Reshape and project
+        out = out.reshape(B, n_q, H)
         return self.o_proj(out)
 
-    
+    def _sparse_softmax(
+        self,
+        scores: torch.Tensor,
+        indices: torch.Tensor,
+        num_nodes: int
+    ) -> torch.Tensor:
+        """
+        Softmax over edges grouped by query node.
+
+        Args:
+            scores: (B, n_edges, heads) - raw attention scores
+            indices: (n_edges,) - query node index for each edge
+            num_nodes: int - total number of query nodes
+
+        Returns:
+            attn: (B, n_edges, heads) - normalized attention weights
+        """
+        B, n_edges, heads = scores.shape
+        device = scores.device
+
+        # Compute max per query node (for numerical stability)
+        max_scores = torch.full(
+            (B, num_nodes, heads),
+            float('-inf'),
+            dtype=scores.dtype,
+            device=device
+        )
+
+        # Scatter max operation
+        indices_expanded = indices.view(1, n_edges, 1).expand(B, -1, heads)
+        max_scores.scatter_reduce_(
+            1,
+            indices_expanded,
+            scores,
+            reduce='amax',
+            include_self=False
+        )
+
+        # Gather max for each edge
+        max_per_edge = max_scores[:, indices, :]  # (B, n_edges, heads)
+
+        # Subtract max and exponentiate
+        scores_shifted = scores - max_per_edge
+        exp_scores = torch.exp(scores_shifted)
+
+        # Sum exp_scores per query node
+        sum_exp = torch.zeros(
+            B, num_nodes, heads,
+            dtype=exp_scores.dtype,
+            device=device
+        )
+        sum_exp.scatter_add_(
+            1,
+            indices_expanded,
+            exp_scores
+        )
+
+        # Normalize
+        sum_per_edge = sum_exp[:, indices, :]  # (B, n_edges, heads)
+        attn = exp_scores / (sum_per_edge + 1e-8)
+
+        return attn
+
+    def _scatter_add_edges(
+        self,
+        source: torch.Tensor,
+        indices: torch.Tensor,
+        num_nodes: int
+    ) -> torch.Tensor:
+        """
+        Scatter-add weighted values to output.
+
+        Args:
+            source: (B, n_edges, heads, d_h) - weighted values
+            indices: (n_edges,) - where to scatter each edge
+            num_nodes: int - total number of output nodes
+
+        Returns:
+            output: (B, num_nodes, heads, d_h) - aggregated values
+        """
+        B, n_edges, heads, d_h = source.shape
+        device = source.device
+
+        output = torch.zeros(
+            B, num_nodes, heads, d_h,
+            dtype=source.dtype,
+            device=device
+        )
+
+        # Expand indices for all dimensions
+        indices_expanded = indices.view(1, n_edges, 1, 1).expand(B, -1, heads, d_h)
+
+        output.scatter_add_(1, indices_expanded, source)
+        return output
+
+    # ---------------------------------------------------------------------
+    # unified wrapper  (replaces old _flash_xattn)
+    # ---------------------------------------------------------------------
+    def _xattn(self, q, k, v, mask, edge_index=None, edge_attr=None):
+        """
+        Unified attention wrapper - dispatches to sparse or dense.
+
+        NEW PARAMETERS:
+            edge_index: (2, n_edges) - sparse edge format
+            edge_attr: (n_edges,) - edge attributes/bias
+        """
+        B = q.size(0)
+
+        # Dispatch to sparse or dense implementation
+        if edge_index is not None and self.use_sparse:
+            return self._sparse_xattn(q, k, v, edge_index, edge_attr)
+        else:
+            # Dense path (existing code)
+            q = self.q_proj(q).view(B, -1, self.h, self.d_h)
+            k = self.k_proj(k).view(B, -1, self.h, self.d_h)
+            v = self.v_proj(v).view(B, -1, self.h, self.d_h)
+            out = self._xops_softmax_attn(q, k, v, mask)
+            return self.o_proj(out)
+
+
 
     # ---------------------------------------------------------------------
     # forward is unchanged except the private call name
@@ -116,9 +314,16 @@ class HierarchicalTransformerUpdate(nn.Module):
 
         return scores
 
-    def forward(self, q, k, v, mask):
+    def forward(self, q, k, v, mask, edge_index=None, edge_attr=None):
+        """
+        Forward pass with optional sparse attention.
+
+        NEW PARAMETERS:
+            edge_index: (2, n_edges) - sparse edge indices (optional)
+            edge_attr: (n_edges,) - edge attributes (optional)
+        """
         q_norm = self.norm_attn(q)
-        attn_output = self.drop(self._xattn(q_norm, k, v, mask))
+        attn_output = self.drop(self._xattn(q_norm, k, v, mask, edge_index, edge_attr))
         x = q + attn_output
         #gate_a = torch.sigmoid(self.gate_attn)
         #x = q * (1 - gate_a) + attn_out * gate_a
@@ -173,11 +378,11 @@ class HierarchicalTransformer(nn.Module):
         self.n_type = n_type
 
 
-    def forward(self, q, k, mask, dropout=True):
+    def forward(self, q, k, mask, dropout=True, edge_index=None, edge_attr=None):
         batch_size = q.size(0)
         if (self.conv_type=='system') & (mask is not None):
             mask = mask.unsqueeze(0).expand(batch_size, -1, -1,)
-        result = self.hierarchical_transformer_update(q, k, k, mask)
+        result = self.hierarchical_transformer_update(q, k, k, mask, edge_index=edge_index, edge_attr=edge_attr)
 
         #result_layer_norm = self.layer_norm(result)
         #if self.norm is not None:

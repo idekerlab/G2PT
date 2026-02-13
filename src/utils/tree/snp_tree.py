@@ -16,13 +16,20 @@ class SNPTreeParser(TreeParser):
                  sys_annot_file=None,
                  by_chr=False,
                  multiple_phenotypes=False,
-                 block_bias=False):
+                 block_bias=False,
+                 precompute_edges=True):  # NEW: precompute sparse edges
         # 1. Initialize all system–level structures
         #super().__init__(ontology,
         #                 dense_attention=dense_attention,
         #                 sys_annot_file=sys_annot_file)
         self.snp2gene = snp2gene
-        ontology = pd.read_csv(ontology, sep='\t', names=['parent', 'child', 'interaction'])
+
+        # Handle ontology as DataFrame or file path
+        if isinstance(ontology, pd.DataFrame):
+            ontology = ontology
+        else:
+            ontology = pd.read_csv(ontology, sep='\t', names=['parent', 'child', 'interaction'])
+
         self.dense_attention = dense_attention
         if sys_annot_file:
             sys_descriptions = pd.read_csv(sys_annot_file, header=None, names=['Term', 'Term_Description'], index_col=0, sep='\t')
@@ -36,10 +43,15 @@ class SNPTreeParser(TreeParser):
         #    pass `snp2gene` through to init_ontology
         self.block_bias = block_bias
         self.by_chr = by_chr
+        self.precompute_edges = precompute_edges
         self.init_ontology_with_snp(self.ontology,
                            snp2gene,
                            inplace=True,
                            multiple_phenotypes=multiple_phenotypes)
+
+        # NEW: Precompute sparse edge indices
+        if self.precompute_edges:
+            self._precompute_sparse_edges()
 
 
     def init_ontology_with_snp(self,
@@ -478,6 +490,89 @@ class SNPTreeParser(TreeParser):
             self.init_ontology_with_snp(ontology_df_new, new_snp2gene_df, inplace=inplace, verbose=verbose)
         else:
             return self.init_ontology_with_snp(ontology_df_new, new_snp2gene_df, inplace=inplace, verbose=verbose)
+
+    def _precompute_sparse_edges(self):
+        """
+        Precompute sparse edge indices from dense masks.
+        Called once during initialization for memory efficiency.
+        """
+        from src.utils.sparse_utils import (
+            mask_to_edge_index,
+            preprocess_hierarchical_masks_to_edges,
+            print_sparsity_report
+        )
+
+        print("\n" + "="*60)
+        print("Precomputing sparse edge indices...")
+        print("="*60)
+
+        # SNP → Gene edges
+        print("\n1. SNP → Gene edges:")
+        print_sparsity_report("  snp2gene_mask", self.snp2gene_mask)
+        self.snp2gene_edge_index, self.snp2gene_edge_attr = mask_to_edge_index(
+            self.snp2gene_mask,
+            return_edge_attr=False
+        )
+        print(f"  ✓ Created edge_index: {self.snp2gene_edge_index.shape}")
+
+        # Gene → System edges
+        print("\n2. Gene → System edges:")
+        print_sparsity_report("  gene2sys_mask", self.gene2sys_mask)
+        self.gene2sys_edge_index, self.gene2sys_edge_attr = mask_to_edge_index(
+            self.gene2sys_mask,
+            return_edge_attr=False
+        )
+        print(f"  ✓ Created edge_index: {self.gene2sys_edge_index.shape}")
+
+        # Hierarchical masks (sys2sys)
+        if hasattr(self, 'interaction_types'):
+            print("\n3. System → System hierarchical edges:")
+            self._precompute_hierarchical_edges()
+
+        print("\n" + "="*60)
+        print("Sparse edge precomputation complete!")
+        print("="*60 + "\n")
+
+    def _precompute_hierarchical_edges(self):
+        """Precompute edges for hierarchical sys2sys interactions."""
+        from src.utils.sparse_utils import preprocess_hierarchical_masks_to_edges
+
+        # Get hierarchical masks
+        masks_fwd = self.get_hierarchical_interactions(
+            list(self.interaction_types),
+            direction='forward',
+            format='indices'
+        )
+        masks_bwd = self.get_hierarchical_interactions(
+            list(self.interaction_types),
+            direction='backward',
+            format='indices'
+        )
+
+        # Convert to edge format
+        self.hierarchical_edges_forward = preprocess_hierarchical_masks_to_edges(
+            masks_fwd,
+            list(self.interaction_types)
+        )
+        self.hierarchical_edges_backward = preprocess_hierarchical_masks_to_edges(
+            masks_bwd,
+            list(self.interaction_types)
+        )
+
+        # Count total edges
+        total_edges_fwd = sum(
+            level[itype]['edge_index'].shape[1]
+            for level in self.hierarchical_edges_forward
+            for itype in level
+        )
+        total_edges_bwd = sum(
+            level[itype]['edge_index'].shape[1]
+            for level in self.hierarchical_edges_backward
+            for itype in level
+        )
+
+        print(f"  Forward direction: {total_edges_fwd:,} edges across {len(self.hierarchical_edges_forward)} levels")
+        print(f"  Backward direction: {total_edges_bwd:,} edges across {len(self.hierarchical_edges_backward)} levels")
 
     def collect_systems_to_root(self, target_systems):
         """

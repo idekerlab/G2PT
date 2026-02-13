@@ -176,7 +176,7 @@ class PredictionDatasetFactory:
             dataset_cls = PLINKDataset
 
         base_kwargs = dict(
-            #tree_parser=tree_parser,
+            tree_parser=tree_parser,
             cov=args.cov,
             pheno=args.pheno,
             cov_mean_dict=model_args.cov_mean_dict,
