@@ -166,7 +166,8 @@ def main():
     parser.add_argument('--snp2pheno', action='store_true', default=False)
 
     parser.add_argument('--dense-attention', action='store_true', default=False)
-    parser.add_argument('--use-sparse-attention', action='store_true', default=True, help='Use sparse edge-based attention (100-1000× memory savings)')
+    parser.add_argument('--use-sparse-attention', type=lambda x: x.lower() != 'false', default=True,
+                        help='Use sparse edge-based attention (100-1000× memory savings). Default: True. Pass "False" to disable.')
     parser.add_argument('--regression', action='store_true', default=False)
     parser.add_argument('--mlm', action='store_true', default=False, help="Enable Masked Language Model training for SNP prediction")
     # Model parameters
