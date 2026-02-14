@@ -19,6 +19,12 @@ class ModelConfig:
     dense_attention: bool = False
     use_sparse_attention: bool = True
     block_bias: bool = False
+    use_gating: bool = False  # Enable phenotype-conditioned gating
+    gate_hidden_dim: int = 64  # Hidden dimension for gate MLPs
+    gate_temperature: float = 1.0  # Temperature for gate softmax
+    gate_sparsity_weight: float = 0.01  # Weight for sparsity regularization
+    gate_entropy_weight: float = 0.001  # Weight for entropy regularization
+    gate_coherence_weight: float = 0.0  # Weight for pathway coherence
     hidden_dims: int = 256
     n_heads: int = 4
     prediction_head: int = 1
@@ -43,6 +49,12 @@ class ModelConfig:
             dense_attention=bool(getattr(args, "dense_attention", False)),
             use_sparse_attention=bool(getattr(args, "use_sparse_attention", True)),
             block_bias=bool(getattr(args, "block_bias", False)),
+            use_gating=bool(getattr(args, "use_gating", False)),
+            gate_hidden_dim=int(getattr(args, "gate_hidden_dim", 64)),
+            gate_temperature=float(getattr(args, "gate_temperature", 1.0)),
+            gate_sparsity_weight=float(getattr(args, "gate_sparsity_weight", 0.01)),
+            gate_entropy_weight=float(getattr(args, "gate_entropy_weight", 0.001)),
+            gate_coherence_weight=float(getattr(args, "gate_coherence_weight", 0.0)),
             hidden_dims=int(getattr(args, "hidden_dims", 256)),
             n_heads=int(getattr(args, "n_heads", 4)),
             prediction_head=int(getattr(args, "prediction_head", 1)),

@@ -194,6 +194,20 @@ def main():
     parser.add_argument('--independent_predictors', action='store_true', default=False, help='Use independent predictor heads for each phenotype')
     parser.add_argument('--label_smoothing', help='Label smoothing for BCE loss', type=float, default=0.0)
 
+    # Gating arguments
+    parser.add_argument('--use-gating', type=lambda x: x.lower() == 'true', default=False,
+                        help='Enable phenotype-conditioned gating (default: False)')
+    parser.add_argument('--gate-hidden-dim', type=int, default=64,
+                        help='Hidden dimension for gate MLPs (default: 64)')
+    parser.add_argument('--gate-temperature', type=float, default=1.0,
+                        help='Temperature for gate softmax (default: 1.0)')
+    parser.add_argument('--gate-sparsity-weight', type=float, default=0.01,
+                        help='Weight for gate sparsity loss (default: 0.01)')
+    parser.add_argument('--gate-entropy-weight', type=float, default=0.001,
+                        help='Weight for gate entropy loss (default: 0.001)')
+    parser.add_argument('--gate-coherence-weight', type=float, default=0.0,
+                        help='Weight for pathway coherence loss (default: 0.0)')
+
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
 

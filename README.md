@@ -168,8 +168,6 @@ Instead of computing full attention matrices between all SNPs and genes (which w
 
 This optimization applies to all transformer layers: SNP↔Gene, Gene↔System, and System↔System (forward/backward).
 
-For more details, see the [Sparse Attention documentation](https://g2pt.readthedocs.io/en/latest/08_sparse_attention.html).
-
 ## Prediction and attention export
 
 Use the trained checkpoint to generate predictions and (optionally) attention summaries. The loader reuses training metadata stored with the checkpoint.
@@ -225,6 +223,7 @@ Read [Epistasis_simulation.ipynb](Epistasis_simulation.ipynb)
 - [x] Build data loader for `plink` binary file using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/).
 - [x] Adding `.cov` and `.pheno` for input.
 - [x] Change model for multiple phenotypes.
-- [ ] Refactor to use config for the consistency and 
+- [x] Refactor to use config for the consistency and 
+- [x] Change to sparse attention
 - [ ] Implementing new importance methods
 - [ ] Implementing causalty model like MR

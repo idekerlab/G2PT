@@ -228,7 +228,8 @@ class TSVDataset(GenotypeDataset):
         snp_idx = torch.cat((snp_idx, pad), dim=1)
 
         self.snp_idx = snp_idx.contiguous()
-        self.block = block
+        # Use tree_parser.block if available, otherwise use the parameter
+        self.block = tree_parser.block if hasattr(tree_parser, 'block') else block
         if self.block:
             block_pad = self.tree_parser.n_blocks
             block_idx = torch.tensor(
@@ -401,8 +402,9 @@ class PLINKDataset(GenotypeDataset):
         snp_idx = torch.cat((snp_idx, pad), dim=1)  # (N × (1 200 + pad))
 
         self.snp_idx = snp_idx.contiguous()  # final (N × L_snp)
-        self.block = block
-        if block:
+        # Use tree_parser.block if available, otherwise use the parameter
+        self.block = tree_parser.block if hasattr(tree_parser, 'block') else block
+        if self.block:
             block_pad = self.tree_parser.n_blocks
             block_idx = torch.tensor(
                 [self.tree_parser.block2ind[self.tree_parser.snp2block[self.tree_parser.ind2snp[i]]] for i in range(self.tree_parser.n_snps)],

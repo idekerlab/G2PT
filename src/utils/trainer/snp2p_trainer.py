@@ -62,6 +62,20 @@ class SNP2PTrainer(object):
         self.snp2p_model = snp2p_model.to(self.device)
         self.ccc_loss = CCCLoss()
         self.beta = 0.1
+
+        # Initialize gate regularization loss if gating is enabled
+        if hasattr(args, 'use_gating') and args.use_gating:
+            from src.utils.trainer.gate_losses import GateRegularizationLoss
+            self.gate_loss_fn = GateRegularizationLoss(
+                sparsity_weight=getattr(args, 'gate_sparsity_weight', 0.01),
+                entropy_weight=getattr(args, 'gate_entropy_weight', 0.001),
+                coherence_weight=getattr(args, 'gate_coherence_weight', 0.0)
+            )
+            self.use_gating = True
+            print(f"Gate regularization enabled: sparsity={args.gate_sparsity_weight}, "
+                  f"entropy={args.gate_entropy_weight}")
+        else:
+            self.use_gating = False
         '''
         if args.regression:
             self.phenotype_loss = nn.MSELoss()
@@ -539,11 +553,28 @@ class SNP2PTrainer(object):
             #phenotype_loss += phenotype_loss #+ correlation_matching_loss(predictions, batch['phenotype'])
             mean_response_loss += float(phenotype_loss)
             mean_snp_loss += float(snp_loss)
+
+            # Add gate regularization loss if enabled
+            gate_loss = torch.tensor(0.0, device=self.device)
+            if self.use_gating:
+                # Get phenotype embedding for gate computation
+                # Handle DistributedDataParallel wrapper
+                model_module = model.module if hasattr(model, 'module') else model
+
+                # Check if model actually has gating methods (backward compatibility)
+                if hasattr(model_module, 'get_phenotype_vector') and hasattr(model_module, 'get_gate_values'):
+                    phenotype_vector = model_module.get_phenotype_vector(batch['covariates'])
+                    pheno_emb = phenotype_vector.squeeze(1)  # (B, hidden_dims)
+
+                    # Get gate values
+                    gates = model_module.get_gate_values(pheno_emb)
+                    gate_loss, gate_loss_dict = self.gate_loss_fn(gates)
+
             #print(pheno_inds, phenotype_loss)
             #if phenotype_loss == 0.0:
             #    phenotype_loss = move_to(torch.tensor(phenotype_loss), device=self.device)
             #if phenotype_loss!=0:
-            loss =  phenotype_loss + 0.1 * snp_loss
+            loss = phenotype_loss + 0.1 * snp_loss + gate_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
