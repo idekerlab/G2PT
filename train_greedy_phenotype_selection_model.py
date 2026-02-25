@@ -5,6 +5,8 @@ import socket
 import warnings
 
 import pandas as pd
+import mlflow
+import re
 
 import torch
 import torch.nn.parallel
@@ -14,6 +16,21 @@ import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
 
+def extract_info_from_bfile_path(bfile_path):
+    p_value = "N/A"
+    fold = "N/A"
+
+    # Regex to find pval_X and fold_Y
+    p_value_match = re.search(r'pval_([0-9eE.-]+)', bfile_path)
+    if p_value_match:
+        p_value = p_value_match.group(1)
+
+    fold_match = re.search(r'fold_([0-9]+|total)', bfile_path)
+    if fold_match:
+        fold = fold_match.group(1)
+
+    return p_value, fold
+
 
 from prettytable import PrettyTable
 from src.utils.chunker import MaskBasedChunker, AttentionAwareChunker
@@ -21,15 +38,17 @@ from src.utils.chunker import MaskBasedChunker, AttentionAwareChunker
 from src.model.model.snp2phenotype import SNP2PhenotypeModel
 
 from torch.utils.data.distributed import DistributedSampler
-from src.utils.data.dataset import SNP2PCollator, PLINKDataset
-from src.utils.data.dataset import TSVDataset
+from src.utils.data.dataset import SNP2PCollator, PLINKDataset, TSVDataset, PhenotypeSelectionDataset, PhenotypeSelectionDatasetDDP
 from src.utils.tree import SNPTreeParser
-from src.utils.trainer import SNP2PTrainer
+from src.utils.trainer import GreedyMultiplePhenotypeTrainer
 from src.utils.config.data_config import create_dataset_config
 from src.utils.config.model_config import ModelConfig
 from datetime import timedelta
 
 from torch.utils.data.dataloader import DataLoader
+
+_DATASET = None
+
 
 class SNP2PDatasetFactory:
     @staticmethod
@@ -66,23 +85,24 @@ class SNP2PDatasetFactory:
             qt=dataset_config.qt
         )
 
+
 def count_parameters(model):
     table = PrettyTable(["Modules", "Parameters", "Trainable"])
     total_params = 0
     for name, parameter in model.named_parameters():
         params = parameter.numel()
-        #print(name, params, parameter.requires_grad)
         table.add_row([name, params, parameter.requires_grad])
-        #if parameter.requires_grad:
         total_params+=params
     print(table)
     print(f"Total Trainable Params: {total_params}")
     return total_params
 
+
 def rank0_print(*args, rank=0, **kwargs):
     """Print only on rank 0 to avoid cluttered logs in distributed training."""
     if rank == 0:
         print(*args, **kwargs)
+
 
 def ddp_setup():
     """
@@ -100,16 +120,6 @@ def ddp_setup():
     local_rank  = int(os.environ.get("LOCAL_RANK",  0))
 
     distributed = world_size > 1
-    '''
-    if distributed and not dist.is_initialized():
-        dist.init_process_group(
-            backend="nccl",
-            init_method="env://",    # MASTER_ADDR / MASTER_PORT already exported
-            world_size=world_size,
-            rank=rank,
-            timeout=timedelta(hours=3),
-        )
-    '''
     # ❷ Choose the device for this rank
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
@@ -125,30 +135,25 @@ def main():
     # Participant Genotype file
     parser.add_argument('--genotype-csv', help='Personal genotype file', type=str, default=None)
     parser.add_argument('--n_cov', help='The number of covariates', type=int, default=4)
-    # Indexing files
-    #parser.add_argument('--snp2id', help='SNP to ID mapping file', type=str)
-    #parser.add_argument('--gene2id', help='Gene to ID mapping file', type=str)
     # Hierarchy files
     parser.add_argument('--onto', help='Ontology file used to guide the neural network', type=str)
     parser.add_argument('--snp2gene', help='SNP to gene mapping file', type=str)
     parser.add_argument('--interaction-types', help='Subtree cascading order', nargs='+', default=['default'])
 
-    # data
+    # Train bfile/tsv format
     parser.add_argument('--train-bfile', help='Training genotype dataset', type=str, default=None)
     parser.add_argument('--train-tsv', help='Path to directory with training genotype, covariate, and phenotype TSV files', type=str, default=None)
     parser.add_argument('--train-cov', help='Training covariates dataset', type=str, default=None)
-    parser.add_argument('--train-pheno', help='Training covariates dataset', type=str, default=None)
-    
-    parser.add_argument('--val-tsv', help='Path to validation genotype TSV file', type=str, default=None)
+    parser.add_argument('--train-pheno', help='Training phenotype dataset', type=str, default=None)
     parser.add_argument('--val-bfile', help='Validation dataset', type=str, default=None)
+    parser.add_argument('--val-tsv', help='Path to validation genotype TSV file', type=str, default=None)
     parser.add_argument('--val-cov', help='Validation covariates dataset', type=str, default=None)
-    parser.add_argument('--val-pheno', help='Training covariates dataset', type=str, default=None)
+    parser.add_argument('--val-pheno', help='Validation phenotype dataset', type=str, default=None)
     parser.add_argument('--test-bfile', help='Test dataset', type=str, default=None)
-    parser.add_argument('--test-cov', help='Validation covariates dataset', type=str, default=None)
-    parser.add_argument('--test-pheno', help='Validation covariates dataset', type=str, default=None)
+    parser.add_argument('--test-cov', help='Test covariates dataset', type=str, default=None)
+    parser.add_argument('--test-pheno', help='Test phenotype dataset', type=str, default=None)
     parser.add_argument('--input-format', help='input format', type=str, default='plink')
 
-    # data
     parser.add_argument('--cov-ids', nargs='*', default=[])
     parser.add_argument('--flip', action='store_true', default=False)
     parser.add_argument('--pheno-ids', nargs='*', default=[])
@@ -156,20 +161,26 @@ def main():
     parser.add_argument('--qt', nargs='*', default=[])
     parser.add_argument('--target-phenotype', type=str, )
     parser.add_argument('--block-bias', action='store_true')
+    parser.add_argument('--subsample', help='Number of individuals to subsample for training', type=int, default=None)
     # Propagation option
-    parser.add_argument('--cov-effect', default='direct')
+    parser.add_argument('--cov-effect', default='pre')
     parser.add_argument('--sys2env', action='store_true', default=False)
     parser.add_argument('--env2sys', action='store_true', default=False)
     parser.add_argument('--sys2gene', action='store_true', default=False)
     parser.add_argument('--sys2pheno', action='store_true', default=True)
     parser.add_argument('--gene2pheno', action='store_true', default=False)
     parser.add_argument('--snp2pheno', action='store_true', default=False)
+    parser.add_argument('--use-ld-block-bias', action='store_true', default=False, help='Use LD block information to create an attention bias.')
+
+    parser.add_argument('--dynamic-phenotype-sampling', action='store_true', default=False)
+
+    parser.add_argument('--poincare', action='store_true', default=False)
 
     parser.add_argument('--dense-attention', action='store_true', default=False)
     parser.add_argument('--use-sparse-attention', type=lambda x: x.lower() != 'false', default=True,
                         help='Use sparse edge-based attention (100-1000× memory savings). Default: True. Pass "False" to disable.')
-    parser.add_argument('--regression', action='store_true', default=False)
     parser.add_argument('--mlm', action='store_true', default=False, help="Enable Masked Language Model training for SNP prediction")
+    parser.add_argument('--regression', action='store_true', default=False)
     # Model parameters
     parser.add_argument('--hidden-dims', help='hidden dimension for model', default=256, type=int)
     parser.add_argument('--n-heads', help='the number of head in genetic propagation', default=4, type=int)
@@ -184,15 +195,15 @@ def main():
     parser.add_argument('--val-step', help='Validation step', type=int, default=20)
     parser.add_argument('--patience', help='Patience for early stopping', type=int, default=10)
     parser.add_argument('--jobs', help="The number of threads", type=int, default=0)
-    parser.add_argument('--subsample', help='Number of individuals to subsample for training', type=int, default=None)
 
     parser.add_argument('--loss', help='loss function', type=str, default='default')
     parser.add_argument('--focal-loss-alpha', help='alpha for focal loss', type=float, default=0.25)
     parser.add_argument('--focal-loss-gamma', help='gamma for focal loss', type=float, default=2.0)
+    parser.add_argument('--label_smoothing', help='Label smoothing for BCE loss', type=float, default=0.0)
+
     parser.add_argument('--use_hierarchical_transformer', action='store_true', default=False)
     parser.add_argument('--use_moe', action='store_true', default=False, help='Use Mixture-of-Experts predictor head')
     parser.add_argument('--independent_predictors', action='store_true', default=False, help='Use independent predictor heads for each phenotype')
-    parser.add_argument('--label_smoothing', help='Label smoothing for BCE loss', type=float, default=0.0)
 
     # Gating arguments
     parser.add_argument('--use-gating', type=lambda x: x.lower() == 'true', default=False,
@@ -208,12 +219,15 @@ def main():
     parser.add_argument('--gate-coherence-weight', type=float, default=0.0,
                         help='Weight for pathway coherence loss (default: 0.0)')
 
+    parser.add_argument('--pretrained', type=str, default=None)
+
     # GPU option
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
 
     # Model input and output
     parser.add_argument('--model', help='path to trained model', default=None)
     parser.add_argument('--out', help="output model path")
+    parser.add_argument('--use_mlflow', action='store_true', default=False)
 
     args = parser.parse_args()
     print('Start Process')
@@ -221,50 +235,27 @@ def main():
         warnings.warn('You have chosen a specific GPU. This will completely '
                       'disable data parallelism.')
 
-    #args.distributed = args.world_size > 1 or args.multiprocessing_distributed
-
     ngpus_per_node = torch.cuda.device_count()
     args.ngpus_per_node = ngpus_per_node
 
     distributed, rank, world_size, local_rank, device = ddp_setup()
 
-    #+  # -------- torchrun gives all ranks in env --------
     args.distributed = distributed
     args.rank = rank
     args.world_size = world_size
     args.local_rank = local_rank
-    #args.batch_size = args.batch_size // world_size
-    #args.jobs = args.jobs // world_size
 
     torch.cuda.set_device(args.local_rank)
+    if args.use_mlflow:
+        mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI"))
     main_worker(args)  # no mp.spawn!
-    '''
-    if args.multiprocessing_distributed:
-        #if 'SLURM_PROCID' in os.environ:
-        # Since we have ngpus_per_node processes per node, the total world_size
-        # needs to be adjusted accordingly
-        #    if args.dist_url == "env://" and args.world_size == -1:
-        #        args.world_size = int(os.environ["WORLD_SIZE"])
-        #        addr = os.environ["MASTER_ADDR"]
-        #        port = os.environ["MASTER_PORT"]
-        #        print("Address: %s:%s" % (addr, port))
-        #else:
-        args.world_size = ngpus_per_node * args.world_size
-        # Use torch.multiprocessing.spawn to launch distributed processes: the
-        # main_worker process function
-        print("The world size is %d"%args.world_size)
-        mp.spawn(main_worker, nprocs=args.world_size, args=(ngpus_per_node, args))
-    else:
-        # Simply call main_worker function
-        print("The world size is %d" % args.world_size)
-        main_worker(args.cuda, ngpus_per_node, args)
-    '''
+
 
 def main_worker(args):
-    #global best_acc1
-    #node_name = socket.gethostname()
-    #print(f"Initialize main worker {rank} at node {node_name}")
     gpu = args.local_rank
+
+    global _DATASET
+
     node_name = socket.gethostname()
 
     rank0_print(f"[{args.rank}/{args.world_size}] running on {node_name} GPU {gpu}, rank: {args.rank}, local_rank: {args.local_rank}", rank=args.rank, flush=True)
@@ -278,6 +269,12 @@ def main_worker(args):
         )
     rank0_print("Finish setup main worker", args.rank, rank=args.rank)
 
+    if args.rank == 0 and args.use_mlflow:
+        p_value, fold = extract_info_from_bfile_path(args.train_bfile or "")
+        run_name = f"GreedySelection_{args.target_phenotype}_Pval_{p_value}_Fold_{fold}"
+        mlflow.start_run(run_name=run_name)
+        mlflow.log_params(vars(args))
+
     if args.distributed:
         device = torch.device("cuda:%d" % gpu)
     elif args.cuda is not None:
@@ -286,7 +283,8 @@ def main_worker(args):
         device = torch.device("cuda:0")
     else:
         device = torch.device("cpu")
-    if (len(args.qt) + len(args.bt) > 1) :
+
+    if (len(args.qt) + len(args.bt) > 1):
         multiple_phenotypes = True
     else:
         multiple_phenotypes = False
@@ -300,17 +298,8 @@ def main_worker(args):
                                 block_bias=model_config.block_bias,
                                 precompute_edges=model_config.use_sparse_attention)
     args.block = hasattr(tree_parser, 'blocks')
-    #chunker = MaskBasedChunker(snp2gene_mask=tree_parser.snp2gene_mask, gene2sys_mask=tree_parser.gene2sys_mask, target_chunk_size=20000)
     fix_system = False
-    '''
-    if args.train_bfile is None:
-        print("Loading Genotype dataset... at %s" % args.genotype_csv)
-        genotype = pd.read_csv(args.genotype_csv, index_col=0, sep='\t')  # .astype('int32')
-        print("Loading done...")
-        train_dataset = pd.read_csv(args.train_cov, header=None, sep='\t')
-        snp2p_dataset = SNP2PDataset(train_dataset, genotype, tree_parser, n_cov=args.n_cov)
-    else:
-    '''
+
     if args.train_tsv:
         rank0_print("Loading TSV data from %s" % args.train_tsv, rank=args.rank)
     else:
@@ -328,6 +317,7 @@ def main_worker(args):
     )
     if dataset_config.subsample:
         snp2p_dataset.sample_population(n=dataset_config.subsample)
+
     args.bt_inds = snp2p_dataset.bt_inds
     args.qt_inds = snp2p_dataset.qt_inds
     args.bt = snp2p_dataset.bt
@@ -342,9 +332,15 @@ def main_worker(args):
     rank0_print("Loading done...", rank=args.rank)
 
     snp2p_collator = SNP2PCollator(tree_parser, input_format=dataset_config.input_format, mlm=args.mlm)
-    #snp2p_collator = ChunkSNP2PCollator(tree_parser, chunker=chunker, input_format=args.input_format)
 
     rank0_print("Summary of trainable parameters", rank=args.rank)
+    if model_config.sys2env:
+        rank0_print("Model will use Sys2Env", rank=args.rank)
+    if model_config.env2sys:
+        rank0_print("Model will use Env2Sys", rank=args.rank)
+    if model_config.sys2gene:
+        rank0_print("Model will use Sys2Gene", rank=args.rank)
+
     if args.model is not None:
         snp2p_model_dict = torch.load(args.model, map_location=device)
         rank0_print(args.model, 'loaded', rank=args.rank)
@@ -355,7 +351,8 @@ def main_worker(args):
                                          phenotypes=snp2p_dataset.pheno_ids,
                                          ind2pheno=snp2p_dataset.ind2pheno,
                                          activation='softmax', input_format=dataset_config.input_format,
-                                         cov_effect=model_config.cov_effect, use_hierarchical_transformer=model_config.use_hierarchical_transformer,
+                                         cov_effect=model_config.cov_effect,
+                                         use_hierarchical_transformer=model_config.use_hierarchical_transformer,
                                          n_heads=model_config.n_heads,
                                          use_moe=model_config.use_moe, use_independent_predictors=model_config.independent_predictors,
                                          prediction_head=model_config.prediction_head,
@@ -376,50 +373,46 @@ def main_worker(args):
                                          phenotypes=snp2p_dataset.pheno_ids,
                                          ind2pheno=snp2p_dataset.ind2pheno,
                                          n_heads=model_config.n_heads,
+                                         cov_effect=model_config.cov_effect,
                                          use_hierarchical_transformer=model_config.use_hierarchical_transformer,
                                          use_moe=model_config.use_moe, use_independent_predictors=model_config.independent_predictors,
                                          prediction_head=model_config.prediction_head,
                                          use_sparse_attention=model_config.use_sparse_attention)
-
         args.start_epoch = 0
 
     if args.distributed:
-        # For multiprocessing distributed, DistributedDataParallel constructor
-        # should always set the single device scope, otherwise,
-        # DistributedDataParallel will use all available devices.
         rank0_print("Distributed trainings are set up", rank=args.rank)
-        args.jobs = int(args.jobs / args.world_size)
+        args.jobs = int((args.jobs) / args.world_size)
         snp2p_model = snp2p_model.to(device)
-        snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[gpu], output_device=gpu,
-                                                                find_unused_parameters=True)
+        snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[gpu], output_device=gpu, find_unused_parameters=True)
     elif args.cuda is not None:
         snp2p_model = snp2p_model.to(device)
         rank0_print("Model is loaded at GPU(%d)" % args.cuda, rank=args.rank)
     else:
         rank0_print("Model is on cpu (not recommended)", rank=args.rank)
 
-    if not args.distributed or (args.distributed and args.rank  == 0):
+    if not args.distributed or (args.distributed and args.rank == 0):
         rank0_print("Summary of trainable parameters", rank=args.rank)
         count_parameters(snp2p_model)
 
     if args.distributed:
-        snp2p_sampler = DistributedSampler(dataset=snp2p_dataset, shuffle=True)
-        shuffle = False
-        snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
-                                      num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler,
-                                      pin_memory=True,
-                                      persistent_workers=True,  # keep workers alive across epochs
-                                      prefetch_factor=2
-                                      )
+        dataset = PhenotypeSelectionDatasetDDP(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size,
+                                                          rank=args.rank,
+                                                          world_size=args.world_size,
+                                                          shuffle=True)
+        snp2p_dataloader = DataLoader(dataset, batch_size=None,
+                                      num_workers=args.jobs,
+                                      prefetch_factor=2,
+                                      persistent_workers=True,
+                                      pin_memory=True)
+
     else:
-        snp2p_sampler = None
-        shuffle = True
-        snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
-                                      num_workers=args.jobs, shuffle=shuffle, sampler=None,
-                                      pin_memory=True,
-                                      persistent_workers=True,  # keep workers alive across epochs
-                                      #prefetch_factor=2
-                                      )
+        dataset = PhenotypeSelectionDataset(tree_parser, snp2p_dataset, snp2p_collator, args.batch_size, shuffle=True)
+        snp2p_dataloader = DataLoader(dataset, batch_size=None,
+                                      num_workers=args.jobs,
+                                      prefetch_factor=2,
+                                      persistent_workers=True,
+                                      pin_memory=True)
 
     if args.val_tsv:
         rank0_print("Loading validation TSV data from %s" % args.val_tsv, rank=args.rank)
@@ -438,22 +431,27 @@ def main_worker(args):
         cov_mean_dict=args.cov_mean_dict,
         cov_std_dict=args.cov_std_dict,
     )
+
     if val_snp2p_dataset is None:
         val_snp2p_dataloader = None
     else:
-        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
-                                          num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True)
+        val_snp2p_dataset = PhenotypeSelectionDataset(tree_parser, val_snp2p_dataset, snp2p_collator,
+                                                      batch_size=args.batch_size, shuffle=False)
+        val_snp2p_dataloader = DataLoader(val_snp2p_dataset, batch_size=None,
+                                          num_workers=args.jobs,
+                                          prefetch_factor=2,
+                                          persistent_workers=True,
+                                          pin_memory=True)
 
+    snp2p_trainer = GreedyMultiplePhenotypeTrainer(snp2p_model, tree_parser, snp2p_dataloader, device, args, args.target_phenotype,
+                                 validation_dataloader=val_snp2p_dataloader, fix_system=fix_system, pretrained_checkpoint=args.pretrained, use_mlflow=args.use_mlflow)
+    skip_initial_training = args.pretrained is not None
+    snp2p_trainer.greedy_phenotype_selection(skip_initial_training=skip_initial_training)
 
-    snp2p_trainer = SNP2PTrainer(snp2p_model, tree_parser, snp2p_dataloader, device, args, args.target_phenotype,
-                                 validation_dataloader=val_snp2p_dataloader, fix_system=fix_system, label_smoothing=args.label_smoothing)
-    snp2p_trainer.train(args.epochs, args.out)
+    if args.rank == 0 and args.use_mlflow:
+        mlflow.end_run()
 
 if __name__ == '__main__':
-    #try:
     mp.set_start_method('spawn', force=True)
-    #except RuntimeError:
-    #    pass # Already set, ignore
     print("Python __main__", flush=True)
-    #print("NCCL socket name :", os.environ["NCCL_SOCKET_IFNAME"])
     main()

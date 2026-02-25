@@ -76,8 +76,11 @@ class HierarchicalTransformerUpdate(nn.Module):
                     mask = mask.unsqueeze(0).unsqueeze(0)  # (1, 1, Lq, Lk)
                 elif mask.dim() == 3:  # (B, Lq, Lk)
                     mask = mask.unsqueeze(1)  # (B, 1, Lq, Lk)
-                # Expand to batch and heads
-                mask = mask.expand(B, self.h, Lq, Lk)
+                # Expand to batch and heads; xformers CutlassF requires a
+                # contiguous bias (stride(-1)==1, stride(-2)%4==0).  .expand()
+                # creates a non-contiguous view (stride-0 on broadcast dims),
+                # so we call .contiguous() to materialise the full tensor.
+                mask = mask.expand(B, self.h, Lq, Lk).contiguous()
 
         out = xops.memory_efficient_attention(
             q, k, v,

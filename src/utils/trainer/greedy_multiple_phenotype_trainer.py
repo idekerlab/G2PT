@@ -156,6 +156,14 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
                 state_dict[key] = self.map_embeddings(state_dict[key][0], new_state_dict[key][0],
                                                                 old_snp_tree_parser.snp2ind,
                                                                 new_snp_tree_parser.snp2ind).unsqueeze(0)
+            if 'snp_predictor.weight' in key:
+                state_dict[key] = self.map_embeddings(state_dict[key], new_state_dict[key],
+                                                                old_snp_tree_parser.snp2ind,
+                                                                new_snp_tree_parser.snp2ind, snp=True)
+            if 'snp_predictor.bias' in key:
+                state_dict[key] = self.map_embeddings(state_dict[key].unsqueeze(1), new_state_dict[key].unsqueeze(1),
+                                                                old_snp_tree_parser.snp2ind,
+                                                                new_snp_tree_parser.snp2ind, snp=True).squeeze(1)
         # Store pretrained indices
         self.pretrained_sys_indices = [new_snp_tree_parser.sys2ind[s] for s in old_snp_tree_parser.sys2ind if s in new_snp_tree_parser.sys2ind]
         self.pretrained_gene_indices = [new_snp_tree_parser.gene2ind[g] for g in old_snp_tree_parser.gene2ind if g in new_snp_tree_parser.gene2ind]
@@ -167,41 +175,54 @@ class GreedyMultiplePhenotypeTrainer(SNP2PTrainer):
         self.snp2p_model = self.snp2p_model.to(self.device)
 
     def _create_optimizer_with_param_groups(self, model, lr):
-        params = []
-        pretrained_lr = lr / 5.0
+        # Embedding rows that came from a pretrained checkpoint should be
+        # updated with a lower learning rate (lr/5) while newly-initialised
+        # rows use the full lr.
+        #
+        # PyTorch optimisers require *leaf* tensors, so we cannot pass
+        # param[mask] (a non-leaf indexed view) as a parameter group.
+        # Instead we register a gradient hook on each embedding weight that
+        # scales down the gradient rows belonging to pretrained embeddings
+        # before the optimiser step.  This is equivalent to using lr/5 for
+        # those rows while using lr for the rest.
+        pretrained_lr  = lr / 5.0
+        scale_factor   = pretrained_lr / lr          # = 0.2
 
-        # Handle DDP and non-DDP models
         prefix = 'module.' if isinstance(model, nn.parallel.DistributedDataParallel) else ''
 
         embedding_param_names = {
-            f'{prefix}system_embedding.weight': (self.pretrained_sys_indices, self.tree_parser.n_systems + 1),
-            f'{prefix}gene_embedding.weight': (self.pretrained_gene_indices, self.tree_parser.n_genes + 1),
-            f'{prefix}snp_embedding.weight': (self.pretrained_snp_indices, self.tree_parser.n_snps * 3 + 2),
+            f'{prefix}system_embedding.weight': self.pretrained_sys_indices,
+            f'{prefix}gene_embedding.weight':   self.pretrained_gene_indices,
+            f'{prefix}snp_embedding.weight':    self.pretrained_snp_indices,
         }
 
-        other_params = []
+        # Remove hooks registered by any previous call so they don't stack up.
+        if not hasattr(self, '_embedding_grad_hooks'):
+            self._embedding_grad_hooks = []
+        for h in self._embedding_grad_hooks:
+            h.remove()
+        self._embedding_grad_hooks = []
+
+        def _make_scale_hook(indices, scale):
+            """Return a grad hook that scales gradient rows in-place."""
+            def _hook(grad):
+                out = grad.clone()
+                out[indices] *= scale
+                return out
+            return _hook
+
+        all_params = []
         for name, param in model.named_parameters():
             if name in embedding_param_names:
-                pretrained_indices, total_size = embedding_param_names[name]
+                pretrained_indices = embedding_param_names[name]
+                if pretrained_indices and len(pretrained_indices) > 0:
+                    idx = torch.tensor(pretrained_indices, dtype=torch.long,
+                                       device=param.device)
+                    h = param.register_hook(_make_scale_hook(idx, scale_factor))
+                    self._embedding_grad_hooks.append(h)
+            all_params.append(param)
 
-                if pretrained_indices is None:
-                    # No pretrained indices, treat all as new
-                    other_params.append(param)
-                    continue
-
-                # Create masks for pretrained and new embeddings
-                pretrained_mask = torch.zeros(total_size, dtype=torch.bool, device=param.device)
-                pretrained_mask[pretrained_indices] = True
-                
-                # Add pretrained params
-                params.append({'params': param[pretrained_mask], 'lr': pretrained_lr})
-                # Add new params
-                params.append({'params': param[~pretrained_mask], 'lr': lr})
-            else:
-                other_params.append(param)
-
-        params.append({'params': other_params, 'lr': lr})
-        return optim.AdamW(params, weight_decay=self.args.wd)
+        return optim.AdamW(all_params, lr=lr, weight_decay=self.args.wd)
 
     def add_phenotype_as_embedding(self, model, phenotypes):
         """

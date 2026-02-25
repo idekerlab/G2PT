@@ -128,6 +128,7 @@ class SNP2PTrainer(object):
         system_temp_tensor = [np.log(1+len(tree_parser.sys2gene_full[tree_parser.ind2sys[i]])) for i in range(len(tree_parser.sys2ind))] + [10.0] * n_sys2pad
         self.system_temp_tensor = move_to(torch.tensor(system_temp_tensor, dtype=torch.float32), device)
         self.early_stopping = EarlyStopping(patience=args.patience, verbose=True)
+        self.grad_clip_norm = getattr(args, "grad_clip_norm", 1.0)
 
     def train(self, epochs, output_path=None):
         ccc = False
@@ -535,10 +536,25 @@ class SNP2PTrainer(object):
 
 
             loss = self.loss
-            #print(predictions.size(), batch['phenotype'].size())
-            #phenotype_loss = 0
-            #print((batch['phenotype']==-9).sum(), batch['phenotype'].size())
-            phenotype_loss = loss(predictions, batch['phenotype'])
+            # MultiplePhenotypeLoss uses GLOBAL column indices (bce_cols / mse_cols
+            # covering all n_total phenotypes).  When a subset batch is used
+            # (phenotype-selection training), predictions has only n_selected
+            # columns.  Expand both tensors to the full global shape, filling
+            # unselected columns with -9 (the "missing" sentinel that the loss
+            # already skips via `valid_mask = (target != -9)`).
+            if hasattr(loss, 'n_tasks') and predictions.shape[1] < loss.n_tasks:
+                pheno_idx = batch['phenotype_indices']
+                if pheno_idx.dim() > 1:
+                    pheno_idx = pheno_idx[0]   # (n_selected,) from first row
+                pheno_idx = pheno_idx.long()
+                B = predictions.shape[0]
+                full_preds   = predictions.new_full((B, loss.n_tasks), -9.0)
+                full_targets = predictions.new_full((B, loss.n_tasks), -9.0)
+                full_preds[:, pheno_idx]   = predictions
+                full_targets[:, pheno_idx] = batch['phenotype']
+                phenotype_loss = loss(full_preds, full_targets)
+            else:
+                phenotype_loss = loss(predictions, batch['phenotype'])
             #print(f"Rank {self.args.rank}: loss calculated", phenotype_loss)
 
             
@@ -577,6 +593,8 @@ class SNP2PTrainer(object):
             loss = phenotype_loss + 0.1 * snp_loss + gate_loss
             optimizer.zero_grad()
             loss.backward()
+            if self.grad_clip_norm and self.grad_clip_norm > 0:
+                nn.utils.clip_grad_norm_(model.parameters(), self.grad_clip_norm)
             optimizer.step()
 
             #print(f"Rank {self.args.rank} loss back-propagated")
