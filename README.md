@@ -35,13 +35,13 @@ export PYTHONPATH=.
    - Tab-separated text matching PLINK `.cov` / `.pheno` conventions. Provide columns for `FID` and `IID` plus any covariates/phenotypes.
    - Restrict covariates with `--cov-ids SEX AGE PC1 PC2 ...`. Declare phenotype types with `--bt` (binary) and `--qt` (quantitative). If a phenotype file is omitted, include a `PHENOTYPE` column in the covariate file.
 
-   *Example covariates* ([samples/train.cov](samples/train.cov)):
+   *Example covariates* ([samples/synthetic_train.cov](samples/synthetic_train.cov)):
 
    | FID      | IID      | SEX | AGE | PC1 | PC2 | ... | PC10 |
    |----------|----------|-----|-----|-----|-----|-----|------|
    | 10008090 | 10008090 | 1   | 48  | 3   | 0.3 | ... | 0.5  |
 
-   *Example phenotypes* ([samples/train.pheno](samples/train.pheno)):
+   *Example phenotypes* ([samples/synthetic_train.pheno](samples/synthetic_train.pheno)):
 
    | FID      | IID      | PHENOTYPE |
    |----------|----------|-----------|
@@ -76,7 +76,7 @@ If you want to collapse a Gene Ontology file using GWAS summary statistics, star
 
 ## Training
 
-> Sample data in `samples/` is randomly generated and only demonstrates the CLI; it will not yield meaningful biological results.
+> Sample data in `samples/` is synthetically generated and only demonstrates the CLI; it will not yield meaningful biological results.
 
 ### Single-GPU example (PLINK input)
 
