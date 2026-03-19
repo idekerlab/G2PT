@@ -65,9 +65,11 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                  activation='softmax', input_format='indices', cov_effect='pre',
                  pretrained_transformer=None, freeze_pretrained=True,
                  phenotypes=('PHENOTYPE',), ind2pheno=None, use_hierarchical_transformer=False, use_moe=False,
-                 use_independent_predictors=False, prediction_head=1, n_heads=4):
+                 use_independent_predictors=False, prediction_head=1, n_heads=4,
+                 use_sparse_attention=True):  # NEW: enable sparse attention
         super(SNP2PhenotypeModel, self).__init__(tree_parser, hidden_dims, interaction_types=interaction_types, dropout=dropout,
                                                  n_heads=4, input_format=input_format)
+        self.use_sparse_attention = use_sparse_attention  # NEW: store flag
         self.use_gene2pheno = gene2pheno
         self.use_sys2pheno = sys2pheno
         self.n_snps = self.tree_parser.n_snps
@@ -129,6 +131,63 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                                                 dropout, norm_channel_first=self.norm_channel_first,
                                                 conv_type='system',
                                                 activation='softmax')
+
+        # NEW: Enable sparse mode for transformers if using sparse attention
+        if self.use_sparse_attention:
+            self.snp2gene.hierarchical_transformer_update.use_sparse = True
+            self.gene2sys.hierarchical_transformer_update.use_sparse = True
+            self.gene2snp.hierarchical_transformer_update.use_sparse = True
+            self.sys2gene.hierarchical_transformer_update.use_sparse = True
+
+            # Enable sparse mode for hierarchical sys2sys transformers
+            for inter_type in self.interaction_types:
+                if inter_type in self.sys2env:
+                    self.sys2env[inter_type].hierarchical_transformer_update.use_sparse = True
+                if inter_type in self.env2sys:
+                    self.env2sys[inter_type].hierarchical_transformer_update.use_sparse = True
+
+            # Store references to precomputed edge indices if available
+            if hasattr(tree_parser, 'snp2gene_edge_index'):
+                self.snp2gene_edge_index = tree_parser.snp2gene_edge_index
+                self.snp2gene_edge_attr = tree_parser.snp2gene_edge_attr
+
+                # Compute gene2snp edge index (transpose of snp2gene)
+                # snp2gene_edge_index = [gene_idx (query), snp_idx (key)]
+                # gene2snp reverses: query=snps, key=genes
+                # gene2snp_edge_index = [snp_idx (query), gene_idx (key)]
+                self.gene2snp_edge_index = torch.stack([
+                    self.snp2gene_edge_index[1],  # snp indices → queries  (row 1 of snp2gene = snp keys)
+                    self.snp2gene_edge_index[0]   # gene indices → keys    (row 0 of snp2gene = gene queries)
+                ], dim=0)
+                self.gene2snp_edge_attr = self.snp2gene_edge_attr
+            else:
+                print("WARNING: tree_parser missing snp2gene_edge_index - sparse attention will be disabled")
+                self.use_sparse_attention = False
+
+            if hasattr(tree_parser, 'gene2sys_edge_index'):
+                self.gene2sys_edge_index = tree_parser.gene2sys_edge_index
+                self.gene2sys_edge_attr = tree_parser.gene2sys_edge_attr
+
+                # Compute sys2gene edge index (transpose of gene2sys)
+                # gene2sys_edge_index = [system_idx (query), gene_idx (key)]
+                # sys2gene reverses: query=genes, key=systems
+                # sys2gene_edge_index = [gene_idx (query), system_idx (key)]
+                self.sys2gene_edge_index = torch.stack([
+                    self.gene2sys_edge_index[1],  # gene indices → queries  (row 1 of gene2sys = gene keys)
+                    self.gene2sys_edge_index[0]   # system indices → keys   (row 0 of gene2sys = system queries)
+                ], dim=0)
+                self.sys2gene_edge_attr = self.gene2sys_edge_attr
+            else:
+                print("WARNING: tree_parser missing gene2sys_edge_index")
+
+            # Store hierarchical edges for sys2sys transformers
+            if hasattr(tree_parser, 'hierarchical_edges_forward'):
+                self.hierarchical_edges_forward = tree_parser.hierarchical_edges_forward
+                self.hierarchical_edges_backward = tree_parser.hierarchical_edges_backward
+                print("✓ Hierarchical edges loaded for sys2sys sparse attention")
+            else:
+                print("WARNING: tree_parser missing hierarchical_edges - sys2sys will use dense attention")
+
         self.cov_update_norm_inner = nn.LayerNorm(hidden_dims, eps=0.1)
         self.cov_update_norm_outer = nn.LayerNorm(hidden_dims, eps=0.1)
 
@@ -243,7 +302,11 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                                      genotype_dict, chunk, phenotype_ids,
                                      sys_temp=sys_temp, covariates=covariates)
         if predict_snp:
-            snp_embedding_updated = snp_embedding + self.get_gene2snps(snp_embedding, gene_embedding, snp2gene_mask.T)
+            # Pass gene2snp edge indices if using sparse attention
+            gene2snp_edge_idx = self.gene2snp_edge_index.to(gene_embedding.device) if (self.use_sparse_attention and hasattr(self, 'gene2snp_edge_index')) else None
+            gene2snp_edge_att = self.gene2snp_edge_attr.to(gene_embedding.device) if (gene2snp_edge_idx is not None and hasattr(self, 'gene2snp_edge_attr') and self.gene2snp_edge_attr is not None) else None
+
+            snp_embedding_updated = snp_embedding + self.get_gene2snps(snp_embedding, gene_embedding, snp2gene_mask.T, gene2snp_edge_idx, gene2snp_edge_att)
             snp_prediction = self.snp_predictor(snp_embedding_updated)
             return prediction, snp_prediction
         # 4. Optionally, return attention scores for interpretability
@@ -299,14 +362,30 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         system_embedding_total = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1).clone()
         system_embedding_total[:, genotype_dict['sys_indices']] = system_embedding_total[:, genotype_dict['sys_indices']] + self.effect_norm(gene_effect_on_system)
 
-        system_effect_forward = self.get_sys2sys(system_embedding_total, nested_hierarchical_masks_forward, direction='forward')
+        # Pass hierarchical edges if using sparse attention
+        hierarchical_edges_fwd = self.hierarchical_edges_forward if (self.use_sparse_attention and hasattr(self, 'hierarchical_edges_forward')) else None
+        hierarchical_edges_bwd = self.hierarchical_edges_backward if (self.use_sparse_attention and hasattr(self, 'hierarchical_edges_backward')) else None
+
+        system_effect_forward = self.get_sys2sys(system_embedding_total, nested_hierarchical_masks_forward, direction='forward', hierarchical_edges=hierarchical_edges_fwd)
         system_embedding_total = system_embedding_total + self.effect_norm(system_effect_forward)
 
-        system_effect_backward = self.get_sys2sys(system_embedding_total, nested_hierarchical_masks_backward, direction='backward')
+        system_effect_backward = self.get_sys2sys(system_embedding_total, nested_hierarchical_masks_backward, direction='backward', hierarchical_edges=hierarchical_edges_bwd)
         system_embedding_total = system_embedding_total + self.effect_norm(system_effect_backward)
         system_embedding = system_embedding_total[:, genotype_dict['sys_indices']]
 
-        system_effect_on_gene = self.get_sys2gene(gene_embedding, system_embedding, sys2gene_mask)
+        # Pass sys2gene edge indices only when embeddings cover all global indices.
+        # sys2gene_edge_index has global gene/system indices; if embeddings are a
+        # phenotype-subset, their dim is smaller and those indices would be OOB.
+        _use_sys2gene_sparse = (
+            self.use_sparse_attention
+            and hasattr(self, 'sys2gene_edge_index')
+            and gene_embedding.size(1) >= self.n_genes
+            and system_embedding.size(1) >= self.n_systems
+        )
+        sys2gene_edge_idx = self.sys2gene_edge_index.to(gene_embedding.device) if _use_sys2gene_sparse else None
+        sys2gene_edge_att = self.sys2gene_edge_attr.to(gene_embedding.device) if (_use_sys2gene_sparse and self.sys2gene_edge_attr is not None) else None
+
+        system_effect_on_gene = self.get_sys2gene(gene_embedding, system_embedding, sys2gene_mask, sys2gene_edge_idx, sys2gene_edge_att)
         gene_embedding = gene_embedding + self.effect_norm(system_effect_on_gene)
 
         if (self.cov_effect=='post') or (self.cov_effect=='both'):
@@ -403,21 +482,50 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         """Propagates information from SNP embeddings to gene embeddings."""
         gene_embedding_input = self.dropout(self.gene_norm(gene_embedding))
         snp_embedding_input = self.dropout(snp_embedding)
-        snp_effect_on_gene = self.snp2gene.forward(gene_embedding_input, snp_embedding_input, snp2gene_mask)
+
+        # Use sparse edges only when embedding covers all global indices.
+        # When select_phenotypes() creates a subset batch, embedding dim is smaller
+        # than n_genes/n_snps and the precomputed global edge_index would be OOB.
+        if (self.use_sparse_attention and hasattr(self, 'snp2gene_edge_index')
+                and gene_embedding.size(1) >= self.n_genes
+                and snp_embedding.size(1) >= self.n_snps):
+            edge_index = self.snp2gene_edge_index.to(gene_embedding.device)
+            edge_attr = self.snp2gene_edge_attr.to(gene_embedding.device) if self.snp2gene_edge_attr is not None else None
+            snp_effect_on_gene = self.snp2gene.forward(
+                gene_embedding_input, snp_embedding_input, mask=None,
+                edge_index=edge_index, edge_attr=edge_attr
+            )
+        else:
+            snp_effect_on_gene = self.snp2gene.forward(gene_embedding_input, snp_embedding_input, snp2gene_mask)
+
         return snp_effect_on_gene
 
     def get_gene2sys(self, system_embedding, gene_embedding, gene2sys_mask):
         """Propagates information from gene embeddings to system embeddings."""
         system_embedding_input = self.dropout(self.sys_norm(system_embedding))
         gene_embedding_input = self.dropout(self.gene_norm(gene_embedding))
-        gene_effect = self.gene2sys.forward(system_embedding_input, gene_embedding_input, gene2sys_mask)
+
+        # Use sparse edges only when embedding covers all global indices.
+        if (self.use_sparse_attention and hasattr(self, 'gene2sys_edge_index')
+                and system_embedding.size(1) >= self.n_systems
+                and gene_embedding.size(1) >= self.n_genes):
+            edge_index = self.gene2sys_edge_index.to(system_embedding.device)
+            edge_attr = self.gene2sys_edge_attr.to(system_embedding.device) if self.gene2sys_edge_attr is not None else None
+            gene_effect = self.gene2sys.forward(
+                system_embedding_input, gene_embedding_input, mask=None,
+                edge_index=edge_index, edge_attr=edge_attr
+            )
+        else:
+            gene_effect = self.gene2sys.forward(system_embedding_input, gene_embedding_input, gene2sys_mask)
+
         return gene_effect
 
-    def get_gene2snps(self, snp_embedding, gene_embedding, gene2snp_mask):
+    def get_gene2snps(self, snp_embedding, gene_embedding, gene2snp_mask, gene2snp_edge_index=None, gene2snp_edge_attr=None):
         """Propagates information from gene embeddings to SNP embeddings."""
         gene_embedding_input = self.dropout(self.gene_norm(gene_embedding))
         snp_embedding_input = self.dropout(snp_embedding)
-        gene_effect_on_snp = self.gene2snp.forward(snp_embedding_input, gene_embedding_input, gene2snp_mask)
+        gene_effect_on_snp = self.gene2snp.forward(snp_embedding_input, gene_embedding_input, gene2snp_mask,
+                                                    edge_index=gene2snp_edge_index, edge_attr=gene2snp_edge_attr)
         return gene_effect_on_snp
 
 
@@ -470,11 +578,30 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         phenotype_feature = torch.cat(phenotype_features, dim=-1)
 
         if self.use_independent_predictors:
-            # Assuming the batch contains samples for a single phenotype
-            pheno_id = phenotype_ids[0].item()
-            pheno_name = self.ind2pheno[pheno_id]
-            predictor = self.predictors[pheno_name]
-            phenotype_prediction = predictor(phenotype_feature)
+            # phenotype_ids may be 1-D (n_phenos,) or 2-D (B, n_phenos).
+            # All samples in a batch share the same phenotype IDs, so collapse
+            # to a 1-D view to get the canonical per-phenotype ID list.
+            if phenotype_ids.dim() > 1:
+                pheno_ids_1d = phenotype_ids[0]   # first row: (n_phenos,)
+            else:
+                pheno_ids_1d = phenotype_ids      # already (n_phenos,)
+
+            if pheno_ids_1d.numel() == 1:
+                # Single-phenotype batch — original path
+                pheno_name = self.ind2pheno[pheno_ids_1d.item()]
+                phenotype_prediction = self.predictors[pheno_name](phenotype_feature)
+            else:
+                # Multi-phenotype batch.
+                # phenotype_feature is (B, n_phenos, feature_dim); apply each
+                # phenotype's independent predictor to its own slice.
+                predictions = []
+                for i in range(pheno_ids_1d.numel()):
+                    pid        = int(pheno_ids_1d[i].item())
+                    pheno_name = self.ind2pheno[pid]
+                    feat_i     = phenotype_feature[:, i, :]   # (B, feature_dim)
+                    predictions.append(self.predictors[pheno_name](feat_i))
+                # Stack → (B, n_phenos, out_dim)
+                phenotype_prediction = torch.stack(predictions, dim=1)
         else:
             phenotype_prediction = self.predictor(phenotype_feature)
 

@@ -83,20 +83,22 @@ class Genotype2PhenotypeTransformer(nn.Module):
         gene_effect = self.gene2sys.forward(system_embedding_input, gene_embedding_input_input, gene2sys_mask)
         return gene_effect
 
-    def get_sys2gene(self, gene_embedding, system_embedding, sys2gene_mask):
+    def get_sys2gene(self, gene_embedding, system_embedding, sys2gene_mask, sys2gene_edge_index=None, sys2gene_edge_attr=None):
         gene_embedding_input = self.dropout(self.gene_norm(gene_embedding))
         system_embedding_input = self.dropout(self.sys_norm(system_embedding))
-        system_effect = self.sys2gene.forward(gene_embedding_input, system_embedding_input, sys2gene_mask)
+        system_effect = self.sys2gene.forward(gene_embedding_input, system_embedding_input, sys2gene_mask,
+                                              edge_index=sys2gene_edge_index, edge_attr=sys2gene_edge_attr)
         return system_effect
 
     def get_sys2sys(self, system_embedding, nested_hierarchical_masks,
-                    direction: str = "forward") -> torch.Tensor:
+                    direction: str = "forward", hierarchical_edges=None) -> torch.Tensor:
         """
         Args
         ----
         system_embedding : (B, S, H)  – current system-level embeddings
         nested_hierarchical_masks : iterable of dicts produced by the dataloader
         direction : 'forward' | 'backward'
+        hierarchical_edges : optional precomputed edge indices for sparse attention
         Returns
         -------
         (B, S, H)  – updated system embeddings
@@ -116,7 +118,10 @@ class Genotype2PhenotypeTransformer(nn.Module):
         # updates will be accumulated here to avoid in-place writes on the view
         delta = torch.zeros_like(system_embedding)  # (B·S, H)
 
-        for hierarchical_masks in nested_hierarchical_masks:
+        # Check if using sparse attention with precomputed edges
+        use_sparse = hierarchical_edges is not None and hasattr(self, 'use_sparse_attention') and self.use_sparse_attention
+
+        for level_idx, hierarchical_masks in enumerate(nested_hierarchical_masks):
             for inter_type, hmask in hierarchical_masks.items():
                 hitr = sys2sys_layer[inter_type]
 
@@ -131,8 +136,23 @@ class Genotype2PhenotypeTransformer(nn.Module):
                 sys_q = self.dropout(self.sys_norm(sys_q))
                 sys_k = self.dropout(self.sys_norm(sys_k))
 
-                # hitr.forward returns (B, n_q, H)
-                effect = self.effect_norm(hitr.forward(sys_q, sys_k, attn_mask))
+                # Use sparse or dense attention
+                if use_sparse and level_idx < len(hierarchical_edges):
+                    # Get precomputed edge index for this level and interaction type
+                    edge_data = hierarchical_edges[level_idx].get(inter_type)
+                    if edge_data is not None:
+                        edge_index = edge_data['edge_index'].to(device)
+                        edge_attr = edge_data.get('edge_attr')
+                        if edge_attr is not None:
+                            edge_attr = edge_attr.to(device)
+                        # Call with sparse attention
+                        effect = self.effect_norm(hitr.forward(sys_q, sys_k, None, edge_index=edge_index, edge_attr=edge_attr))
+                    else:
+                        # Fallback to dense if edge not found
+                        effect = self.effect_norm(hitr.forward(sys_q, sys_k, attn_mask))
+                else:
+                    # Dense attention
+                    effect = self.effect_norm(hitr.forward(sys_q, sys_k, attn_mask))
 
                 # -------- flat indices for B·n_q rows -----------------------------
                 #   idx = q_idx + b*S   (broadcasted over batch dimension)

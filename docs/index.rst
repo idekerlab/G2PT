@@ -16,6 +16,7 @@ G2PT Documentation
    Epistasis Analysis <source/epistasis_analysis.md>
    Epistasis Simulation <source/epistasis_simulation.md>
    Sankey Visualization <source/sankey_visualization.md>
+   Sparse Attention <08_sparse_attention.md>
 
 API Documentation
 ==================
