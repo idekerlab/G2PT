@@ -1,9 +1,9 @@
 python predict_attention.py \
   --onto ./samples/ontology.txt \
   --snp2gene ./samples/snp2gene.txt \
-  --bfile ./samples/train \
-  --cov ./samples/train.cov \
-  --pheno ./samples/train.pheno \
+  --bfile ./samples/synthetic_train \
+  --cov ./samples/synthetic_train.cov \
+  --pheno ./samples/synthetic_train.pheno \
   --batch-size 128 \
   --model ./samples/output_model.pt.20 \
   --cuda 0 \
