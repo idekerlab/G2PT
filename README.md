@@ -75,6 +75,64 @@ export PYTHONPATH=.
 
 If you want to collapse a Gene Ontology file using GWAS summary statistics, start with the notebooks in the [G2PT pipeline](#g2pt-pipeline-in-overall).
 
+## Synthetic sample data
+
+The `samples/` directory contains fully synthetic data generated for demonstration and format validation only — no real participant data.
+
+### Regenerate sample files
+
+```bash
+/cellar/users/i5lee/miniconda3/envs/G2PT_github/bin/python samples/generate_synthetic_data.py
+```
+
+This produces a 1000 / 500 / 300 train / val / test split with 293 SNPs.  All seven file types are written:
+
+| File | Description |
+| ---- | ----------- |
+| `*.bed / *.bim / *.fam` | PLINK binary genotypes (SNP-major, GRCh38-like positions) |
+| `*.pheno` | Continuous phenotype (`FID IID PHENOTYPE`) |
+| `*.cov` | Covariates: SEX, AGE, AGE² (centered), PC1–PC10 |
+| `snp2gene.txt` | SNP → gene mapping (`snp gene`) |
+| `ontology.txt` | GO-like DAG edges (`parent child type`) |
+
+Key generation parameters (all overridable via CLI flags — see `samples/README.md`):
+
+| Flag | Default | Meaning |
+| ---- | ------- | ------- |
+| `--n_train` | 1000 | Training samples |
+| `--n_val` | 500 | Validation samples |
+| `--n_test` | 300 | Test samples |
+| `--n_snps` | 293 | Total SNPs |
+| `--seed` | 42 | Reproducibility seed |
+
+Genotypes are simulated with realistic MAF spectrum and LD block structure; the phenotype combines additive SNP effects, pairwise epistatic interactions (see [`src/utils/analysis/epistasis_simulation.py`](src/utils/analysis/epistasis_simulation.py)), and Gaussian noise scaled to unit variance.
+
+### Validate with PLINK polygenic scoring
+
+A ready-to-run PLINK score pipeline is provided to sanity-check the generated data end-to-end:
+
+```bash
+bash samples/run_plink_score.sh
+```
+
+Steps performed:
+
+1. **Generate** all splits via `generate_synthetic_data.py`
+2. **GWAS** on train set — `plink --linear` with SEX / AGE / AGE² / PC1–PC10 covariates
+3. **Build score file** — SNPs passing `P_THRESH` (default `5e-2`), ADD test only
+4. **Score** test set — `plink --score`
+5. **Evaluate** — Pearson r² of PRS vs. true phenotype
+
+Override defaults via environment variables, e.g.:
+
+```bash
+P_THRESH=1e-3 N_TRAIN=2000 bash samples/run_plink_score.sh
+```
+
+All intermediate files (`gwas_train.assoc.linear`, `score.txt`, `prs_test.profile`) are written to `samples/plink_score_tmp/`.
+
+---
+
 ## Training
 
 > Sample data in `samples/` is synthetically generated and only demonstrates the CLI; it will not yield meaningful biological results.
@@ -162,6 +220,7 @@ python train_snp2p_model.py \
 ### How it works
 
 Instead of computing full attention matrices between all SNPs and genes (which would be mostly zero), sparse attention:
+
 1. Precomputes sparse edge indices during dataset initialization
 2. Only computes attention for valid SNP-gene, gene-system, and system-system connections
 3. Uses efficient gather/scatter operations instead of dense matrix multiplication
@@ -194,7 +253,7 @@ TSV inputs are supported via `--tsv` in place of `--bfile`.
 
 ## Documentation and API reference
 
-The full documentation (including the API reference) is available at: https://g2pt.readthedocs.io/en/latest/index.html
+The full documentation (including the API reference) is available at: <https://g2pt.readthedocs.io/en/latest/index.html>
 
 ## G2PT pipeline in overall
 
@@ -223,7 +282,7 @@ Read [Epistasis_simulation.ipynb](Epistasis_simulation.ipynb)
 - [x] Build data loader for `plink` binary file using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/).
 - [x] Adding `.cov` and `.pheno` for input.
 - [x] Change model for multiple phenotypes.
-- [x] Refactor to use config for the consistency and 
+- [x] Refactor to use config for the consistency and
 - [x] Change to sparse attention
 - [ ] Implementing new importance methods
 - [ ] Implementing causalty model like MR

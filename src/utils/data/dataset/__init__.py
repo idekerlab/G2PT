@@ -14,8 +14,3 @@ from .SNP2PDataset import (
     TSVDataset,
 )
 
-from .phenotype_selection_dataset import (
-    PhenotypeSelectionDataset,
-    PhenotypeSelectionNonIterableDataset,
-    PhenotypeSelectionDatasetDDP,
-)

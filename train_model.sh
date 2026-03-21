@@ -1,12 +1,12 @@
 python train_snp2p_model.py \
     --onto ./samples/ontology.txt \
     --snp2gene ./samples/snp2gene.txt \
-    --train-bfile ./samples/train \
-    --train-cov ./samples/train.cov \
-    --train-pheno ./samples/train.pheno \
-    --val-bfile ./samples/val \
-    --val-cov ./samples/val.cov \
-    --val-pheno ./samples/val.pheno \
+    --train-bfile ./samples/synthetic_train \
+    --train-cov ./samples/synthetic_train.cov \
+    --train-pheno ./samples/synthetic_train.pheno \
+    --val-bfile ./samples/synthetic_val \
+    --val-cov ./samples/synthetic_val.cov \
+    --val-pheno ./samples/synthetic_val.pheno \
     --jobs 8 \
     --epochs 21 \
     --hidden-dims 64 \
