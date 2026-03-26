@@ -155,7 +155,7 @@ def write_bed(filepath: str, G: np.ndarray, n_samples: int, n_snps: int) -> None
 
 def make_sample_ids(n, rng):
     """Generate n unique 7-digit numeric sample IDs (FID == IID)."""
-    return rng.choice(np.arange(2_000_000, 9_999_999), size=n, replace=False).tolist()
+    return rng.choice(np.arange(7_000_000, 9_999_999), size=n, replace=False).tolist()
 
 
 def write_fam(ids, path):
