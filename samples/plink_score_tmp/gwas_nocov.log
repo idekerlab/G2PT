@@ -1,0 +1,29 @@
+PLINK v1.90b7 64-bit (16 Jan 2023)
+Options in effect:
+  --allow-no-sex
+  --bfile samples/synthetic_train
+  --linear
+  --out samples/plink_score_tmp/gwas_nocov
+  --pheno samples/synthetic_train.pheno
+  --pheno-name PHENOTYPE
+
+Hostname: nrnb-gpu-04
+Working directory: /cellar/users/i5lee/G2PT_github_new
+Start time: Fri Mar 20 17:11:44 2026
+
+Random number seed: 1774051904
+385555 MB RAM detected; reserving 192777 MB for main workspace.
+293 variants loaded from .bim file.
+1000 people (0 males, 0 females, 1000 ambiguous) loaded from .fam.
+Ambiguous sex IDs written to samples/plink_score_tmp/gwas_nocov.nosex .
+1000 phenotype values present after --pheno.
+Using 1 thread (no multithreaded calculations invoked).
+Before main variant filters, 1000 founders and 0 nonfounders present.
+Calculating allele frequencies... done.
+Total genotyping rate is exactly 1.
+293 variants and 1000 people pass filters and QC.
+Phenotype data is quantitative.
+Writing linear model association results to
+samples/plink_score_tmp/gwas_nocov.assoc.linear ... done.
+
+End time: Fri Mar 20 17:11:44 2026

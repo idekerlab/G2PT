@@ -7,5 +7,4 @@ python predict_attention.py \
   --batch-size 128 \
   --model ./samples/output_model.pt.20 \
   --cuda 0 \
-  --out ./samples/output_model \
-  --system_annot GO_files/goID_2_name.tab
+  --out ./samples/output_model 

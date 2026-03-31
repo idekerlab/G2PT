@@ -1,0 +1,28 @@
+PLINK v1.90b7 64-bit (16 Jan 2023)
+Options in effect:
+  --allow-no-sex
+  --bfile /cellar/users/i5lee/G2PT_github_new/samples/synthetic_test
+  --out /cellar/users/i5lee/G2PT_github_new/samples/plink_score_tmp/prs_test
+  --score /cellar/users/i5lee/G2PT_github_new/samples/plink_score_tmp/score.txt 1 2 3
+
+Hostname: nrnb-gpu-04
+Working directory: /cellar/users/i5lee/G2PT_github_new/samples
+Start time: Mon Mar 30 17:27:01 2026
+
+Random number seed: 1774916821
+385555 MB RAM detected; reserving 192777 MB for main workspace.
+293 variants loaded from .bim file.
+300 people (0 males, 0 females, 300 ambiguous) loaded from .fam.
+Ambiguous sex IDs written to
+/cellar/users/i5lee/G2PT_github_new/samples/plink_score_tmp/prs_test.nosex .
+Using 1 thread (no multithreaded calculations invoked).
+Before main variant filters, 300 founders and 0 nonfounders present.
+Calculating allele frequencies... done.
+Total genotyping rate is exactly 1.
+293 variants and 300 people pass filters and QC.
+Note: No phenotypes present.
+--score: 69 valid predictors loaded.
+--score: Results written to
+/cellar/users/i5lee/G2PT_github_new/samples/plink_score_tmp/prs_test.profile .
+
+End time: Mon Mar 30 17:27:01 2026
