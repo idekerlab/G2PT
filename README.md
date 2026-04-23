@@ -276,6 +276,10 @@ The full documentation (including the API reference) is available at: <https://g
 
 Read [Epistasis_simulation.ipynb](Epistasis_simulation.ipynb)
 
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
 ## Future work
 
 - [x] Applying [Differential Transformer](https://github.com/microsoft/unilm/tree/master/Diff-Transformer) to genetic factor translation.
