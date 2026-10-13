@@ -1,7 +1,9 @@
 import gc
+import json
 import torch
 import torch.nn as nn
 import mlflow
+import torch.distributed as dist
 from torch.nn.functional import cosine_similarity
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -16,6 +18,11 @@ from src.utils.trainer import CCCLoss, FocalLoss, VarianceLoss, MultiplePhenotyp
 from src.utils.trainer.utils import EarlyStopping
 import torch.nn.functional as F
 import copy
+
+try:
+    import statsmodels.api as sm
+except ImportError:
+    sm = None
 
 def _corrcoef(x):                         # x: [B, P]
     x = x - x.mean(dim=0, keepdim=True)
@@ -107,7 +114,7 @@ class SNP2PTrainer(object):
         #self.total_train_step = len(
         #    self.snp2p_dataloader) * args.epochs  # + len(self.drug_response_dataloader_cellline)*args.epochs
         #self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 10)
-        self.scheduler = ReduceLROnPlateau(self.optimizer, 'max', patience=5, factor=0.5, verbose=True)
+        self.scheduler = ReduceLROnPlateau(self.optimizer, 'max', patience=5, factor=0.5)
         self.snp2gene_mask = move_to(torch.tensor(tree_parser.snp2gene_mask, dtype=torch.float32), device)
         self.nested_subtrees_forward = tree_parser.get_hierarchical_interactions(
             tree_parser.interaction_types, direction='forward', format='indices')#self.args.input_format)
@@ -123,12 +130,44 @@ class SNP2PTrainer(object):
 
         self.target_phenotype = target_phenotype
         self.mlm = args.mlm
+        self.bt_validation_metric = getattr(args, "bt_validation_metric", "aupr")
 
         n_sys2pad = int(np.ceil(len(tree_parser.sys2ind)/8)*8) - len(tree_parser.sys2ind)
         system_temp_tensor = [np.log(1+len(tree_parser.sys2gene_full[tree_parser.ind2sys[i]])) for i in range(len(tree_parser.sys2ind))] + [10.0] * n_sys2pad
         self.system_temp_tensor = move_to(torch.tensor(system_temp_tensor, dtype=torch.float32), device)
         self.early_stopping = EarlyStopping(patience=args.patience, verbose=True)
         self.grad_clip_norm = getattr(args, "grad_clip_norm", 1.0)
+        self.current_epoch = 0
+        self.best_epoch = None
+        self.last_binary_metrics = {}
+
+    def _broadcast_stop_flag(self, should_stop):
+        if not self.args.distributed or not dist.is_initialized():
+            return should_stop
+        stop_tensor = torch.tensor(
+            [1 if should_stop else 0],
+            device=self.device,
+            dtype=torch.int32,
+        )
+        dist.broadcast(stop_tensor, src=0)
+        return bool(stop_tensor.item())
+
+    def _model_for_rank0_io(self):
+        if self.args.distributed and hasattr(self.snp2p_model, "module"):
+            return self.snp2p_model.module
+        return self.snp2p_model
+
+    def _save_model(self, output_path):
+        model_to_save = self._model_for_rank0_io()
+        torch.save(
+            {"arguments": self.args, "state_dict": model_to_save.state_dict(),
+             "training_metadata": {"epoch": self.current_epoch,
+                                   "best_epoch": self.best_epoch,
+                                   "selection_metric": self.bt_validation_metric,
+                                   "best_score": self.early_stopping.best_score,
+                                   "seed": getattr(self.args, "seed", None)}},
+            output_path,
+        )
 
     def train(self, epochs, output_path=None):
         ccc = False
@@ -174,8 +213,10 @@ class SNP2PTrainer(object):
                 param.requires_grad = False
                 print(name, " become freezed")
         '''
-        self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.snp2p_model.parameters()), lr=self.args.lr,
-                                     weight_decay=self.args.wd)
+        # Keep the optimizer that the scheduler is attached to. Replacing it
+        # here silently caused ReduceLROnPlateau to update an unused optimizer.
+        if self.scheduler.optimizer is not self.optimizer:
+            raise RuntimeError("Scheduler must control the active training optimizer")
 
         #if not self.args.distributed or (self.args.distributed
         #                                                 and self.args.rank % torch.cuda.device_count() == 0):
@@ -184,64 +225,67 @@ class SNP2PTrainer(object):
         #    torch.cuda.empty_cache()
 
         for epoch in range(self.args.start_epoch, epochs):
+            self.current_epoch = epoch + 1
             self.train_epoch(epoch + 1, ccc=ccc)
             gc.collect()
             torch.cuda.empty_cache()
 
-            if (epoch % self.args.val_step) == 0 & (epoch != 0):
+            should_validate = ((epoch + 1) % self.args.val_step == 0 or epoch + 1 == epochs)
+            if should_validate:
+                should_stop = False
                 if self.validation_dataloader is not None:
-                    if not self.args.distributed or (self.args.distributed and self.args.rank == 0):
-                        performance = self.evaluate(self.snp2p_model, self.validation_dataloader, epoch + 1,
+                    if not self.args.distributed or self.args.rank == 0:
+                        eval_model = self._model_for_rank0_io()
+                        performance = self.evaluate(eval_model, self.validation_dataloader, epoch + 1,
                                                     name="Validation", print_importance=False, phenotypes=self.phenotypes)
+                        if not np.isfinite(performance):
+                            raise ValueError("Non-finite checkpoint selection metric")
                         self.scheduler.step(performance)
-                        if self.early_stopping(performance, self.snp2p_model):
+                        if self.early_stopping(performance, eval_model):
                             print("Early stopping")
-                            break
+                            should_stop = True
+                        if self.early_stopping.wait == 0:
+                            self.best_epoch = epoch + 1
+                            if output_path:
+                                self._save_model(f"{output_path}.best")
+                        if output_path:
+                            record = {"epoch": epoch + 1, "selection_metric": self.bt_validation_metric,
+                                      "selection_value": float(performance),
+                                      "best_epoch": self.best_epoch,
+                                      "learning_rates": [g["lr"] for g in self.optimizer.param_groups],
+                                      **self.last_binary_metrics}
+                            with open(f"{output_path}.validation.jsonl", "a") as handle:
+                                handle.write(json.dumps(record, allow_nan=False) + "\n")
                         torch.cuda.empty_cache()
                         gc.collect()
-                    if output_path:
-                        output_path_epoch = f"{output_path}.{epoch}"
+
+                    should_stop = self._broadcast_stop_flag(should_stop)
+
+                    if output_path and (not self.args.distributed or self.args.rank == 0):
+                        output_path_epoch = f"{output_path}.{epoch + 1}"
                         print("Save to...", output_path_epoch)
-                        if self.args.distributed:
-                            torch.save({"arguments": self.args,
-                                        "state_dict": self.snp2p_model.module.state_dict()},
-                                       output_path_epoch)
-                        else:
-                            torch.save(
-                                {"arguments": self.args, "state_dict": self.snp2p_model.state_dict()},
-                                output_path_epoch)
+                        self._save_model(output_path_epoch)
                         if self.use_mlflow:
                             mlflow.log_artifact(output_path_epoch)
                         print(f"MODEL_PATH:{output_path_epoch}")
                 else:
-                    if output_path:
+                    should_stop = self._broadcast_stop_flag(False)
+                    if output_path and (not self.args.distributed or self.args.rank == 0):
                         output_path_epoch = f"{output_path}.{epoch}"
                         print("Save to...", output_path_epoch)
-                        if self.args.distributed:
-                            torch.save({"arguments": self.args,
-                                        "state_dict": self.snp2p_model.module.state_dict()},
-                                       output_path_epoch)
-                        else:
-                            torch.save(
-                                {"arguments": self.args, "state_dict": self.snp2p_model.state_dict()},
-                                output_path_epoch)
+                        self._save_model(output_path_epoch)
                         if self.use_mlflow:
                             mlflow.log_artifact(output_path_epoch)
                         print(f"MODEL_PATH:{output_path_epoch}")
+                if should_stop:
+                    break
         if self.args.rank == 0:
             if self.validation_dataloader is not None:
-                self.snp2p_model.load_state_dict(self.early_stopping.best_weights)
+                self._model_for_rank0_io().load_state_dict(self.early_stopping.best_weights)
             if output_path:
                 output_path_epoch = f"{output_path}.best"
                 print("Save to...", output_path_epoch)
-                if self.args.distributed:
-                    torch.save({"arguments": self.args,
-                                "state_dict": self.snp2p_model.module.state_dict()},
-                                output_path_epoch)
-                else:
-                    torch.save(
-                        {"arguments": self.args, "state_dict": self.snp2p_model.state_dict()},
-                        output_path_epoch)
+                self._save_model(output_path_epoch)
                 if self.use_mlflow:
                     mlflow.log_artifact(output_path_epoch)
                 print(f"MODEL_PATH:{output_path_epoch}")
@@ -396,24 +440,82 @@ class SNP2PTrainer(object):
         return performance#(female_performance + male_performance)/2
 
     #@staticmethod
+    @staticmethod
+    def _drop_dependent_columns(design_matrix):
+        independent_cols = []
+        rank = 0
+        for col_idx in range(design_matrix.shape[1]):
+            candidate_cols = independent_cols + [col_idx]
+            candidate_rank = np.linalg.matrix_rank(design_matrix[:, candidate_cols])
+            if candidate_rank > rank:
+                independent_cols.append(col_idx)
+                rank = candidate_rank
+        return design_matrix[:, independent_cols]
+
+    def _logit_pseudo_r2(self, trues, results, covariates=None):
+        if sm is None:
+            print("statsmodels is unavailable; falling back to AUPR for validation metric.")
+            return None
+
+        y = np.asarray(trues, dtype=float)
+        score = np.asarray(results, dtype=float).reshape(-1, 1)
+        design_parts = [np.ones((len(y), 1), dtype=float), score]
+        if covariates is not None:
+            design_parts.append(np.asarray(covariates, dtype=float))
+        design = np.column_stack(design_parts)
+
+        valid = np.isfinite(y) & np.isfinite(design).all(axis=1)
+        y = y[valid]
+        design = design[valid]
+        if len(np.unique(y)) < 2 or design.shape[0] <= design.shape[1]:
+            return 0.0
+
+        design = self._drop_dependent_columns(design)
+        try:
+            fit = sm.Logit(y, design).fit(disp=0, maxiter=100)
+            pseudo_r2 = float(fit.prsquared)
+        except Exception as exc:
+            print(f"Pseudo-R2 validation failed ({exc}); falling back to AUPR.")
+            return None
+        if not np.isfinite(pseudo_r2):
+            return None
+        return pseudo_r2
+
     def evaluate_binary_phenotype(self, trues, results, covariates=None, phenotype_name="", epoch=0, rank=0):
-        if rank == 0:
-            print(trues[:50])
-            print(results[:50])
+        # Never print participant-level labels or scores to logs.
         mask = (trues != -9)
         if mask.sum() == 0:
             return 0.
         if rank == 0:
             print("Performance overall for %s" % phenotype_name)
         auc_performance = metrics.roc_auc_score(trues[mask], results[mask])
-        performance = metrics.average_precision_score(trues[mask], results[mask])
+        aupr_performance = metrics.average_precision_score(trues[mask], results[mask])
+        pseudo_r2_performance = self._logit_pseudo_r2(
+            trues[mask],
+            results[mask],
+            covariates[mask] if covariates is not None else None,
+        )
+        performance = aupr_performance
+        if self.bt_validation_metric == 'auc':
+            performance = auc_performance
+        elif self.bt_validation_metric == 'pseudo_r2':
+            performance = pseudo_r2_performance if pseudo_r2_performance is not None else aupr_performance
+        self.last_binary_metrics = {
+            "phenotype": phenotype_name,
+            "auc": float(auc_performance), "average_precision": float(aupr_performance),
+            "validation_refit_pseudo_r2": pseudo_r2_performance,
+        }
         if rank == 0:
             if self.use_mlflow:
                 mlflow.log_metric(f"{phenotype_name}_auc", auc_performance, step=epoch)
             if self.use_mlflow:
-                mlflow.log_metric(f"{phenotype_name}_aupr", performance, step=epoch)
+                mlflow.log_metric(f"{phenotype_name}_aupr", aupr_performance, step=epoch)
+            if self.use_mlflow and pseudo_r2_performance is not None:
+                mlflow.log_metric(f"{phenotype_name}_pseudo_r2", pseudo_r2_performance, step=epoch)
         print("AUC: ", auc_performance)
-        print("AUPR: ", performance)
+        print("AUPR: ", aupr_performance)
+        print("Pseudo R2: ", pseudo_r2_performance)
+        print("Validation metric (%s): " % self.bt_validation_metric, performance)
         if covariates is not None:
 
             print("Performance female")
@@ -448,7 +550,7 @@ class SNP2PTrainer(object):
 
         self.snp2p_model.train()
         if self.args.distributed:
-            if self.args.z_weight!=0:
+            if hasattr(self.snp2p_dataloader.sampler, "set_epoch"):
                 self.snp2p_dataloader.sampler.set_epoch(epoch)
 
         new_temperature = linear_temperature_schedule(epoch, self.args.epochs, T_init=1.0, T_final=0.25)

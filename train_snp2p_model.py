@@ -1,8 +1,11 @@
 import argparse
+import gc
 import os
 import subprocess
 import socket
 import warnings
+import random
+import numpy as np
 
 import pandas as pd
 
@@ -42,6 +45,7 @@ class SNP2PDatasetFactory:
         pheno_path=None,
         cov_mean_dict=None,
         cov_std_dict=None,
+        reference_alleles=None,
     ):
         if not dataset_path:
             return None
@@ -51,6 +55,7 @@ class SNP2PDatasetFactory:
         else:
             dataset_cls = PLINKDataset
 
+        allele_options = {'reference_alleles': reference_alleles} if dataset_kind == 'plink' else {}
         return dataset_cls(
             tree_parser,
             dataset_path,
@@ -63,7 +68,8 @@ class SNP2PDatasetFactory:
             cov_ids=dataset_config.cov_ids,
             pheno_ids=dataset_config.pheno_ids,
             bt=dataset_config.bt,
-            qt=dataset_config.qt
+            qt=dataset_config.qt,
+            **allele_options
         )
 
 def count_parameters(model):
@@ -83,6 +89,24 @@ def rank0_print(*args, rank=0, **kwargs):
     """Print only on rank 0 to avoid cluttered logs in distributed training."""
     if rank == 0:
         print(*args, **kwargs)
+
+
+def shutdown_dataloader_workers(dataloader):
+    """
+    Best-effort shutdown for DataLoader worker processes.
+    This avoids lingering worker/semaphore state after DDP training finishes.
+    """
+    if dataloader is None:
+        return
+    iterator = getattr(dataloader, "_iterator", None)
+    if iterator is not None and hasattr(iterator, "_shutdown_workers"):
+        iterator._shutdown_workers()
+
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
 
 def ddp_setup():
     """
@@ -156,6 +180,8 @@ def main():
     parser.add_argument('--qt', nargs='*', default=[])
     parser.add_argument('--target-phenotype', type=str, )
     parser.add_argument('--block-bias', action='store_true')
+    parser.add_argument('--use-block-embedding', choices=['auto', 'true', 'false'], default='auto',
+                        help='Use genomic block embeddings when block annotations exist. Default: auto.')
     # Propagation option
     parser.add_argument('--cov-effect', default='direct')
     parser.add_argument('--sys2env', action='store_true', default=False)
@@ -168,6 +194,30 @@ def main():
     parser.add_argument('--dense-attention', action='store_true', default=False)
     parser.add_argument('--use-sparse-attention', type=lambda x: x.lower() != 'false', default=True,
                         help='Use sparse edge-based attention (100-1000× memory savings). Default: True. Pass "False" to disable.')
+    parser.add_argument('--snp2gene-gating', action='store_true', default=False,
+                        help='Use learned edge logits during SNP-to-gene attention. Default: False.')
+    parser.add_argument('--snp2gene-null-gate', action='store_true', default=False,
+                        help='Add a learned no-propagation option to SNP-to-gene gating. Default: False.')
+    parser.add_argument('--snp2gene-attention-dropout', type=float, default=None,
+                        help='Override attention dropout only for SNP-to-gene propagation. Default: model default.')
+    parser.add_argument('--snp2gene-null-logit-init', type=float, default=-10.0,
+                        help='Initial logit for the SNP-to-gene null/no-propagation option. Default: -10.')
+    parser.add_argument('--snp2gene-source-prior', action='store_true', default=False,
+                        help='Use learnable SNP-to-gene mapping-source biases in sparse attention. Default: False.')
+    parser.add_argument('--snp2gene-source-prior-init', type=float, default=0.0,
+                        help='Initial value for each SNP-to-gene source bias. Default: 0.')
+    parser.add_argument('--snp-shallow-predictor', action='store_true', default=False,
+                        help='Add a shallow SNP-level transformer prediction branch. Default: False.')
+    parser.add_argument('--snp-shallow-feed-g2pt', action='store_true', default=False,
+                        help='Feed shallow SNP transformer embeddings into SNP→gene G2PT propagation. Default: False.')
+    parser.add_argument('--snp-shallow-layers', type=int, default=1,
+                        help='Number of shallow SNP transformer layers. Default: 1.')
+    parser.add_argument('--snp-shallow-alpha-init', type=float, default=1.0,
+                        help='Initial scale for the shallow SNP prediction branch. Default: 1.')
+    parser.add_argument('--g2pt-residual-alpha-init', type=float, default=1.0,
+                        help='Initial scale for the G2PT residual prediction branch. Default: 1.')
+    parser.add_argument('--prediction-activation', choices=['tanh', 'identity', 'gelu', 'relu'], default='tanh',
+                        help='Activation between the two predictor linear layers. Default: tanh.')
     parser.add_argument('--regression', action='store_true', default=False)
     parser.add_argument('--mlm', action='store_true', default=False, help="Enable Masked Language Model training for SNP prediction")
     # Model parameters
@@ -176,6 +226,8 @@ def main():
     parser.add_argument('--prediction-head', help='Number of prediction heads', type=int, default=1)
     # Training parameters
     parser.add_argument('--epochs', help='Training epochs for training', type=int, default=300)
+    parser.add_argument('--seed', type=int, default=20260916,
+                        help='Recorded seed for Python, NumPy, PyTorch and data loading.')
     parser.add_argument('--lr', help='Learning rate', type=float, default=0.001)
     parser.add_argument('--wd', help='Weight decay', type=float, default=0.001)
     parser.add_argument('--z-weight', help='Sampling weight', type=float, default=1.0)
@@ -193,6 +245,8 @@ def main():
     parser.add_argument('--use_moe', action='store_true', default=False, help='Use Mixture-of-Experts predictor head')
     parser.add_argument('--independent_predictors', action='store_true', default=False, help='Use independent predictor heads for each phenotype')
     parser.add_argument('--label_smoothing', help='Label smoothing for BCE loss', type=float, default=0.0)
+    parser.add_argument('--bt-validation-metric', choices=['aupr', 'auc', 'pseudo_r2'], default='aupr',
+                        help='Binary-trait validation metric used for checkpoint selection. Default: aupr.')
 
     # Gating arguments
     parser.add_argument('--use-gating', type=lambda x: x.lower() == 'true', default=False,
@@ -216,6 +270,18 @@ def main():
     parser.add_argument('--out', help="output model path")
 
     args = parser.parse_args()
+    if args.epochs < 1 or args.val_step < 1:
+        parser.error('epochs and val-step must be positive')
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    if args.use_block_embedding == 'auto':
+        args.use_block_embedding = None
+    else:
+        args.use_block_embedding = args.use_block_embedding == 'true'
     print('Start Process')
     if args.cuda is not None:
         warnings.warn('You have chosen a specific GPU. This will completely '
@@ -236,7 +302,8 @@ def main():
     #args.batch_size = args.batch_size // world_size
     #args.jobs = args.jobs // world_size
 
-    torch.cuda.set_device(args.local_rank)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(args.local_rank)
     main_worker(args)  # no mp.spawn!
     '''
     if args.multiprocessing_distributed:
@@ -339,6 +406,7 @@ def main_worker(args):
 
     args.cov_mean_dict = snp2p_dataset.cov_mean_dict
     args.cov_std_dict = snp2p_dataset.cov_std_dict
+    args.variant_alleles = getattr(snp2p_dataset, 'variant_alleles', None)
     rank0_print("Loading done...", rank=args.rank)
 
     snp2p_collator = SNP2PCollator(tree_parser, input_format=dataset_config.input_format, mlm=args.mlm)
@@ -359,7 +427,20 @@ def main_worker(args):
                                          n_heads=model_config.n_heads,
                                          use_moe=model_config.use_moe, use_independent_predictors=model_config.independent_predictors,
                                          prediction_head=model_config.prediction_head,
-                                         use_sparse_attention=model_config.use_sparse_attention)
+                                         use_sparse_attention=model_config.use_sparse_attention,
+                                         use_snp2gene_gating=model_config.snp2gene_gating,
+                                         use_snp2gene_null_gate=model_config.snp2gene_null_gate,
+                                         snp2gene_attention_dropout=model_config.snp2gene_attention_dropout,
+                                         snp2gene_null_logit_init=model_config.snp2gene_null_logit_init,
+                                         use_snp2gene_source_prior=model_config.snp2gene_source_prior,
+                                         snp2gene_source_prior_init=model_config.snp2gene_source_prior_init,
+                                         use_snp_shallow_predictor=model_config.snp_shallow_predictor,
+                                         snp_shallow_feed_g2pt=model_config.snp_shallow_feed_g2pt,
+                                         snp_shallow_layers=model_config.snp_shallow_layers,
+                                         snp_shallow_alpha_init=model_config.snp_shallow_alpha_init,
+                                         g2pt_residual_alpha_init=model_config.g2pt_residual_alpha_init,
+                                         prediction_activation=model_config.prediction_activation,
+                                         use_block_embedding=model_config.use_block_embedding)
         rank0_print(args.model, 'initialized', rank=args.rank)
         snp2p_model.load_state_dict(snp2p_model_dict['state_dict'])
         if args.model.split('.')[-1].isdigit():
@@ -376,10 +457,24 @@ def main_worker(args):
                                          phenotypes=snp2p_dataset.pheno_ids,
                                          ind2pheno=snp2p_dataset.ind2pheno,
                                          n_heads=model_config.n_heads,
+                                         cov_effect=model_config.cov_effect,
                                          use_hierarchical_transformer=model_config.use_hierarchical_transformer,
                                          use_moe=model_config.use_moe, use_independent_predictors=model_config.independent_predictors,
                                          prediction_head=model_config.prediction_head,
-                                         use_sparse_attention=model_config.use_sparse_attention)
+                                         use_sparse_attention=model_config.use_sparse_attention,
+                                         use_snp2gene_gating=model_config.snp2gene_gating,
+                                         use_snp2gene_null_gate=model_config.snp2gene_null_gate,
+                                         snp2gene_attention_dropout=model_config.snp2gene_attention_dropout,
+                                         snp2gene_null_logit_init=model_config.snp2gene_null_logit_init,
+                                         use_snp2gene_source_prior=model_config.snp2gene_source_prior,
+                                         snp2gene_source_prior_init=model_config.snp2gene_source_prior_init,
+                                         use_snp_shallow_predictor=model_config.snp_shallow_predictor,
+                                         snp_shallow_feed_g2pt=model_config.snp_shallow_feed_g2pt,
+                                         snp_shallow_layers=model_config.snp_shallow_layers,
+                                         snp_shallow_alpha_init=model_config.snp_shallow_alpha_init,
+                                         g2pt_residual_alpha_init=model_config.g2pt_residual_alpha_init,
+                                         prediction_activation=model_config.prediction_activation,
+                                         use_block_embedding=model_config.use_block_embedding)
 
         args.start_epoch = 0
 
@@ -402,14 +497,19 @@ def main_worker(args):
         rank0_print("Summary of trainable parameters", rank=args.rank)
         count_parameters(snp2p_model)
 
+    use_persistent_workers = bool(args.jobs > 0 and not args.distributed)
+    train_generator = torch.Generator().manual_seed(args.seed + args.rank)
+    val_generator = torch.Generator().manual_seed(args.seed + 10000 + args.rank)
+
     if args.distributed:
-        snp2p_sampler = DistributedSampler(dataset=snp2p_dataset, shuffle=True)
+        snp2p_sampler = DistributedSampler(dataset=snp2p_dataset, shuffle=True, seed=args.seed)
         shuffle = False
         snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
                                       num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler,
                                       pin_memory=True,
-                                      persistent_workers=True,  # keep workers alive across epochs
-                                      prefetch_factor=2
+                                      persistent_workers=use_persistent_workers,
+                                      prefetch_factor=2 if args.jobs > 0 else None,
+                                      worker_init_fn=seed_worker, generator=train_generator
                                       )
     else:
         snp2p_sampler = None
@@ -417,7 +517,8 @@ def main_worker(args):
         snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
                                       num_workers=args.jobs, shuffle=shuffle, sampler=None,
                                       pin_memory=True,
-                                      persistent_workers=True,  # keep workers alive across epochs
+                                      persistent_workers=use_persistent_workers,
+                                      worker_init_fn=seed_worker, generator=train_generator,
                                       #prefetch_factor=2
                                       )
 
@@ -437,17 +538,35 @@ def main_worker(args):
         pheno_path=dataset_config.val_pheno,
         cov_mean_dict=args.cov_mean_dict,
         cov_std_dict=args.cov_std_dict,
+        reference_alleles=args.variant_alleles,
     )
     if val_snp2p_dataset is None:
         val_snp2p_dataloader = None
     else:
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
-                                          num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True)
+                                          num_workers=args.jobs, collate_fn=snp2p_collator, pin_memory=True,
+                                          persistent_workers=use_persistent_workers,
+                                          worker_init_fn=seed_worker, generator=val_generator)
 
 
     snp2p_trainer = SNP2PTrainer(snp2p_model, tree_parser, snp2p_dataloader, device, args, args.target_phenotype,
                                  validation_dataloader=val_snp2p_dataloader, fix_system=fix_system, label_smoothing=args.label_smoothing)
-    snp2p_trainer.train(args.epochs, args.out)
+    try:
+        snp2p_trainer.train(args.epochs, args.out)
+    finally:
+        shutdown_dataloader_workers(snp2p_dataloader)
+        shutdown_dataloader_workers(val_snp2p_dataloader)
+
+        if args.distributed and dist.is_initialized():
+            try:
+                dist.destroy_process_group()
+            except Exception as exc:
+                rank0_print(f"Warning: dist.destroy_process_group() failed during shutdown: {exc}", rank=args.rank, flush=True)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(device)
+            torch.cuda.empty_cache()
+        gc.collect()
 
 if __name__ == '__main__':
     #try:

@@ -64,6 +64,18 @@ def main():
     val_cov = val_cov.set_index('IID').loc[val_genotype.index]
     test_cov = test_cov.set_index('IID').loc[test_genotype.index]
 
+    def filter_valid_labels(genotype_df, cov_df):
+        valid_labels = pd.to_numeric(cov_df['PHENOTYPE'], errors='coerce')
+        valid_mask = valid_labels.notna() & np.isfinite(valid_labels)
+        cov_df = cov_df.loc[valid_mask].copy()
+        cov_df['PHENOTYPE'] = valid_labels.loc[valid_mask]
+        genotype_df = genotype_df.loc[cov_df.index]
+        return genotype_df, cov_df
+
+    train_genotype, train_cov = filter_valid_labels(train_genotype, train_cov)
+    val_genotype, val_cov = filter_valid_labels(val_genotype, val_cov)
+    test_genotype, test_cov = filter_valid_labels(test_genotype, test_cov)
+
     print("Merging genotype and covariates", flush=True)
     #train_genotype_cov_merged = train_genotype.merge(train_cov.set_index("IID"), left_index=True, right_index=True)
     #val_genotype_cov_merged = val_genotype.merge(val_cov.set_index("IID"), left_index=True, right_index=True)
@@ -115,9 +127,9 @@ def main():
     x_train, y_train = train_genotype_cov_merged[feature_cols].values, train_genotype_cov_merged['PHENOTYPE'].values
     train_predicted = bst.predict(x_train)
 
-    train_df = train_cov[cov_ids]
-    val_df = val_cov[cov_ids]
-    test_df = test_cov[cov_ids]
+    train_df = train_cov[cov_ids].copy()
+    val_df = val_cov[cov_ids].copy()
+    test_df = test_cov[cov_ids].copy()
 
     train_df['prediction'] = train_predicted
     val_df['prediction'] = val_predicted

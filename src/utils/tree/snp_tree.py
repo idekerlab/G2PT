@@ -264,7 +264,6 @@ class SNPTreeParser(TreeParser):
         parser.gene2snp_dict    = {gi:[] for gi in range(parser.n_genes)}
         parser.snp2gene_dict    = {si:[] for si in range(parser.n_snps)}
 
-
         for snp, gene in zip(parser.snp2gene_df['snp'],
                               parser.snp2gene_df['gene']):
             #if gene in genes_in_ont:
@@ -312,8 +311,7 @@ class SNPTreeParser(TreeParser):
         if not inplace:
             return parser
 
-    @staticmethod
-    def snp_pos_dict(ids):
+    def snp_pos_dict(self, ids):
         """
         Build {snp_id: pos} for items like CHR:POS:REF:ALT (rsIDs are skipped).
         Accepts optional 'chr' prefix and common chrom labels.
@@ -513,6 +511,7 @@ class SNPTreeParser(TreeParser):
             self.snp2gene_mask,
             return_edge_attr=False
         )
+        self._precompute_snp2gene_source_edges()
         print(f"  ✓ Created edge_index: {self.snp2gene_edge_index.shape}")
 
         # Gene → System edges
@@ -532,6 +531,54 @@ class SNPTreeParser(TreeParser):
         print("\n" + "="*60)
         print("Sparse edge precomputation complete!")
         print("="*60 + "\n")
+
+    def _precompute_snp2gene_source_edges(self):
+        """Attach source multi-hot metadata to SNP→gene sparse edges when available."""
+        if "source" not in self.snp2gene_df.columns:
+            self.snp2gene_source_names = []
+            self.snp2gene_edge_source_matrix = None
+            return
+
+        def split_sources(value):
+            if pd.isna(value):
+                return []
+            return [
+                source.strip()
+                for source in str(value).split(",")
+                if source.strip()
+            ]
+
+        edge_sources = {}
+        source_names = set()
+        for _, row in self.snp2gene_df.iterrows():
+            gene = row["gene"]
+            snp = row["snp"]
+            if gene not in self.gene2ind or snp not in self.snp2ind:
+                continue
+            sources = split_sources(row["source"])
+            if not sources:
+                continue
+            key = (self.gene2ind[gene], self.snp2ind[snp])
+            edge_sources.setdefault(key, set()).update(sources)
+            source_names.update(sources)
+
+        self.snp2gene_source_names = sorted(source_names)
+        if not self.snp2gene_source_names:
+            self.snp2gene_edge_source_matrix = None
+            return
+
+        source2ind = {source: i for i, source in enumerate(self.snp2gene_source_names)}
+        source_matrix = torch.zeros(
+            self.snp2gene_edge_index.size(1),
+            len(self.snp2gene_source_names),
+            dtype=torch.float32,
+        )
+        for edge_i, (gene_i, snp_i) in enumerate(self.snp2gene_edge_index.t().tolist()):
+            for source in edge_sources.get((gene_i, snp_i), []):
+                source_matrix[edge_i, source2ind[source]] = 1.0
+
+        self.snp2gene_edge_source_matrix = source_matrix
+        print(f"  ✓ SNP→gene sources: {', '.join(self.snp2gene_source_names)}")
 
     def _precompute_hierarchical_edges(self):
         """Precompute edges for hierarchical sys2sys interactions."""
@@ -1027,4 +1074,3 @@ class SNPTreeParser(TreeParser):
         if not union:
             return None
         return len(ancestors_a & ancestors_b) / len(union)
-

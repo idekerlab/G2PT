@@ -8,6 +8,7 @@ def build_hierarchical_ontology(sim,
                                 n_genes=800,
                                 n_systems=60, # This is the number of leaf systems
                                 ontology_coherence=0.5,
+                                epistatic_distinctness=None,
                                 overlap_prob=0.25,
                                 n_causal_systems=20,
                                 causal_system_enrichment=5.0,
@@ -17,6 +18,9 @@ def build_hierarchical_ontology(sim,
     Injects epistatic interactions based on a tunable "distinctness" parameter.
     Returns three DataFrames ready for .to_csv().
     """
+    if epistatic_distinctness is not None:
+        ontology_coherence = float(np.clip(1.0 - epistatic_distinctness, 0.0, 1.0))
+
     rng = np.random.default_rng(seed)
     n_snps = sim["G"].shape[1]
 
@@ -302,12 +306,17 @@ def simulate_epistasis(
             
             all_G_blocks.append(G_block)
         
-        G = np.concatenate(all_G_blocks, axis=1).astype(np.float32)
+        G = np.concatenate(all_G_blocks, axis=1).astype(np.int8)
 
     else:
-        G = rng.binomial(2, mafs, size=(n_samples, n_snps)).astype(np.float32)
+        G = rng.binomial(2, mafs, size=(n_samples, n_snps)).astype(np.int8)
 
-    G_std = (G - G.mean(0)) / G.std(0)
+    # Compute standardized moments once, then avoid materializing a full G_std matrix.
+    G_float = G.astype(np.float32)
+    G_mean = G_float.mean(0, dtype=np.float32)
+    G_stddev = G_float.std(0, dtype=np.float32)
+    G_stddev[G_stddev == 0] = 1.0
+    del G_float
 
     # 2. Select causal additive SNPs and generate their effect sizes (betas)
     additive_idx = rng.choice(n_snps, size=n_additive, replace=False)
@@ -396,9 +405,18 @@ def simulate_epistasis(
         gamma = np.array([])
 
     # 4. build phenotype: additive + pairwise + environmental noise
-    y = G_std @ beta
+    y = np.zeros(n_samples, dtype=np.float32)
+    if n_additive > 0:
+        additive_G = G[:, additive_idx].astype(np.float32)
+        additive_G -= G_mean[additive_idx]
+        additive_G /= G_stddev[additive_idx]
+        y += additive_G @ beta[additive_idx]
+        del additive_G
+
     for k, (i, j) in enumerate(pairs):
-        y += gamma[k] * G_std[:, i] * G_std[:, j]
+        gi = (G[:, i].astype(np.float32) - G_mean[i]) / G_stddev[i]
+        gj = (G[:, j].astype(np.float32) - G_mean[j]) / G_stddev[j]
+        y += gamma[k] * gi * gj
 
     # add noise so Var(y) ≈ 1
     y_var = np.var(y)

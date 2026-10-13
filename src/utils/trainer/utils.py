@@ -1,12 +1,12 @@
 import torch
 import numpy as np
+import copy
 from typing import List, Tuple, Dict, Optional
 import logging
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingWarmRestarts
 import numpy as np
-import copy
 import logging
 from scipy.stats import pearsonr
 from sklearn.metrics.pairwise import cosine_similarity
@@ -72,13 +72,13 @@ class EarlyStopping:
         if self.best_score is None:
             self.best_score = current_score
             if model is not None and self.restore_best_weights:
-                self.best_weights = model.state_dict().copy()
+                self.best_weights = copy.deepcopy(model.state_dict())
 
         elif self.monitor_op(current_score, self.best_score + self.min_delta):
             self.best_score = current_score
             self.wait = 0
             if model is not None and self.restore_best_weights:
-                self.best_weights = model.state_dict().copy()
+                self.best_weights = copy.deepcopy(model.state_dict())
 
             if self.verbose:
                 self.logger.info(f"New best score: {current_score:.6f}")

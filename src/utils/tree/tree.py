@@ -83,16 +83,23 @@ class TreeParser(object):
         obj.ontology = ontology_df
         obj.sys_df = ontology_df.loc[ontology_df['interaction'] != 'gene']
         obj.gene2sys_df = ontology_df.loc[ontology_df['interaction'] == 'gene']
+        system_nodes = sorted(
+            list(
+                set(obj.sys_df['parent'].unique())
+                | set(obj.sys_df['child'].unique())
+                | set(obj.gene2sys_df['parent'].unique())
+            )
+        )
+        all_nodes = set(ontology_df['parent'].unique()) | set(ontology_df['child'].unique())
+        gene_nodes = sorted(list(set(obj.gene2sys_df['child'].unique()) | (all_nodes - set(system_nodes))))
         obj.sys_graph = nx.from_pandas_edgelist(obj.sys_df, create_using=nx.DiGraph(),
                                                  source='parent', target='child', edge_attr='interaction')
+        obj.sys_graph.add_nodes_from(system_nodes)
         obj.interaction_types = obj.sys_df['interaction'].unique()
         obj.interaction_dict = { (row['parent'], row['child']): row['interaction']
                                  for i, row in obj.sys_df.iterrows() }
 
         # Define system and gene nodes explicitly
-        system_nodes = sorted(list(set(obj.sys_df['parent'].unique()) | set(obj.sys_df['child'].unique())))
-        all_nodes = set(ontology_df['parent'].unique()) | set(ontology_df['child'].unique())
-        gene_nodes = sorted(list(all_nodes - set(system_nodes)))
         if verbose:
             print("Building system and gene indices dictionary..")
         obj.sys2ind = { system: i for i, system in enumerate(system_nodes) }
@@ -307,21 +314,59 @@ class TreeParser(object):
             to_collapse = [term for term in to_collapse if term not in to_keep]
 
         collapsed_sys_graph = obj.sys_graph.copy()
-        for node in to_collapse:
-            if node in collapsed_sys_graph:
-                parents = list(collapsed_sys_graph.predecessors(node))
-                children = list(collapsed_sys_graph.successors(node))
-                for p in parents:
-                    for c in children:
-                        if not collapsed_sys_graph.has_edge(p, c):
-                            collapsed_sys_graph.add_edge(p, c, **obj.sys_graph.get_edge_data(p, node, default={}))
-                collapsed_sys_graph.remove_node(node)
+        collapsed_gene2sys_df = obj.gene2sys_df.copy()
+
+        # Collapse leaves before ancestors so transferred gene edges can keep
+        # moving upward if an ancestor is also collapsed in the same pass.
+        topo_order = list(nx.topological_sort(obj.sys_graph))
+        collapse_order = [node for node in reversed(topo_order) if node in to_collapse]
+
+        for node in collapse_order:
+            if node not in collapsed_sys_graph:
+                continue
+
+            parents = list(collapsed_sys_graph.predecessors(node))
+            children = list(collapsed_sys_graph.successors(node))
+            direct_gene_rows = collapsed_gene2sys_df.loc[collapsed_gene2sys_df["parent"] == node].copy()
+
+            # Root terms have nowhere to transfer their direct gene edges, so
+            # keep them intact to avoid silently dropping genes from the final
+            # ontology.
+            if not parents:
+                continue
+
+            if not direct_gene_rows.empty:
+                transferred_rows = []
+                for parent in parents:
+                    parent_rows = direct_gene_rows.copy()
+                    parent_rows["parent"] = parent
+                    transferred_rows.append(parent_rows)
+                if transferred_rows:
+                    collapsed_gene2sys_df = pd.concat(
+                        [collapsed_gene2sys_df] + transferred_rows,
+                        ignore_index=True,
+                    )
+
+            collapsed_gene2sys_df = collapsed_gene2sys_df.loc[
+                collapsed_gene2sys_df["parent"] != node
+            ]
+
+            for p in parents:
+                edge_attrs = obj.sys_graph.get_edge_data(p, node, default={})
+                for c in children:
+                    if not collapsed_sys_graph.has_edge(p, c):
+                        collapsed_sys_graph.add_edge(p, c, **edge_attrs)
+            collapsed_sys_graph.remove_node(node)
 
         interactions = []
         for u, v, data in collapsed_sys_graph.edges(data=True):
             interactions.append((u, v, data.get('interaction', 'default')))
 
-        for _, row in obj.gene2sys_df.iterrows():
+        collapsed_gene2sys_df = collapsed_gene2sys_df.drop_duplicates(
+            subset=["parent", "child", "interaction"]
+        )
+
+        for _, row in collapsed_gene2sys_df.iterrows():
              if row['parent'] in collapsed_sys_graph and row['child'] in obj.gene2ind:
                 interactions.append(tuple(row))
 
@@ -1131,4 +1176,3 @@ class TreeParser(object):
 
         if not inplace:
             return obj
-

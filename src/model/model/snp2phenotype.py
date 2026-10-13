@@ -66,7 +66,20 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                  pretrained_transformer=None, freeze_pretrained=True,
                  phenotypes=('PHENOTYPE',), ind2pheno=None, use_hierarchical_transformer=False, use_moe=False,
                  use_independent_predictors=False, prediction_head=1, n_heads=4,
-                 use_sparse_attention=True):  # NEW: enable sparse attention
+                 use_sparse_attention=True,  # NEW: enable sparse attention
+                 use_snp2gene_gating=False,
+                 use_snp2gene_null_gate=False,
+                 snp2gene_attention_dropout=None,
+                 snp2gene_null_logit_init=-10.0,
+                 use_snp2gene_source_prior=False,
+                 snp2gene_source_prior_init=0.0,
+                 use_snp_shallow_predictor=False,
+                 snp_shallow_feed_g2pt=False,
+                 snp_shallow_layers=1,
+                 snp_shallow_alpha_init=1.0,
+                 g2pt_residual_alpha_init=1.0,
+                 prediction_activation='tanh',
+                 use_block_embedding=None):
         super(SNP2PhenotypeModel, self).__init__(tree_parser, hidden_dims, interaction_types=interaction_types, dropout=dropout,
                                                  n_heads=4, input_format=input_format)
         self.use_sparse_attention = use_sparse_attention  # NEW: store flag
@@ -84,9 +97,15 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.n_snp2pad = int(np.ceil((self.tree_parser.n_snps+1) / 8) * 8) - self.tree_parser.n_snps
         self.n_gene2pad = int(np.ceil((self.tree_parser.n_genes + 1) / 8) * 8) - self.tree_parser.n_genes
         self.n_sys2pad = int(np.ceil((self.tree_parser.n_systems + 1) / 8) * 8) - self.tree_parser.n_systems
-        if self.input_format == 'block':
+        if use_block_embedding is None:
+            self.use_block_embedding = bool(getattr(self.tree_parser, "block", False))
+        else:
+            self.use_block_embedding = bool(use_block_embedding)
+        if self.use_block_embedding:
             self.n_blocks = self.tree_parser.n_blocks
             self.block_embedding = nn.Embedding(self.n_blocks + 1, hidden_dims, padding_idx=self.n_blocks)
+        else:
+            self.n_blocks = None
         self.snp_batch_norm = BatchNorm1d_BatchOnly_NLC(hidden_dims, length=(self.n_snps + self.n_snp2pad))
         self.gate_mlp = nn.Sequential(nn.Linear(self.hidden_dims * 3, self.hidden_dims), nn.ReLU(), nn.Linear(self.hidden_dims, 3))
 
@@ -117,6 +136,41 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                                                 self.snp2gene_update_norm_outer,
                                                dropout, norm_channel_first=self.norm_channel_first, conv_type='system',
                                                              activation=activation, n_type=1)
+        self.snp2gene_attention_dropout = snp2gene_attention_dropout
+        if self.snp2gene_attention_dropout is not None:
+            self.snp2gene.hierarchical_transformer_update.attention_dropout = float(self.snp2gene_attention_dropout)
+        self.use_snp2gene_gating = use_snp2gene_gating
+        self.use_snp2gene_null_gate = use_snp2gene_gating and use_snp2gene_null_gate
+        self.snp2gene_null_logit_init = float(snp2gene_null_logit_init)
+        self.prediction_activation = prediction_activation
+        self.use_snp_shallow_predictor = bool(use_snp_shallow_predictor)
+        self.snp_shallow_feed_g2pt = bool(use_snp_shallow_predictor and snp_shallow_feed_g2pt)
+        self.use_snp2gene_source_prior = bool(use_snp2gene_source_prior)
+        self.snp2gene_source_names = list(getattr(tree_parser, "snp2gene_source_names", []))
+        source_matrix = getattr(tree_parser, "snp2gene_edge_source_matrix", None)
+        if self.use_snp2gene_source_prior and source_matrix is not None and self.snp2gene_source_names:
+            self.register_buffer("snp2gene_edge_source_matrix", source_matrix.float(), persistent=False)
+            self.snp2gene_source_bias = nn.Parameter(
+                torch.full(
+                    (len(self.snp2gene_source_names),),
+                    float(snp2gene_source_prior_init),
+                    dtype=torch.float32,
+                )
+            )
+            print("Using SNP2gene source prior:", ", ".join(self.snp2gene_source_names))
+        else:
+            self.use_snp2gene_source_prior = False
+        if self.use_snp2gene_gating:
+            self.snp2gene_gate = nn.Sequential(
+                nn.Linear(hidden_dims * 2, hidden_dims),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dims, 1),
+            )
+            nn.init.zeros_(self.snp2gene_gate[-1].weight)
+            nn.init.constant_(self.snp2gene_gate[-1].bias, 4.0)
+            if self.use_snp2gene_null_gate:
+                self.snp2gene_null_logit = nn.Parameter(torch.tensor([self.snp2gene_null_logit_init]))
         self.gene2snp = HierarchicalTransformer(hidden_dims, n_heads, hidden_dims,
                                                 self.snp2gene_update_norm_inner,
                                                 self.snp2gene_update_norm_outer,
@@ -209,6 +263,31 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.n_phenotypes = len(phenotypes)
         self.phenotype_embeddings = nn.Embedding(self.n_phenotypes, hidden_dims)
 
+        if self.use_snp_shallow_predictor:
+            self.snp_shallow_input_norm = nn.LayerNorm(hidden_dims)
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=hidden_dims,
+                nhead=n_heads,
+                dim_feedforward=hidden_dims * 2,
+                dropout=dropout,
+                activation='gelu',
+                batch_first=True,
+                norm_first=True,
+            )
+            self.snp_shallow_transformer = nn.TransformerEncoder(
+                encoder_layer,
+                num_layers=int(snp_shallow_layers),
+            )
+            self.snp_shallow_output_norm = nn.LayerNorm(hidden_dims)
+            self.snp_shallow_head = nn.Sequential(
+                nn.Linear(hidden_dims, hidden_dims),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dims, self.n_phenotypes),
+            )
+            self.snp_shallow_alpha = nn.Parameter(torch.tensor(float(snp_shallow_alpha_init)))
+            self.g2pt_residual_alpha = nn.Parameter(torch.tensor(float(g2pt_residual_alpha_init)))
+
         self.gene2pheno_norm = nn.LayerNorm(hidden_dims)
         self.gene2pheno_update_norm_inner = nn.LayerNorm(hidden_dims)
         self.gene2pheno_update_norm_outer = nn.LayerNorm(hidden_dims)
@@ -237,8 +316,29 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.use_independent_predictors = use_independent_predictors
         print("Cov effect: ", self.cov_effect)
         print("Input format: ", self.input_format)
+        print("Using block embedding: ", self.use_block_embedding)
+        print("Using SNP2gene gating: ", self.use_snp2gene_gating)
+        print("Using SNP2gene null gate: ", self.use_snp2gene_null_gate)
+        if self.use_snp2gene_null_gate:
+            print("SNP2gene null logit init: ", self.snp2gene_null_logit_init)
+        print("Using SNP shallow predictor: ", self.use_snp_shallow_predictor)
+        if self.use_snp_shallow_predictor:
+            print("SNP shallow feeds G2PT: ", self.snp_shallow_feed_g2pt)
+        print("SNP2gene attention dropout: ", self.snp2gene.hierarchical_transformer_update.attention_dropout)
+        print("Prediction activation: ", self.prediction_activation)
         print("The number of geno2pheno: ", self.n_geno2pheno)
         print(f"Using independent predictors: {self.use_independent_predictors}")
+
+        def create_prediction_activation():
+            if self.prediction_activation == 'identity':
+                return nn.Identity()
+            if self.prediction_activation == 'gelu':
+                return nn.GELU()
+            if self.prediction_activation == 'relu':
+                return nn.ReLU()
+            if self.prediction_activation == 'tanh':
+                return nn.Tanh()
+            raise ValueError(f"Unknown prediction_activation: {self.prediction_activation}")
 
         def create_predictor():
             if use_moe:
@@ -246,7 +346,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             else:
                 return nn.Sequential(
                     nn.Linear(hidden_dims * self.n_geno2pheno, hidden_dims),
-                    nn.Tanh(),
+                    create_prediction_activation(),
                     nn.Linear(hidden_dims, 1)
                 )
 
@@ -301,6 +401,9 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         prediction = self.prediction(phenotype_embedding, system_embedding, gene_embedding,
                                      genotype_dict, chunk, phenotype_ids,
                                      sys_temp=sys_temp, covariates=covariates)
+        if self.use_snp_shallow_predictor:
+            snp_prediction_branch = self.get_snp_shallow_prediction(snp_embedding, phenotype_ids)
+            prediction = self.g2pt_residual_alpha * prediction + self.snp_shallow_alpha * snp_prediction_branch
         if predict_snp:
             # Pass gene2snp edge indices if using sparse attention
             gene2snp_edge_idx = self.gene2snp_edge_index.to(gene_embedding.device) if (self.use_sparse_attention and hasattr(self, 'gene2snp_edge_index')) else None
@@ -353,8 +456,11 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             gene_embedding = gene_embedding + self.get_cov2gene(gene_embedding, covariates)
 
         snp_embedding, _ = self.get_snp_embedding(genotype_dict)
+        if self.snp_shallow_feed_g2pt:
+            snp_embedding = self.get_snp_shallow_embedding(snp_embedding)
         snp_effect_on_gene = self.get_snp2gene(gene_embedding, snp_embedding, snp2gene_mask)
-        gene_embedding = gene_embedding + self.effect_norm(snp_effect_on_gene)
+        snp_update = self.apply_snp2gene_null_mass(self.effect_norm(snp_effect_on_gene))
+        gene_embedding = gene_embedding + snp_update
 
         gene_effect_on_system = self.get_gene2sys(self.dropout(system_embedding), self.dropout(gene_embedding), gene2sys_mask)
 
@@ -410,7 +516,9 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             if self.cov_effect in ('pre', 'both'):
                 gene_emb = self.get_cov2gene(gene_emb, covariates)
 
-            gene_emb += self.effect_norm(self.get_snp2gene(gene_emb, snp_emb, chunk['snp2gene_mask']))
+            snp_effect_on_gene = self.get_snp2gene(gene_emb, snp_emb, chunk['snp2gene_mask'])
+            snp_update = self.apply_snp2gene_null_mass(self.effect_norm(snp_effect_on_gene))
+            gene_emb += snp_update
 
             flat_gene = gene_emb.view(-1, H)
             flat_gidx = (chunk['gene'] + torch.arange(B, device=gene_emb.device)[:, None] * G).view(-1)
@@ -449,7 +557,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
     def get_snp_embedding(self, genotype_dict):
         """Combines raw SNP embeddings with genomic block embeddings."""
         snp_embedding = self.snp_embedding(genotype_dict['snp'])
-        if self.input_format == 'block':
+        if self.use_block_embedding and 'block_ind' in genotype_dict:
             block_embedding = self.block_embedding(genotype_dict['block_ind'])
             embedding_results = (snp_embedding + block_embedding) / 2
         else:
@@ -478,10 +586,39 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                     offset += int(len(self.tree_parser.block2sig_ind[block_id]))
         return embedding_results, snp_prediction_results
 
+    def get_snp_shallow_embedding(self, snp_embedding):
+        """One-layer SNP-level transformer over SNP + block embeddings."""
+        shallow_input = self.snp_shallow_input_norm(snp_embedding)
+        shallow_embedding = self.snp_shallow_transformer(shallow_input)
+        return self.snp_shallow_output_norm(shallow_embedding)
+
+    def get_snp_shallow_prediction(self, snp_embedding, phenotype_ids):
+        """Predict phenotype logits directly from shallow SNP representations."""
+        if not self.snp_shallow_feed_g2pt:
+            snp_embedding = self.get_snp_shallow_embedding(snp_embedding)
+        pooled = snp_embedding.mean(dim=1)
+        all_scores = self.snp_shallow_head(pooled)
+
+        if phenotype_ids.dim() == 0:
+            pheno_ids = phenotype_ids.view(1, 1).expand(all_scores.size(0), -1)
+        elif phenotype_ids.dim() == 1:
+            if phenotype_ids.numel() == all_scores.size(0):
+                pheno_ids = phenotype_ids.view(-1, 1)
+            else:
+                pheno_ids = phenotype_ids.view(1, -1).expand(all_scores.size(0), -1)
+        else:
+            pheno_ids = phenotype_ids
+
+        pheno_ids = pheno_ids.to(device=all_scores.device, dtype=torch.long)
+        return all_scores.gather(1, pheno_ids).unsqueeze(-1)
+
     def get_snp2gene(self, gene_embedding, snp_embedding, snp2gene_mask):
         """Propagates information from SNP embeddings to gene embeddings."""
         gene_embedding_input = self.dropout(self.gene_norm(gene_embedding))
         snp_embedding_input = self.dropout(snp_embedding)
+
+        if self.use_snp2gene_gating:
+            return self.get_gated_snp2gene(gene_embedding_input, snp_embedding_input, snp2gene_mask)
 
         # Use sparse edges only when embedding covers all global indices.
         # When select_phenotypes() creates a subset batch, embedding dim is smaller
@@ -491,14 +628,170 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
                 and snp_embedding.size(1) >= self.n_snps):
             edge_index = self.snp2gene_edge_index.to(gene_embedding.device)
             edge_attr = self.snp2gene_edge_attr.to(gene_embedding.device) if self.snp2gene_edge_attr is not None else None
+            source_edge_bias = self.get_snp2gene_source_edge_bias(gene_embedding.device, gene_embedding.dtype)
+            if source_edge_bias is not None:
+                edge_attr = source_edge_bias if edge_attr is None else edge_attr + source_edge_bias
             snp_effect_on_gene = self.snp2gene.forward(
                 gene_embedding_input, snp_embedding_input, mask=None,
                 edge_index=edge_index, edge_attr=edge_attr
             )
+            snp_effect_on_gene = self.zero_noedge_snp2gene_queries(snp_effect_on_gene, edge_index)
         else:
             snp_effect_on_gene = self.snp2gene.forward(gene_embedding_input, snp_embedding_input, snp2gene_mask)
 
         return snp_effect_on_gene
+
+    def get_snp2gene_source_edge_bias(self, device, dtype):
+        """Return learnable source bias for each SNP→gene edge."""
+        if not self.use_snp2gene_source_prior:
+            return None
+        source_matrix = self.snp2gene_edge_source_matrix.to(device=device, dtype=dtype)
+        return source_matrix.matmul(self.snp2gene_source_bias.to(device=device, dtype=dtype))
+
+    def zero_noedge_snp2gene_queries(self, snp_effect_on_gene, edge_index):
+        """Keep sparse SNP→gene behavior aligned with dense masks for no-edge genes."""
+        has_edge = torch.zeros(
+            snp_effect_on_gene.size(1),
+            dtype=torch.bool,
+            device=snp_effect_on_gene.device,
+        )
+        if edge_index.numel() > 0:
+            query_idx = edge_index[0]
+            query_idx = query_idx[query_idx < snp_effect_on_gene.size(1)]
+            has_edge[query_idx] = True
+        return snp_effect_on_gene * has_edge.view(1, -1, 1).to(dtype=snp_effect_on_gene.dtype)
+
+    def get_gated_snp2gene(self, gene_embedding_input, snp_embedding_input, snp2gene_mask):
+        """SNP→gene attention with learned edge gates normalized within each gene.
+
+        The learned gate is an additive edge logit before the per-gene softmax. If
+        null gating is enabled, each gene also gets a no-propagation option, so a
+        gene with one weak SNP can assign most mass to null instead of forcing the
+        lone SNP to weight 1.
+        """
+        if (self.use_sparse_attention and hasattr(self, 'snp2gene_edge_index')
+                and gene_embedding_input.size(1) >= self.n_genes
+                and snp_embedding_input.size(1) >= self.n_snps):
+            edge_index = self.snp2gene_edge_index.to(gene_embedding_input.device)
+        else:
+            edge_index = self.snp2gene_mask_to_edges(
+                snp2gene_mask,
+                gene_embedding_input.size(1),
+                snp_embedding_input.size(1),
+                gene_embedding_input.device,
+            )
+        return self.gated_snp2gene_transformer(gene_embedding_input, snp_embedding_input, edge_index)
+
+    def snp2gene_mask_to_edges(self, snp2gene_mask, n_genes, n_snps, device):
+        """Convert a dense SNP→gene additive mask to local sparse edges."""
+        mask = snp2gene_mask.to(device) if isinstance(snp2gene_mask, torch.Tensor) else torch.tensor(snp2gene_mask, device=device)
+        valid_edges = torch.nonzero(mask > -9999, as_tuple=False)
+        if valid_edges.numel() == 0:
+            return torch.empty((2, 0), dtype=torch.long, device=device)
+        valid_edges = valid_edges[(valid_edges[:, 0] < n_genes) & (valid_edges[:, 1] < n_snps)]
+        return valid_edges.t().contiguous().long()
+
+    def gated_snp2gene_transformer(self, gene_embedding_input, snp_embedding_input, edge_index):
+        """Run the SNP→gene transformer using gated sparse attention."""
+        update = self.snp2gene.hierarchical_transformer_update
+        q = gene_embedding_input
+        k = snp_embedding_input
+        attn_output, snp_mass = self.gated_snp2gene_attention(update.norm_attn(q), k, edge_index)
+        x = q + update.drop(attn_output)
+        x = x + update.drop(update.ffn(update.norm_ffn(x)))
+        result = self.snp2gene.norm(x)
+        result = self.zero_noedge_snp2gene_queries(result, edge_index)
+        self.last_snp2gene_snp_mass = snp_mass.detach() if snp_mass is not None else None
+        return result
+
+    def apply_snp2gene_null_mass(self, snp_update):
+        """Apply no-propagation mass after LayerNorm so null gating can suppress updates."""
+        snp_mass = getattr(self, 'last_snp2gene_snp_mass', None)
+        if not self.use_snp2gene_null_gate or snp_mass is None:
+            return snp_update
+        return snp_update * snp_mass.mean(dim=-1, keepdim=True).to(dtype=snp_update.dtype)
+
+    def gated_snp2gene_attention(self, q, k, edge_index):
+        """Sparse cross-attention where edge gate logits compete within each gene."""
+        update = self.snp2gene.hierarchical_transformer_update
+        batch_size, n_genes, hidden_dims = q.shape
+        n_snps = k.size(1)
+        n_edges = edge_index.size(1)
+        if n_edges == 0:
+            empty = torch.zeros_like(q)
+            snp_mass = torch.zeros(batch_size, n_genes, update.h, device=q.device, dtype=q.dtype)
+            return empty, snp_mass
+
+        query_idx = edge_index[0]
+        key_idx = edge_index[1]
+        self.last_snp2gene_gate_edge_index = edge_index.detach()
+        q_proj = update.q_proj(q).view(batch_size, n_genes, update.h, update.d_h)
+        k_proj = update.k_proj(k).view(batch_size, n_snps, update.h, update.d_h)
+        v_proj = update.v_proj(k).view(batch_size, n_snps, update.h, update.d_h)
+
+        q_edges = q_proj[:, query_idx, :, :]
+        k_edges = k_proj[:, key_idx, :, :]
+        v_edges = v_proj[:, key_idx, :, :]
+        scale = 1.0 / (update.d_h ** 0.5)
+        attention_scores = (q_edges * k_edges).sum(dim=-1) * scale
+
+        gate_input = torch.cat([q[:, query_idx, :], k[:, key_idx, :]], dim=-1)
+        gate_logits = self.snp2gene_gate(gate_input).squeeze(-1)
+        scores = attention_scores + gate_logits.unsqueeze(-1)
+
+        attention_weights, snp_mass = self.snp2gene_sparse_softmax(scores, query_idx, n_genes)
+        if self.training and update.attention_dropout > 0:
+            attention_weights = torch.nn.functional.dropout(
+                attention_weights,
+                p=update.attention_dropout,
+                training=True,
+            )
+
+        weighted_values = attention_weights.unsqueeze(-1) * v_edges
+        output = torch.zeros(
+            batch_size, n_genes, update.h, update.d_h,
+            device=q.device, dtype=q.dtype,
+        )
+        scatter_idx = query_idx.view(1, n_edges, 1, 1).expand(batch_size, -1, update.h, update.d_h)
+        output.scatter_add_(1, scatter_idx, weighted_values)
+        output = output.reshape(batch_size, n_genes, hidden_dims)
+        return update.o_proj(output), snp_mass
+
+    def snp2gene_sparse_softmax(self, scores, query_idx, n_genes):
+        """Softmax SNP edge scores by target gene, optionally including a null edge."""
+        batch_size, n_edges, n_heads = scores.shape
+        max_scores = torch.full(
+            (batch_size, n_genes, n_heads),
+            float('-inf'),
+            dtype=scores.dtype,
+            device=scores.device,
+        )
+        scatter_idx = query_idx.view(1, n_edges, 1).expand(batch_size, -1, n_heads)
+        max_scores.scatter_reduce_(1, scatter_idx, scores, reduce='amax', include_self=False)
+
+        null_scores = None
+        if self.use_snp2gene_null_gate:
+            null_scores = self.snp2gene_null_logit.to(dtype=scores.dtype).view(1, 1, 1)
+            max_scores = torch.maximum(max_scores, null_scores.expand_as(max_scores))
+
+        max_per_edge = max_scores[:, query_idx, :]
+        exp_scores = torch.exp(scores - max_per_edge)
+        sum_exp = torch.zeros_like(max_scores)
+        sum_exp.scatter_add_(1, scatter_idx, exp_scores)
+
+        if self.use_snp2gene_null_gate:
+            null_exp = torch.exp(null_scores.expand_as(max_scores) - max_scores)
+            denominator = sum_exp + null_exp
+            snp_mass = sum_exp / (denominator + 1e-8)
+        else:
+            denominator = sum_exp
+            snp_mass = None
+
+        attention_weights = exp_scores / (denominator[:, query_idx, :] + 1e-8)
+        self.last_snp2gene_gate = attention_weights.mean(dim=-1).detach()
+        if self.use_snp2gene_null_gate:
+            self.last_snp2gene_null_weight = (1.0 - snp_mass.mean(dim=-1)).detach()
+        return attention_weights, snp_mass
 
     def get_gene2sys(self, system_embedding, gene_embedding, gene2sys_mask):
         """Propagates information from gene embeddings to system embeddings."""

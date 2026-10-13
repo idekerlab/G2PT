@@ -281,6 +281,7 @@ class PLINKDataset(GenotypeDataset):
         pheno_ids=(),
         bt=(),
         qt=(),
+        reference_alleles=None,
     ):
         """
         tree_parser: SNP tree parser object
@@ -316,8 +317,8 @@ class PLINKDataset(GenotypeDataset):
         snp_contig_mapping = {
             i: int(str(chromosome).replace("chr", "")) for i, chromosome in enumerate(plink_data["contig_id"].values)
         }
-        snp_chr = plink_data["variant_position"].values
-        snp_pos = [snp_contig_mapping[contig] for contig in plink_data["variant_contig"].values]
+        snp_chr = [snp_contig_mapping[contig] for contig in plink_data["variant_contig"].values]
+        snp_pos = plink_data["variant_position"].values
 
         snp_id2chr = {snp: chromosome for snp, chromosome in zip(snp_ids, snp_chr)}
         snp_id2pos = {snp: pos for snp, pos in zip(snp_ids, snp_pos)}
@@ -326,19 +327,47 @@ class PLINKDataset(GenotypeDataset):
         self.tree_parser.set_snp2pos(snp_id2pos)
 
         self.input_format = input_format
-        genotype = plink_data.call_genotype.as_numpy().sum(axis=-1).T.astype(np.int8)
+        calls = plink_data.call_genotype.as_numpy()
+        if np.any((calls < 0) | (calls > 1)):
+            raise ValueError("PLINK contains missing/invalid hard calls; define a train-derived imputation policy before scoring")
+        genotype = calls.sum(axis=-1).T.astype(np.int8)
+        del calls
+        observed_alleles = plink_data['variant_allele'].values
+        self.variant_alleles = {}
+        self.n_allele_swaps = 0
+        for variant_index, snp in enumerate(snp_ids):
+            key = str(snp)
+            observed = tuple(str(allele) for allele in observed_alleles[variant_index])
+            if reference_alleles is None:
+                expected = observed
+            else:
+                if key not in reference_alleles:
+                    raise ValueError('Variant absent from training allele reference')
+                expected = tuple(reference_alleles[key])
+                if observed == expected:
+                    pass
+                elif observed[::-1] == expected:
+                    genotype[:, variant_index] = 2 - genotype[:, variant_index]
+                    self.n_allele_swaps += 1
+                else:
+                    raise ValueError('Alleles do not match training reference; harmonize genome build/strand before scoring')
+            self.variant_alleles[key] = expected
+        print(f'Aligned {self.n_allele_swaps} SNP allele-order reversals to the training reference')
 
         snp_sorted = [snp for snp, i in sorted(list(self.tree_parser.snp2ind.items()), key=lambda a: a[1])]
 
         genotype_df = pd.DataFrame(genotype, index=plink_data.sample_id.values, columns=plink_data.variant_id.values)
         # genotype_df = genotype_df[snp_sorted]
         missing_snps = [snp for snp in snp_sorted if snp not in genotype_df.columns]
-        print("SNPs not in bfile:", missing_snps)
-        genotype_df = genotype_df.reindex(columns=snp_sorted, fill_value=0)
+        if missing_snps:
+            raise ValueError(f"Missing {len(missing_snps)} required SNPs; refusing to encode absent variants as homozygous genotypes")
+        if not genotype_df.index.is_unique or not genotype_df.columns.is_unique:
+            raise ValueError("PLINK sample IDs and variant IDs must be unique")
+        genotype_df = genotype_df.reindex(columns=snp_sorted)
 
         # Processing Covariates
         if self.cov_df is not None:
-            intersection_iid = list(set(genotype_df.index.tolist()).intersection(self.cov_df["IID"].tolist()))
+            intersection_iid = genotype_df.index[genotype_df.index.isin(self.cov_df["IID"])].tolist()
             self.cov_df = self.cov_df.set_index("IID").loc[intersection_iid].reset_index()
             genotype_df = genotype_df.loc[intersection_iid]
         else:
@@ -358,7 +387,7 @@ class PLINKDataset(GenotypeDataset):
             self.cov_df = self.cov_df.set_index("IID").loc[plink_data.sample_id.values].reset_index()
 
         if self.pheno_df is not None:
-            intersection_iid = list(set(genotype_df.index.tolist()).intersection(self.pheno_df["IID"].tolist()))
+            intersection_iid = genotype_df.index[genotype_df.index.isin(self.pheno_df["IID"])].tolist()
             self.pheno_df = self.pheno_df.set_index("IID").loc[intersection_iid].reset_index()
             self.cov_df = self.cov_df.set_index("IID").loc[intersection_iid].reset_index()
             genotype_df = genotype_df.loc[intersection_iid]
