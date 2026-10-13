@@ -1,5 +1,7 @@
 # G2PT: A genotype-phenotype transformer to assess and explain polygenic risk
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19713271.svg)](https://doi.org/10.5281/zenodo.19713271)
+
 ## Overview
 
 Genome-wide association studies have linked millions of genetic variants to human phenotypes, yet translating those findings into clinical insight is limited by interpretability and genetic interactions. G2PT is a hierarchical Genotype-to-Phenotype Transformer that models bidirectional information flow among polymorphisms, genes, molecular systems, and phenotypes. It has been applied to predict metabolic traits in the UK Biobank (e.g., diabetes risk and TG/HDL ratio) and to surface pathway-level explanations through attention weights.
@@ -9,7 +11,7 @@ Genome-wide association studies have linked millions of genetic variants to huma
 ## Key capabilities
 
 - Hierarchical transformer with SNP → gene → system → phenotype message passing and optional system ↔ environment edges.
-- **Sparse edge-based attention** for 100-1000× memory reduction, enabling batch sizes of 256+ with 32GB GPU (default enabled).
+- **Sparse edge-based attention** that avoids materializing mostly empty dense attention matrices (enabled by default).
 - Works with PLINK binary files or tab-delimited genotype matrices; supports multiple phenotypes (binary via `--bt`, quantitative via `--qt`).
 - Distributed training via `torchrun`, with early stopping, masked-language-model pretraining (`--mlm`), and mixture-of-experts predictors (`--use_moe`).
 - Predict-only and attention-export pipeline for downstream interpretation.
@@ -17,7 +19,9 @@ Genome-wide association studies have linked millions of genetic variants to huma
 
 ## Environment setup
 
-The repository ships with a conda environment (Python 3.8, CUDA 12.1-compatible PyTorch nightly) that includes all required dependencies.
+The reference environment is defined in `environment.yml`. It targets Linux with
+Python 3.8 and an NVIDIA CUDA-enabled PyTorch installation. CUDA and driver
+compatibility should be checked for the host system before creating the environment.
 
 ```bash
 conda env create -f environment.yml
@@ -29,12 +33,13 @@ export PYTHONPATH=.
 ## Input preparation
 
 1. **Genotypes**
-   - PLINK binary files (`.bed/.bim/.fam`) passed via `--train-bfile` / `--val-bfile` / `--test-bfile`.
-   - Tab-delimited genotype matrices (rows = IID, columns = variant IDs) passed via `--train-tsv` / `--val-tsv`; set `--input-format` to `indices` or `binary` as appropriate. Use `--flip` if alleles need to be swapped.
+   - PLINK binary files (`.bed/.bim/.fam`) passed via `--train-bfile` and `--val-bfile`. Evaluate a held-out set with `predict_attention.py` and `--bfile`.
+   - Tab-delimited genotype matrices (rows = IID, columns = variant IDs) passed via `--train-tsv` and `--val-tsv`. The current TSV loader requires integer-valued variant IDs in the header; use PLINK input for IDs such as `chr:pos:ref:alt`.
+   - Training allele metadata are stored in each checkpoint. PLINK validation and prediction inputs are checked against this reference, reversed allele order is aligned automatically, and incompatible alleles or missing required variants cause an error.
 
 2. **Covariates and phenotypes**
    - Tab-separated text matching PLINK `.cov` / `.pheno` conventions. Provide columns for `FID` and `IID` plus any covariates/phenotypes.
-   - Restrict covariates with `--cov-ids SEX AGE PC1 PC2 ...`. Declare phenotype types with `--bt` (binary) and `--qt` (quantitative). If a phenotype file is omitted, include a `PHENOTYPE` column in the covariate file.
+   - Restrict covariates with `--cov-ids SEX AGE PC1 PC2 ...`. Declare phenotype types with `--bt` (binary) and `--qt` (quantitative). Supply phenotype files explicitly for training and validation.
 
    *Example covariates* ([samples/synthetic_train.cov](samples/synthetic_train.cov)):
 
@@ -82,7 +87,7 @@ The `samples/` directory contains fully synthetic data generated for demonstrati
 ### Regenerate sample files
 
 ```bash
-/cellar/users/i5lee/miniconda3/envs/G2PT_github/bin/python samples/generate_synthetic_data.py
+python samples/generate_synthetic_data.py
 ```
 
 This produces a 1000 / 500 / 300 train / val / test split with 293 SNPs.  All seven file types are written:
@@ -140,6 +145,8 @@ All intermediate files (`gwas_train.assoc.linear`, `score.txt`, `prs_test.profil
 ### Single-GPU example (PLINK input)
 
 ```bash
+mkdir -p outputs/run1
+
 python train_snp2p_model.py \
   --onto samples/ontology.txt \
   --snp2gene samples/snp2gene.txt \
@@ -149,10 +156,11 @@ python train_snp2p_model.py \
   --val-cov /path/to/val.cov --val-pheno /path/to/val.pheno \
   --bt PHENOTYPE \
   --cov-ids SEX AGE PC1 PC2 PC3 \
+  --bt-validation-metric aupr \
   --epochs 50 --batch-size 128 --val-step 20 --patience 10 \
   --hidden-dims 256 --lr 1e-3 --wd 1e-3 --dropout 0.2 \
   --sys2env --env2sys --sys2gene \
-  --out outputs/run1
+  --out outputs/run1/model.pt
 ```
 
 ### TSV genotype example
@@ -174,6 +182,8 @@ python train_snp2p_model.py \
 Use `torchrun` to launch one process per GPU. Batch size and worker counts should be tuned per device.
 
 ```bash
+mkdir -p outputs/run_ddp
+
 torchrun --nproc_per_node=4 train_snp2p_model.py \
   --onto samples/ontology.txt \
   --snp2gene samples/snp2gene.txt \
@@ -182,21 +192,26 @@ torchrun --nproc_per_node=4 train_snp2p_model.py \
   --val-bfile /path/to/val --val-cov /path/to/val.cov --val-pheno /path/to/val.pheno \
   --bt PHENOTYPE --batch-size 128 --jobs 8 \
   --sys2gene --sys2env --env2sys \
-  --out outputs/run_ddp
+  --out outputs/run_ddp/model.pt
 ```
 
 Frequently used options include `--snp2pheno` / `--gene2pheno` / `--sys2pheno` to control translation heads, `--mlm` for masked-SNP pretraining, and `--independent_predictors` for multi-phenotype outputs.
 
+### Checkpoint selection and reproducibility
+
+- Validation runs every `--val-step` epochs and at the final epoch. Checkpoints are written as `{out}.{epoch}`; the best validation checkpoint is `{out}.best`.
+- For a binary trait, `--bt-validation-metric` selects the checkpoint criterion: `aupr` (default), `auc`, or `pseudo_r2`. The `pseudo_r2` option fits a validation-set logistic model with the G2PT score and covariates and maximizes McFadden's pseudo-R²; it requires `statsmodels` and falls back to AUPR if the fit fails.
+- `--seed` controls Python, NumPy, PyTorch, worker, and distributed-sampler seeds (default: `20260916`). Checkpoints record the seed, best epoch, and selection metric.
+
 ## Sparse attention (memory optimization)
 
-G2PT uses **sparse edge-based attention** by default to dramatically reduce memory usage during training. This is especially important for large-scale genomic datasets where SNP-gene mappings are naturally sparse (each SNP typically maps to 1-3 genes).
+G2PT uses **sparse edge-based attention** by default to reduce memory usage during training. This is especially useful for large-scale genomic datasets with sparse SNP-to-gene and ontology mappings.
 
 ### Benefits
 
-- **100-1000× memory reduction**: Reduces per-batch memory from ~8GB to 50-100MB
-- **16× larger batch sizes**: Train with batch_size=256 instead of 16 on a 32GB GPU
-- **3-5× faster training**: Fewer memory operations and better GPU utilization
-- **Numerically equivalent**: Produces identical results to dense attention
+- Memory use scales with the number of valid hierarchy edges rather than the full pairwise attention matrix.
+- Larger batches may be possible when hierarchy masks are sparse; the gain depends on the ontology, SNP-to-gene mapping, hardware, and software versions.
+- Sparse and dense modes use the same hierarchy connectivity, although floating-point accumulation order can produce small numerical differences.
 
 ### Usage
 
@@ -237,7 +252,7 @@ python predict_attention.py \
   --snp2gene samples/snp2gene.txt \
   --bfile /path/to/test \
   --cov /path/to/test.cov --pheno /path/to/test.pheno \
-  --model outputs/run1/model_best.pth \
+  --model outputs/run1/model.pt.best \
   --batch-size 256 --cuda 0 \
   --out outputs/run1/test
 ```
@@ -245,9 +260,10 @@ python predict_attention.py \
 Outputs include:
 
 - `{out}.prediction.csv`: predictions only (use `--prediction-only` to skip attention export).
-- `{out}.attention.csv`: covariate, system, and gene attention values per individual.
-- `{out}.sys_corr.csv`: correlation of system attention with predictions.
-- `{out}.gene_corr.csv`: correlation of gene attention with predictions.
+- `{out}.{phenotype}.head_{k}.csv`: covariates, predictions, and attention values for attention head `k`.
+- `{out}.{phenotype}.head_{k}.sys_importance.csv`: system-level attention summaries and correlations.
+- `{out}.{phenotype}.head_{k}.gene_importance.csv`: gene-level summaries when the checkpoint uses `--gene2pheno`.
+- Corresponding `head_sum` files containing attention summed across heads.
 
 TSV inputs are supported via `--tsv` in place of `--bfile`.
 
@@ -280,13 +296,21 @@ Read [Epistasis_simulation.ipynb](Epistasis_simulation.ipynb)
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
+## Citation
+
+If you use G2PT, please cite:
+
+> Lee I, Wallace ZS, Wang Y, Park S, Nam H, Majithia AR, Ideker T. **A genotype-phenotype transformer to assess and explain polygenic risk.** bioRxiv. 2025. [doi:10.1101/2024.10.23.619940](https://doi.org/10.1101/2024.10.23.619940); [PMID:40291728](https://pubmed.ncbi.nlm.nih.gov/40291728/).
+
+The archived software release is available from [Zenodo (doi:10.5281/zenodo.19713271)](https://doi.org/10.5281/zenodo.19713271).
+
 ## Future work
 
-- [x] Applying [Differential Transformer](https://github.com/microsoft/unilm/tree/master/Diff-Transformer) to genetic factor translation.
-- [x] Build data loader for `plink` binary file using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/).
-- [x] Adding `.cov` and `.pheno` for input.
-- [x] Change model for multiple phenotypes.
-- [x] Refactor to use config for the consistency and
-- [x] Change to sparse attention
-- [ ] Implementing new importance methods
-- [ ] Implementing causalty model like MR
+- [x] Apply [Differential Transformer](https://github.com/microsoft/unilm/tree/master/Diff-Transformer) to genetic-factor translation.
+- [x] Build a PLINK binary-file loader using [`sgkit`](https://sgkit-dev.github.io/sgkit/latest/).
+- [x] Add `.cov` and `.pheno` inputs.
+- [x] Support multiple phenotypes.
+- [x] Refactor configuration handling.
+- [x] Add sparse attention.
+- [ ] Implement additional importance methods.
+- [ ] Explore causal models such as Mendelian randomization.

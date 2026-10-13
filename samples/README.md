@@ -22,7 +22,7 @@ The script depends on packages already present in the `G2PT_github` conda enviro
 ### Basic usage (reproduces the default samples)
 
 ```bash
-/cellar/users/i5lee/miniconda3/envs/G2PT_github/bin/python samples/generate_synthetic_data.py
+python samples/generate_synthetic_data.py
 ```
 
 This writes all output files into the `samples/` directory by default.
@@ -34,17 +34,19 @@ This writes all output files into the `samples/` directory by default.
 | `--seed` | `42` | Random seed for reproducibility |
 | `--n_train` | `1000` | Number of training samples |
 | `--n_val` | `500` | Number of validation samples |
+| `--n_test` | `300` | Number of test samples |
 | `--n_snps` | `293` | Number of SNPs |
 | `--n_genes` | `150` | Number of unique genes |
 | `--n_go_terms` | `80` | Number of GO-like ontology terms |
 | `--out_dir` | *(script dir)* | Output directory |
 | `--prefix_train` | `synthetic_train` | File prefix for the train split |
 | `--prefix_val` | `synthetic_val` | File prefix for the val split |
+| `--prefix_test` | `synthetic_test` | File prefix for the test split |
 
 ### Example: larger custom dataset
 
 ```bash
-/cellar/users/i5lee/miniconda3/envs/G2PT_github/bin/python samples/generate_synthetic_data.py \
+python samples/generate_synthetic_data.py \
     --n_train 5000 --n_val 1000 --n_snps 1000 \
     --n_genes 400 --n_go_terms 200 \
     --out_dir /path/to/output --seed 99

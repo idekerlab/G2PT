@@ -485,4 +485,3 @@ dependencies:
       - werkzeug==3.0.6
       - wrapt==1.17.2
       - xformers==0.0.28.post1
-prefix: /cellar/users/i5lee/miniconda3/envs/G2PT_github
