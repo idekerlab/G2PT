@@ -25,6 +25,7 @@ class GenotypeDataset(Dataset):
         pheno_ids=(),
         bt=(),
         qt=(),
+        _defer_phenotypes=False,
     ):
         self.tree_parser = tree_parser
         self.n_snp2pad = int(np.ceil((self.tree_parser.n_snps + 1) / 8)) * 8 - self.tree_parser.n_snps
@@ -49,24 +50,31 @@ class GenotypeDataset(Dataset):
         print("Processing Covariates...")
         if cov is not None:
             print("Loading Covariate file at %s" % cov)
-            self.cov_df = pd.read_csv(cov, sep="\t")
+            self.cov_df = pd.read_csv(cov, sep="\t", dtype={"FID": str, "IID": str})
+            self._validate_sample_ids(self.cov_df, "Covariate")
             self.cov_df["IID"] = self.cov_df["IID"].astype(str)
             self.cov_df["FID"] = self.cov_df["FID"].astype(str)
             # self.cov_df = self.cov_df.set_index('IID').loc[plink_data.sample_id.values].reset_index()
         else:
             self.cov_df = None  # will be initialized in child class
+            if not _defer_phenotypes:
+                raise ValueError("Covariate data required for this dataset.")
 
         if len(cov_ids) != 0:
             self.cov_ids = cov_ids
+        elif self.cov_df is None:
+            self.cov_ids = ["SEX"]  # PLINK will supply covariates from .fam
         else:
             self.cov_ids = [cov for cov in self.cov_df.columns[2:] if cov != "PHENOTYPE"]
+        if self.cov_df is None and list(self.cov_ids) != ["SEX"]:
+            raise ValueError("PLINK .fam supplies only SEX covariates; provide a covariate file for other cov_ids.")
         self.n_cov = len(self.cov_ids) + 1  # +1 for sex cov
 
         if cov_mean_dict is None:
             self.cov_mean_dict = dict()
             self.cov_std_dict = dict()
             for cov in self.cov_ids:
-                if not self.is_binary(self.cov_df[cov]):
+                if self.cov_df is not None and not self.is_binary(self.cov_df[cov]):
                     self.cov_mean_dict[cov] = self.cov_df[cov].mean()
                     self.cov_std_dict[cov] = self.cov_df[cov].std()
         else:
@@ -77,21 +85,49 @@ class GenotypeDataset(Dataset):
         print("Processing Phenotypes")
         if pheno is not None:
             print("Loading Phenotype file at %s" % pheno)
-            self.pheno_df = pd.read_csv(pheno, sep="\t")
-            if len(pheno_ids) != 0:
-                self.pheno_ids = pheno_ids
-            else:
-                self.pheno_ids = [pheno for pheno in self.pheno_df.columns[2:]]
-            self.pheno_df["IID"] = self.pheno_df["IID"].map(str)
-            self.pheno_df["FID"] = self.pheno_df["FID"].map(str)
-            self.pheno_df = self.pheno_df.fillna(-9)
-
+            self.pheno_df = pd.read_csv(pheno, sep="\t", dtype={"FID": str, "IID": str})
+        elif self.cov_df is not None and "PHENOTYPE" in self.cov_df.columns:
+            self.pheno_df = self.cov_df[["FID", "IID", "PHENOTYPE"]].copy()
         else:
-            self.pheno_df = None  # will be initialized in child class = self.cov_df[['FID', 'IID', 'PHENOTYPE']]
-            self.pheno_df = self.pheno_df.fillna(-9)
+            self.pheno_df = None
+        self.has_phenotype = False
+        if self.pheno_df is not None:
+            self._initialize_phenotypes(pheno_ids, bt, qt)
+            if self.cov_df is not None:
+                retained = self.cov_df["IID"].isin(self.pheno_df["IID"])
+                self.cov_df = self.cov_df.loc[retained].reset_index(drop=True)
+                self.pheno_df = self.pheno_df.set_index("IID").loc[self.cov_df["IID"]].reset_index()
+        elif not _defer_phenotypes:
+            raise ValueError("Phenotype data required: provide a phenotype file or a PHENOTYPE column in covariates.")
 
+    @staticmethod
+    def _validate_sample_ids(frame, source):
+        missing = [name for name in ("FID", "IID") if name not in frame.columns]
+        if missing:
+            raise ValueError(f"{source} data missing ID columns: {', '.join(missing)}")
+        if frame[["FID", "IID"]].isna().any().any() or frame["IID"].duplicated().any():
+            raise ValueError(f"{source} FID/IID must be present and IID must be unique.")
 
-
+    # Adapted from sushan5140's GIST-CSBL/G2PT#1.
+    def _initialize_phenotypes(self, pheno_ids, bt, qt):
+        """Build phenotype metadata only after the selected data source is ready."""
+        self._validate_sample_ids(self.pheno_df, "Phenotype")
+        self.pheno_ids = pheno_ids if len(pheno_ids) != 0 else list(self.pheno_df.columns[2:])
+        missing = [name for name in self.pheno_ids if name not in self.pheno_df.columns]
+        if missing or len(self.pheno_ids) == 0:
+            raise ValueError("Missing phenotype columns: %s" % ", ".join(missing or ["no phenotype columns supplied"]))
+        if len(set(self.pheno_ids)) != len(self.pheno_ids):
+            raise ValueError("Phenotype IDs must be unique.")
+        unknown_types = [name for name in list(bt) + list(qt) if name not in self.pheno_ids]
+        if unknown_types:
+            raise ValueError("Unknown phenotype IDs in bt/qt: %s" % ", ".join(unknown_types))
+        if set(bt).intersection(qt):
+            raise ValueError("Phenotype IDs cannot be both binary and quantitative.")
+        if (bt or qt) and set(self.pheno_ids) != set(bt).union(qt):
+            raise ValueError("Assign every selected phenotype to bt or qt.")
+        self.pheno_df["IID"] = self.pheno_df["IID"].map(str)
+        self.pheno_df["FID"] = self.pheno_df["FID"].map(str)
+        self.pheno_df = self.pheno_df.fillna(-9)
         self.pheno2ind = {pheno: i for i, pheno in enumerate(self.pheno_ids)}
         self.ind2pheno = {i: pheno for i, pheno in enumerate(self.pheno_ids)}
         self.pheno2type = {}
@@ -114,9 +150,7 @@ class GenotypeDataset(Dataset):
 
         self.n_pheno = len(self.pheno_ids)
         self.pheno_range = list(range(self.n_pheno))
-        self.has_phenotype = False
-        if ("PHENOTYPE" in self.cov_df.columns) or (pheno is not None):
-            self.has_phenotype = True
+        self.has_phenotype = True
 
         print("Phenotypes: ", self.pheno_ids)
         print("Phenotype index: ", self.pheno2ind)
@@ -287,7 +321,9 @@ class PLINKDataset(GenotypeDataset):
         tree_parser: SNP tree parser object
         bfile: PLINK bfile prefix
         cov: covariates tab-delimited text file. If None, covariates will be inferred from bfile.fam file
-        pheno: phenotype tab-delimited text file. If None, phenotype will be inferred from bfile.fam file
+        pheno: phenotype TSV, taking precedence over cov PHENOTYPE, then bfile.fam.
+        .fam PHENOTYPE is quantitative by default; bt=["PHENOTYPE"] converts 1/2 to 0/1.
+        Missing phenotypes use -9 for the trainer loss mask; samples are retained.
         cov_mean_dict: dictionary of covariates mean, {cov_id: mean_value}. If None, mean of covariates will be calculated from cov file
         cov_std_dict: dictionary of covariates standard deviation, {cov_id: std_value}. If None, standard deviation of covariates will be calculated from cov file
         flip: If True, it will flip reference and altered allele
@@ -304,6 +340,7 @@ class PLINKDataset(GenotypeDataset):
             pheno_ids=pheno_ids,
             bt=bt,
             qt=qt,
+            _defer_phenotypes=True,
         )
 
         self.bfile = bfile
@@ -365,38 +402,42 @@ class PLINKDataset(GenotypeDataset):
             raise ValueError("PLINK sample IDs and variant IDs must be unique")
         genotype_df = genotype_df.reindex(columns=snp_sorted)
 
-        # Processing Covariates
-        if self.cov_df is not None:
-            intersection_iid = genotype_df.index[genotype_df.index.isin(self.cov_df["IID"])].tolist()
-            self.cov_df = self.cov_df.set_index("IID").loc[intersection_iid].reset_index()
-            genotype_df = genotype_df.loc[intersection_iid]
-        else:
-            self.cov_df = pd.DataFrame(
-                {
-                    "FID": plink_data.sample_family_id.as_numpy(),
-                    "IID": plink_data.sample_id.as_numpy(),
-                    "SEX": plink_data.sample_sex.as_numpy(),
-                    "PHENOTYPE": plink_data.sample_phenotype.as_numpy(),
-                }
+        # Read raw .fam phenotypes: sgkit 0.7 coerces values outside 1/2 to -1,
+        # which loses quantitative values and their original missing-value codes.
+        if self.cov_df is None or self.pheno_df is None:
+            fam = pd.read_csv(
+                str(bfile) + ".fam", sep=r"\s+", header=None,
+                names=["FID", "IID", "PAT", "MAT", "SEX", "PHENOTYPE"],
+                dtype={"FID": str, "IID": str},
             )
-            self.cov_df = self.cov_df[["FID", "IID", "SEX", "PHENOTYPE"]]
-            self.cov_df = self.cov_df.loc[self.cov_df.PHENOTYPE != -1]
-            self.cov_df["PHENOTYPE"] = self.cov_df["PHENOTYPE"] - 1
-            self.cov_df["IID"] = self.cov_df["IID"].astype(str)
-            self.cov_df["FID"] = self.cov_df["FID"].astype(str)
-            self.cov_df = self.cov_df.set_index("IID").loc[plink_data.sample_id.values].reset_index()
+            self._validate_sample_ids(fam, "PLINK .fam")
+            fam = fam.set_index("IID").loc[genotype_df.index.tolist()].reset_index()
+            if self.cov_df is None:
+                self.cov_df = fam[["FID", "IID", "SEX"]].copy()
+                # Dataset items encode sex as two one-hot entries indexed by 0/1.
+                self.cov_df["SEX"] = self.cov_df["SEX"].map({1: 0, 2: 1}).fillna(-9)
+            if self.pheno_df is None:
+                self.pheno_df = fam[["FID", "IID", "PHENOTYPE"]].copy()
+                values = pd.to_numeric(self.pheno_df["PHENOTYPE"], errors="raise")
+                missing = values.isna() | values.eq(-9)
+                if "PHENOTYPE" in bt:
+                    missing |= values.eq(0)
+                    if not values[~missing].isin([1, 2]).all():
+                        raise ValueError("Binary PLINK .fam PHENOTYPE must use 1/2, with 0, -9 or NaN for missing.")
+                    values = values - 1
+                self.pheno_df["PHENOTYPE"] = values.mask(missing, -9)
+                self._initialize_phenotypes(pheno_ids, bt, qt)
 
-        if self.pheno_df is not None:
-            intersection_iid = genotype_df.index[genotype_df.index.isin(self.pheno_df["IID"])].tolist()
-            self.pheno_df = self.pheno_df.set_index("IID").loc[intersection_iid].reset_index()
-            self.cov_df = self.cov_df.set_index("IID").loc[intersection_iid].reset_index()
-            genotype_df = genotype_df.loc[intersection_iid]
-        else:
-            self.pheno_df = self.cov_df[["FID", "IID", "PHENOTYPE"]]
-            self.pheno_df["IID"] = self.pheno_df["IID"].map(str)
-            self.pheno_df = self.pheno_df.set_index("IID").loc[plink_data.sample_id.values].reset_index()
-            self.cov_df = self.cov_df.set_index("IID").loc[plink_data.sample_id.values].reset_index()
-            self.pheno_ids = ["PHENOTYPE"]
+        # Keep PLINK order and intersect all sources before positional access.
+        intersection_iid = genotype_df.index[
+            genotype_df.index.isin(self.cov_df["IID"])
+            & genotype_df.index.isin(self.pheno_df["IID"])
+        ].tolist()
+        if not intersection_iid:
+            raise ValueError("No overlapping sample IIDs in genotype, covariate and phenotype data.")
+        self.cov_df = self.cov_df.set_index("IID").loc[intersection_iid].reset_index()
+        self.pheno_df = self.pheno_df.set_index("IID").loc[intersection_iid].reset_index()
+        genotype_df = genotype_df.loc[intersection_iid]
 
         self.iid2ind = {str(iid): idx for idx, iid in enumerate(genotype_df.index.values)}
         self.ind2iid = {idx: str(iid) for idx, iid in enumerate(genotype_df.index.values)}

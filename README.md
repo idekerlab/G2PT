@@ -39,13 +39,15 @@ export PYTHONPATH=.
 
 2. **Covariates and phenotypes**
    - Tab-separated text matching PLINK `.cov` / `.pheno` conventions. Provide columns for `FID` and `IID` plus any covariates/phenotypes.
-   - Restrict covariates with `--cov-ids SEX AGE PC1 PC2 ...`. Declare phenotype types with `--bt` (binary) and `--qt` (quantitative). Supply phenotype files explicitly for training and validation.
+   - Restrict covariates with `--cov-ids SEX AGE PC1 PC2 ...`. Declare phenotype types with `--bt` (binary) and `--qt` (quantitative). For each split, phenotypes come from an explicit phenotype file first, followed by the covariate `PHENOTYPE` column and then PLINK `.fam`. TSV datasets require one of the first two sources.
 
    *Example covariates* ([samples/synthetic_train.cov](samples/synthetic_train.cov)):
 
    | FID      | IID      | SEX | AGE | PC1 | PC2 | ... | PC10 |
    |----------|----------|-----|-----|-----|-----|-----|------|
    | 10008090 | 10008090 | 1   | 48  | 3   | 0.3 | ... | 0.5  |
+
+   When using `.fam` phenotypes, select `--bt PHENOTYPE` for PLINK case/control coding (1 → 0, 2 → 1). Binary missing values (0, -9, NA/NaN) become -9. With `--qt PHENOTYPE` or no task flags, raw quantitative values are preserved, including 0 and -1, and -9/NA/NaN are missing. External phenotype files and covariate `PHENOTYPE` columns retain their coding (binary tasks expect 0/1). Missing labels use the existing -9 loss mask and retain their samples. PLINK uses the shared IIDs in genotype order and requires globally unique IIDs. Without a covariate file, `.fam` supplies SEX, converted from 1/2 to the dataset's 0/1 encoding.
 
    *Example phenotypes* ([samples/synthetic_train.pheno](samples/synthetic_train.pheno)):
 
